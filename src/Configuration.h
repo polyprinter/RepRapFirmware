@@ -143,7 +143,7 @@ const unsigned int MaxTriggers = 10;				// Must be <= 32 because we store a bitm
 
 // Default nozzle and filament values
 
-const float NOZZLE_DIAMETER = 0.5;					// Millimetres
+const float NOZZLE_DIAMETER = 0.35;					// Millimetres
 const float FILAMENT_WIDTH = 1.75;					// Millimetres
 
 // Webserver stuff

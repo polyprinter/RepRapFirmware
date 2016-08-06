@@ -5,3 +5,4 @@ Release/*
 !Release/DuetWiFiFirmware*.bin
 *~
 *orig
+/SAM3X_CoreNG/

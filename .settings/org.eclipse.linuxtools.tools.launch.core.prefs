@@ -1,0 +1,3 @@
+eclipse.preferences.version=1
+org.eclipse.linuxtools.tools.launch.core.LinuxtoolsPath=C\:\\Arduino-1.5.8\\hardware\\arduino\\sam\\system\\CMSIS\\Examples\\cmsis_example\\gcc_arm
+org.eclipse.linuxtools.tools.launch.core.LinuxtoolsSystemEnvPath=false
