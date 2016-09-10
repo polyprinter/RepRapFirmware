@@ -1307,6 +1307,177 @@ bool GCodes::DoHome(GCodeBuffer *gb, StringRef& reply, bool& error)
 	return true;
 }
 
+#ifdef USE_BED_CONTACT_PROBING
+bool GCodes::DeactivateAllDrives()
+{
+	for (size_t drive = 0; drive <= DRIVES; drive++)
+	{
+		activeDrive[drive] = false;
+	}
+}
+
+
+// Move Z to the dive height.
+// This is only meant to be used as part of a canned cycle.
+bool GCodes::CannedMoveZToDiveHeight()
+{
+	moveToDo[Z_AXIS] = platform->GetZProbeDiveHeight() + max<float>(platform->ZProbeStopHeight(), 0.0);
+	activeDrive[Z_AXIS] = true;
+	moveToDo[DRIVES] = platform->GetZProbeTravelSpeed();
+	if (DoCannedCycleMove(0))
+	{
+		cannedCycleMoveCount++;
+	}
+	return false;
+}
+
+// Move XY to the desired point position, leaving it at the dive height (and Z enabled).
+// This is only meant to be used as part of a canned cycle.
+bool GCodes::CannedMoveXYToProbePoint(int probePointIndex)
+{
+	GetProbeCoordinates(probePointIndex, moveToDo[X_AXIS], moveToDo[Y_AXIS], moveToDo[Z_AXIS]);
+	// NOTE: Z is left active but we should not be moving it with this
+	activeDrive[X_AXIS] = true;
+	activeDrive[Y_AXIS] = true;
+	// NB - we don't use the Z value
+	moveToDo[DRIVES] = platform->GetZProbeTravelSpeed();
+	if (DoCannedCycleMove(0))
+	{
+		cannedCycleMoveCount++;
+	}
+
+	return false;
+}
+
+// Go down while doing the probe. Keep XY at the desired point position.
+// This is only meant to be used as part of a canned cycle.
+// Prerequisites: Drive Z must be enabled.
+// returns false if more calls to it are required
+// returns true if all work is done and does not need to be called again
+bool GCodes::DoSingleProbeOfBedAtProbePoint(int probePointIndex, float heightAdjust)
+{
+	const float height = (axisIsHomed[Z_AXIS])
+							? 2 * platform->GetZProbeDiveHeight()			// Z axis has been homed, so no point in going very far
+							: 1.1 * platform->AxisTotalLength(Z_AXIS);		// Z axis not homed yet, so treat this as a homing move
+	switch(DoZProbe(height)) // Returns -1 if not complete yet
+	{
+	case 0: // failed to detect the bed
+		// Z probe is already triggered at the start of the move, so abandon the probe and record an error
+		platform->Message(GENERIC_MESSAGE, "Z probe warning: probe already triggered at start of probing move\n");
+		// move back up to the probe dive point (which needed to be higher)
+		reprap.GetMove()->SetZBedProbePoint(probePointIndex, platform->GetZProbeDiveHeight(), true, true);
+		return true; // we don't need to be called again
+
+	case 1:
+		if (axisIsHomed[Z_AXIS])
+		{
+			lastProbedZ = moveBuffer.coords[Z_AXIS] - (platform->ZProbeStopHeight() + heightAdjust);
+		}
+		else
+		{
+			// The Z axis has not yet been homed, so treat this probe as a homing move.
+			moveBuffer.coords[Z_AXIS] = platform->ZProbeStopHeight() + heightAdjust;
+			SetPositions(moveBuffer.coords);
+			axisIsHomed[Z_AXIS] = true;
+			lastProbedZ = 0.0;
+		}
+		reprap.GetMove()->SetZBedProbePoint(probePointIndex, lastProbedZ, true, false);
+		return true; // we don't need to be called again
+
+	default:
+		// -1 = not completed yet, so we do need to be called again
+		break;
+	}
+
+	return false;  // we need to be called again
+}
+
+// ensures that bed contact is able to be made in this position.
+// Drills through PET tape.
+// Pushes off plastic.
+// If equipped, can position a head-cleaning brush and move the head against it to clean the tip.
+// returns false if more calls to it are required
+// returns true if all work is done and does not need to be called again
+bool GCodes::DoEstablishContactAtPoint(int probePointIndex, float heightAdjust)
+{
+	// *************** UNFINISHED ********************* //
+	// this code was initially just a carbon copy of the DoSingleZProbeAtPoint, below
+	reprap.GetMove()->SetIdentityTransform(); 		// It doesn't matter if these are called repeatedly
+
+	DeactivateAllDrives();
+
+	switch (cannedCycleMoveCount)
+	{
+	case 0: // Move Z to the dive height. Clears away from the bed, hopefully.
+		// This only does anything on the first move; on all the others Z is already there
+		return CannedMoveZToDiveHeight();
+
+	case 1:	// Move to the correct XY coordinates
+		return CannedMoveXYToProbePoint(probePointIndex);
+
+	case 2:	// Probe the bed
+		{
+			if ( DoSingleProbeOfBedAtProbePoint( probePointIndex, heightAdjust ) ) // returns true when all its work is done
+			{
+				// all done
+				++cannedCycleMoveCount;  // move on to next canned cycle action
+			}
+#ifdef OLDWAY
+			const float height = (axisIsHomed[Z_AXIS])
+									? 2 * platform->GetZProbeDiveHeight()			// Z axis has been homed, so no point in going very far
+									: 1.1 * platform->AxisTotalLength(Z_AXIS);		// Z axis not homed yet, so treat this as a homing move
+			switch(DoZProbe(height))
+			{
+			case 0:
+				// Z probe is already triggered at the start of the move, so abandon the probe and record an error
+				platform->Message(GENERIC_MESSAGE, "Z probe warning: probe already triggered at start of probing move\n");
+				cannedCycleMoveCount++;
+				reprap.GetMove()->SetZBedProbePoint(probePointIndex, platform->GetZProbeDiveHeight(), true, true);
+				break;
+
+			case 1:
+				if (axisIsHomed[Z_AXIS])
+				{
+					lastProbedZ = moveBuffer.coords[Z_AXIS] - (platform->ZProbeStopHeight() + heightAdjust);
+				}
+				else
+				{
+					// The Z axis has not yet been homed, so treat this probe as a homing move.
+					moveBuffer.coords[Z_AXIS] = platform->ZProbeStopHeight() + heightAdjust;
+					SetPositions(moveBuffer.coords);
+					axisIsHomed[Z_AXIS] = true;
+					lastProbedZ = 0.0;
+				}
+				reprap.GetMove()->SetZBedProbePoint(probePointIndex, lastProbedZ, true, false);
+				cannedCycleMoveCount++;
+				break;
+
+			default:
+				break;
+			}
+#endif
+		}
+		return false;
+
+	case 3:	// Raise the head back up to the dive height
+		moveToDo[Z_AXIS] = platform->GetZProbeDiveHeight() + max<float>(platform->ZProbeStopHeight(), 0.0);
+		activeDrive[Z_AXIS] = true;
+		moveToDo[DRIVES] = platform->GetZProbeTravelSpeed();
+		if (DoCannedCycleMove(0))
+		{
+			cannedCycleMoveCount = 0;
+			return true;
+		}
+		return false;
+
+	default: // should not happen
+		cannedCycleMoveCount = 0;
+		return true;
+	}
+
+}
+#endif
+
 // This lifts Z a bit, moves to the probe XY coordinates (obtained by a call to GetProbeCoordinates() ),
 // probes the bed height, and records the Z coordinate probed.  If you want to program any general
 // internal canned cycle, this shows how to do it.

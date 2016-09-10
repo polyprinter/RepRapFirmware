@@ -99,9 +99,9 @@ const int INKJET_DELAY_MICROSECONDS = 800;				// How long to wait before the nex
 #endif
 
 const float MAX_FEEDRATES[DRIVES] = DRIVES_(100.0, 100.0, 3.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0);						// mm/sec
-const float ACCELERATIONS[DRIVES] = DRIVES_(500.0, 500.0, 20.0, 250.0, 250.0, 250.0, 250.0, 250.0, 250.0, 250.0);				// mm/sec^2
-const float DRIVE_STEPS_PER_UNIT[DRIVES] = DRIVES_(87.4890, 87.4890, 4000.0, 420.0, 420.0, 420.0, 420.0, 420.0, 420.0, 420.0);	// steps/mm
-const float INSTANT_DVS[DRIVES] = DRIVES_(15.0, 15.0, 0.2, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0);								// mm/sec
+const float ACCELERATIONS[DRIVES] = DRIVES_(3000.0, 3000.0, 20.0, 250.0, 250.0, 250.0, 250.0, 250.0, 250.0, 250.0);				// mm/sec^2
+const float DRIVE_STEPS_PER_UNIT[DRIVES] = DRIVES_(80.35, 80.35, 3200.0, 100.0, 100.0, 420.0, 420.0, 420.0, 420.0, 420.0);	// steps/mm
+const float INSTANT_DVS[DRIVES] = DRIVES_(10.0, 10.0, 0.5, .1, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0);								// mm/sec
 
 // AXES
 
@@ -109,7 +109,7 @@ const size_t X_AXIS = 0, Y_AXIS = 1, Z_AXIS = 2, E0_AXIS = 3;	// The indices of 
 const size_t A_AXIS = 0, B_AXIS = 1, C_AXIS = 2;				// The indices of the 3 tower motors of a delta printer in drive arrays
 
 const float AXIS_MINIMA[AXES] = { 0.0, 0.0, 0.0 };				// mm
-const float AXIS_MAXIMA[AXES] = { 230.0, 210.0, 200.0 };		// mm
+const float AXIS_MAXIMA[AXES] = { 230.0, 230.0, 230.0 };		// mm
 
 const float defaultPrintRadius = 50;							// mm
 const float defaultDeltaHomedHeight = 200;						// mm

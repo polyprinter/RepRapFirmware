@@ -148,9 +148,9 @@ const float FILAMENT_WIDTH = 1.75;					// Millimetres
 
 // Webserver stuff
 
-#define DEFAULT_PASSWORD "reprap"					// Default machine password
-#define DEFAULT_NAME "My Duet"						// Default machine name
-#define HOSTNAME "duet"								// Default netbios name
+#define DEFAULT_PASSWORD "golly"					// Default machine password
+#define DEFAULT_NAME "PolyPrinter"						// Default machine name
+#define HOSTNAME "PolyPrinter"								// Default netbios name
 
 #define INDEX_PAGE_FILE "reprap.htm"
 #define FOUR04_PAGE_FILE "html404.htm"

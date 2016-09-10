@@ -165,6 +165,14 @@ private:
     bool DoDwell(GCodeBuffer *gb);										// Wait for a bit
     bool DoDwellTime(float dwell);										// Really wait for a bit
     bool DoHome(GCodeBuffer *gb, StringRef& reply, bool& error);		// Home some axes
+#define USE_BED_CONTACT_PROBING
+#ifdef USE_BED_CONTACT_PROBING
+    bool DeactivateAllDrives();
+    bool CannedMoveZToDiveHeight();
+    bool CannedMoveXYToProbePoint(int probePointIndex);
+    bool DoSingleProbeOfBedAtProbePoint(int probePointIndex, float heightAdjust);
+    bool DoEstablishContactAtPoint(int probePointIndex, float heightAdjust);
+#endif
     bool DoSingleZProbeAtPoint(int probePointIndex, float heightAdjust); // Probe at a given point
     bool DoSingleZProbe(bool reportOnly, float heightAdjust);			// Probe where we are
     int DoZProbe(float distance);										// Do a Z probe cycle up to the maximum specified distance
