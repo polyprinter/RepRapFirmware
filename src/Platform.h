@@ -36,27 +36,25 @@ Licence: GPL
 
 // Language-specific includes
 
-#include <Libraries/TemperatureSensor/TemperatureSensor.h>
 #include <cctype>
 #include <cstring>
 #include <malloc.h>
-#include <TemperatureError.h>
 #include <cstdlib>
 #include <climits>
 
 // Platform-specific includes
 
-#include "Types.h"
 #include "Core.h"
+#include "Heating/TemperatureSensor.h"
+#include "Heating/TemperatureError.h"
 #include "OutputMemory.h"
-#include "ff.h"
+#include "Libraries/Fatfs/ff.h"
 
 #if !defined(DUET_NG) || defined(PROTOTYPE_1)
-# include "MCP4461.h"
+# include "Libraries/MCP4461/MCP4461.h"
 #endif
 
-#include "MassStorage.h"
-#include "FileStore.h"
+#include "Storage/FileStore.h"
 #include "MessageType.h"
 #include "Fan.h"
 
@@ -66,13 +64,19 @@ const bool FORWARDS = true;
 const bool BACKWARDS = !FORWARDS;
 
 #include "Pins.h"
+#include "Storage/MassStorage.h"	// must be after Pins.h because it needs NumSdCards defined
 
 /**************************************************************************************************/
 
 // Some numbers...
 
-#define TIME_TO_REPRAP 1.0e6 	// Convert seconds to the units used by the machine (usually microseconds)
-#define TIME_FROM_REPRAP 1.0e-6 // Convert the units used by the machine (usually microseconds) to seconds
+#define TIME_TO_REPRAP 1.0e6 		// Convert seconds to the units used by the machine (usually microseconds)
+#define TIME_FROM_REPRAP 1.0e-6 	// Convert the units used by the machine (usually microseconds) to seconds
+
+const float SecondsToMillis = 1000.0;
+const float MillisToSeconds = 0.001;
+
+#define DEGREE_SYMBOL	"\xC2\xB0"	// Unicode degree-symbol as UTF8
 
 /**************************************************************************************************/
 
@@ -151,12 +155,6 @@ const float defaultPidKds[HEATERS] = HEATERS_(500.0, 100.0, 100.0, 100.0, 100.0,
 const float defaultPidKps[HEATERS] = HEATERS_(-1.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0);	// Proportional PID constants, negative values indicate use bang-bang instead of PID
 const float defaultPidKts[HEATERS] = HEATERS_(2.7, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4);			// approximate PWM value needed to maintain temperature, per degC above room temperature
 const float defaultPidKss[HEATERS] = HEATERS_(1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0);			// PWM scaling factor, to allow for variation in heater power and supply voltage
-const float defaultFullBands[HEATERS] = HEATERS_(5.0, 30.0, 30.0, 30.0, 30.0, 30.0, 30.0, 30.0);	// errors larger than this cause heater to be on or off
-const float defaultPidMins[HEATERS] = HEATERS_(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);			// minimum value of I-term
-const float defaultPidMaxes[HEATERS] = HEATERS_(255, 180, 180, 180, 180, 180, 180, 180);			// maximum value of I-term, must be high enough to reach 245C for ABS printing
-
-const float STANDBY_TEMPERATURES[HEATERS] = HEATERS_(ABS_ZERO, ABS_ZERO, ABS_ZERO, ABS_ZERO, ABS_ZERO, ABS_ZERO, ABS_ZERO, ABS_ZERO); // We specify one for the bed, though it's not needed
-const float ACTIVE_TEMPERATURES[HEATERS] = HEATERS_(ABS_ZERO, ABS_ZERO, ABS_ZERO, ABS_ZERO, ABS_ZERO, ABS_ZERO, ABS_ZERO, ABS_ZERO);
 
 // For the theory behind ADC oversampling, see http://www.atmel.com/Images/doc8003.pdf
 const unsigned int AD_OVERSAMPLE_BITS = 1;		// Number of bits we oversample when reading temperatures
@@ -224,12 +222,12 @@ enum class EndStopType
 // The spin state gets or'ed into this, so keep the lower ~4 bits unused.
 enum class SoftwareResetReason : uint16_t
 {
-	user = 0,					// M999 command
-	erase = 55,					// special M999 command to erase firmware and reset
-	inAuxOutput = 0x0800,		// this bit is or'ed in if we were in aux output at the time
-	stuckInSpin = 0x1000,		// we got stuck in a Spin() function for too long
-	inLwipSpin = 0x2000,		// we got stuck in a call to LWIP for too long
-	inUsbOutput = 0x4000		// this bit is or'ed in if we were in USB output at the time
+	user = 0,						// M999 command
+	erase = 55,						// special M999 command to erase firmware and reset
+	inAuxOutput = 0x0800,			// this bit is or'ed in if we were in aux output at the time
+	stuckInSpin = 0x1000,			// we got stuck in a Spin() function for too long
+	inLwipSpin = 0x2000,			// we got stuck in a call to LWIP for too long
+	inUsbOutput = 0x4000			// this bit is or'ed in if we were in USB output at the time
 };
 
 // Enumeration to describe various tests we do in response to the M111 command
@@ -237,7 +235,8 @@ enum class DiagnosticTestType : int
 {
 	TestWatchdog = 1001,			// test that we get a watchdog reset if the tick interrupt stops
 	TestSpinLockup = 1002,			// test that we get a software reset if a Spin() function takes too long
-	TestSerialBlock = 1003			// test what happens when we write a blocking message via debugPrintf()
+	TestSerialBlock = 1003,			// test what happens when we write a blocking message via debugPrintf()
+	PrintMoves = 100				// print summary of recent moves
 };
 
 // Info returned by FindFirst/FindNext calls
@@ -316,7 +315,6 @@ private:
 
 public:
 	float kI, kD, kP, kT, kS;
-	float fullBand, pidMin, pidMax;
 	float thermistorSeriesR;
 	float adcLowOffset, adcHighOffset;
 
@@ -452,6 +450,7 @@ public:
 	void SetAtxPower(bool on);
 	void SetBoardType(BoardType bt);
 	const char* GetElectronicsString() const;
+	const char* GetBoardString() const;
 
 	// Timing
   
@@ -483,13 +482,14 @@ public:
 
 	MassStorage* GetMassStorage() const;
 	FileStore* GetFileStore(const char* directory, const char* fileName, bool write);
-	const char* GetWebDir() const; 					// Where the htm etc files are
+	const char* GetWebDir() const; 					// Where the html etc files are
 	const char* GetGCodeDir() const; 				// Where the gcodes are
 	const char* GetSysDir() const;  				// Where the system files are
 	const char* GetMacroDir() const;				// Where the user-defined macros are
 	const char* GetConfigFile() const; 				// Where the configuration is stored (in the system dir).
 	const char* GetDefaultFile() const;				// Where the default configuration is stored (in the system dir).
-	void InvalidateFiles();							// Called to invalidate files when the SD card is removed
+	void InvalidateFiles(const FATFS *fs);			// Called to invalidate files when the SD card is removed
+	bool AnyFileOpen(const FATFS *fs) const;		// Returns true if any files are open on the SD card
 
 	// Message output (see MessageType for further details)
 
@@ -589,14 +589,14 @@ public:
 
 	// Heat and temperature
 
-	float GetTemperature(size_t heater, TemperatureError* err = nullptr); // Result is in degrees Celsius
+	float GetTemperature(size_t heater, TemperatureError& err); // Result is in degrees Celsius
+	float GetZProbeTemperature();							// Get our best estimate of the Z probe temperature
 	void SetHeater(size_t heater, float power);				// power is a fraction in [0,1]
-	float HeatSampleTime() const;
+	uint32_t HeatSampleInterval() const;
 	void SetHeatSampleTime(float st);
+	float GetHeatSampleTime() const;
 	void SetPidParameters(size_t heater, const PidParameters& params);
 	const PidParameters& GetPidParameters(size_t heater) const;
-	float TimeToHot() const;
-	void SetTimeToHot(float t);
 	void SetThermistorNumber(size_t heater, size_t thermistor);
 	int GetThermistorNumber(size_t heater) const;
 	bool IsThermistorChannel(uint8_t heater) const;
@@ -646,7 +646,7 @@ public:
 	bool Inkjet(int bitPattern);
 
 	// Direct pin operations
-	bool SetPin(int pin, int level);
+	bool SetPin(int pin, float level);
 
 	// MCU temperature
 	void GetMcuTemperatures(float& minT, float& currT, float& maxT) const;
@@ -691,7 +691,7 @@ private:
 	struct FlashData
 	{
 		static const uint16_t magicValue = 0xE6C4;	// value we use to recognise that the flash data has been written
-		static const uint16_t versionValue = 1;		// increment this whenever this struct changes
+		static const uint16_t versionValue = 2;		// increment this whenever this struct changes
 		static const uint32_t nvAddress = (SoftwareResetData::nvAddress + sizeof(SoftwareResetData) + 3) & (~3);
 
 		uint16_t magic;
@@ -788,18 +788,14 @@ private:
 	EndStopType endStopType[AXES+1];
 	bool endStopLogicLevel[AXES+1];
   
-  // Heaters - bed is assumed to be the first
-
-	int GetRawThermistorTemperature(size_t heater) const;
-	void SetHeaterPwm(size_t heater, uint8_t pwm);
+	// Heaters - bed is assumed to be the first
 
 	Pin tempSensePins[HEATERS];
 	Pin heatOnPins[HEATERS];
 	TemperatureSensor SpiTempSensors[MaxSpiTempSensors];
 	Pin spiTempSenseCsPins[MaxSpiTempSensors];
 	uint32_t configuredHeaters;										// bitmask of all heaters in use
-	float heatSampleTime;
-	float timeToHot;
+	uint32_t heatSampleTicks;
 	float temperatureLimit;
 
 	// Fans
@@ -883,7 +879,8 @@ private:
 #ifdef DUET_NG
 	AnalogChannelNumber vInMonitorAdcChannel;
 	volatile uint16_t currentVin, highestVin, lowestVin;
-	uint16_t upperVinLimit, lowerVinLimit;
+	uint32_t numUnderVoltageEvents;
+	volatile uint32_t numOverVoltageEvents;
 	bool driversPowered;
 #endif
 
@@ -1175,31 +1172,21 @@ inline void Platform::ExtrudeOff()
 
 // Drive the RepRap machine - Heat and temperature
 
-inline int Platform::GetRawThermistorTemperature(size_t heater) const
+inline uint32_t Platform::HeatSampleInterval() const
 {
-  return (heater < HEATERS)
-		  ? thermistorFilters[heater].GetSum()/(THERMISTOR_AVERAGE_READINGS >> AD_OVERSAMPLE_BITS)
-		  : 0;
+	return heatSampleTicks;
 }
 
-inline float Platform::HeatSampleTime() const
+inline float Platform::GetHeatSampleTime() const
 {
-  return heatSampleTime;
+	return (float)heatSampleTicks/1000.0;
 }
-
 inline void Platform::SetHeatSampleTime(float st)
 {
-	heatSampleTime = st;
-}
-
-inline float Platform::TimeToHot() const
-{
-	return timeToHot;
-}
-
-inline void Platform::SetTimeToHot(float t)
-{
-	timeToHot = t;
+	if (st > 0)
+	{
+		heatSampleTicks = (uint32_t)(st * 1000.0);
+	}
 }
 
 inline bool Platform::IsThermistorChannel(uint8_t heater) const
@@ -1245,14 +1232,14 @@ inline float Platform::GetElasticComp(size_t extruder) const
 }
 
 inline void Platform::SetEndStopConfiguration(size_t axis, EndStopType esType, bool logicLevel)
-//pre(axis < AXES)
+pre(axis < AXES)
 {
 	endStopType[axis] = esType;
 	endStopLogicLevel[axis] = logicLevel;
 }
 
 inline void Platform::GetEndStopConfiguration(size_t axis, EndStopType& esType, bool& logicLevel) const
-//pre(axis < AXES)
+pre(axis < AXES)
 {
 	esType = endStopType[axis];
 	logicLevel = endStopLogicLevel[axis];

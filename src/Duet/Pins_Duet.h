@@ -55,7 +55,7 @@ const float STEPPER_DAC_VOLTAGE_OFFSET = -0.025;						// Stepper motor current o
 const bool HEAT_ON = false;												// false for inverted heater (e.g. Duet v0.6), true for not (e.g. Duet v0.4)
 
 const Pin TEMP_SENSE_PINS[HEATERS] = { 5, 4, 0, 7, 8, 9, 11 };			// Analogue pin numbers
-const Pin HEAT_ON_PINS[HEATERS] = { 6, X5, X7, 7, 8, 9, -1 };			// Heater Channel 7 (pin X17) is shared with Fan1. Only define 1 or the other
+const Pin HEAT_ON_PINS[HEATERS] = { 6, X5, X7, 7, 8, 9, NoPin };		// Heater Channel 7 (pin X17) is shared with Fan1. Only define 1 or the other
 
 // Default thermistor parameters
 // Bed thermistor: http://uk.farnell.com/epcos/b57863s103f040/sensor-miniature-ntc-10k/dp/1299930?Ntt=129-9930
@@ -101,10 +101,15 @@ const Pin Z_PROBE_MOD_PIN07 = X12;										// Digital pin number to turn the IR
 const int Dac0DigitalPin = 66;											// Arduino Due pin number corresponding to DAC0 output pin
 
 // COOLING FANS
-
 const size_t NUM_FANS = 2;
 const Pin COOLING_FAN_PINS[NUM_FANS] = { X6, X17 };						// Pin D34 is PWM capable but not an Arduino PWM pin - use X6 instead
 const Pin COOLING_FAN_RPM_PIN = 23;										// Pin PA15
+
+// SD cards
+const size_t NumSdCards = 2;
+const Pin SdCardDetectPins[NumSdCards] = {13, NoPin};
+const Pin SdWriteProtectPins[NumSdCards] = {NoPin, NoPin};
+const Pin SdSpiCSPins[1] = {66};										// Note: this clashes with inkjet support
 
 #if SUPPORT_INKJET
 // Inkjet control pins
@@ -112,7 +117,7 @@ const Pin INKJET_SERIAL_OUT = 21;										// Serial bitpattern into the shift r
 const Pin INKJET_SHIFT_CLOCK = 20;										// Shift the register
 const Pin INKJET_STORAGE_CLOCK = 67;									// Put the pattern in the output register
 const Pin INKJET_OUTPUT_ENABLE = 66;									// Make the output visible
-const Pin INKJET_CLEAR = 36;											// Clear the register to 0
+const Pin INKJET_CLEAR = 65;											// Clear the register to 0
 
 #endif
 

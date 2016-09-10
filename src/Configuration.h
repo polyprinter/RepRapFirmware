@@ -26,11 +26,11 @@ Licence: GPL
 // Firmware name is now defined in the Pins file
 
 #ifndef VERSION
-# define VERSION "1.15-beta3"
+# define VERSION "1.15c"
 #endif
 
 #ifndef DATE
-# define DATE "2016-07-09"
+# define DATE "2016-09-05"
 #endif
 
 #define AUTHORS "reprappro, dc42, zpl, t3p3, dnewman"
@@ -76,10 +76,11 @@ const float HEAT_SAMPLE_TIME = 0.5;					// Seconds
 const float HEAT_PWM_AVERAGE_TIME = 5.0;			// Seconds
 
 const float TEMPERATURE_CLOSE_ENOUGH = 2.5;			// Celsius
+const float MaxStableTemperatureError = 10.0;		// How much error we tolerate when maintaining temperature before deciding that a heater fault has occurred
+static_assert(MaxStableTemperatureError > TEMPERATURE_CLOSE_ENOUGH, "MaxStableTemperatureError is too low");
 const float TEMPERATURE_LOW_SO_DONT_CARE = 40.0;	// Celsius
 const float HOT_ENOUGH_TO_EXTRUDE = 160.0;			// Celsius
 const float HOT_ENOUGH_TO_RETRACT = 90.0;			// Celsius
-const float TIME_TO_HOT = 150.0;					// Seconds
 
 const uint8_t MAX_BAD_TEMPERATURE_COUNT = 4;		// Number of bad temperature samples permitted before a heater fault is reported
 const float BAD_LOW_TEMPERATURE = -10.0;			// Celsius
@@ -87,22 +88,47 @@ const float DEFAULT_TEMPERATURE_LIMIT = 262.0;		// Celsius
 const float HOT_END_FAN_TEMPERATURE = 45.0;			// Temperature at which a thermostatic hot end fan comes on
 const float BAD_ERROR_TEMPERATURE = 2000.0;			// Must exceed any reasonable 5temperature limit including DEFAULT_TEMPERATURE_LIMIT
 
-const unsigned int FirstThermocoupleChannel = 100;	// Temperature sensor channels 100.. are thermocouples
+// Heating model default parameters. For the chamber heater, we use the same values as for the bed heater.
+// These parameters are about right for an E3Dv6 hot end with 30W heater.
+const float DefaultHotEndHeaterGain = 340.0;
+const float DefaultHotEndHeaterTimeConstant = 140.0;
+const float DefaultHotEndHeaterDeadTime = 5.5;
+
+// These parameters are about right for a typical PCB bed heater that maxes out at 110C
+const float DefaultBedHeaterGain = 90.0;
+const float DefaultBedHeaterTimeConstant = 700.0;
+const float DefaultBedHeaterDeadTime = 10.0;
+
+// Parameters used to detect heating errors
+const float MaxHeatingFaultTime = 5;				// How many seconds we allow a heating fault to persist
+const float MaxAmbientTemperature = 45.0;			// We expect heaters to cool to this temperature or lower when switched off
+const float NormalAmbientTemperature = 25.0;		// The ambient temperature we assume - allow for the printer heating its surroundings a little
+
+// Temperature sense channels
+const unsigned int FirstThermocoupleChannel = 100;	// Temperature sensor channels 100... are thermocouples
 const unsigned int FirstRtdChannel = 200;			// Temperature sensor channels 200... are RTDs
 
 // PWM frequencies
-
 const unsigned int SlowHeaterPwmFreq = 10;			// slow PWM frequency for bed and chamber heaters, compatible with DC/AC SSRs
 const unsigned int NormalHeaterPwmFreq = 250;		// normal PWM frequency used for hot ends
-const unsigned int DefaultFanPwmFreq = 500;			// increase to 25kHz using M106 command to meet Intel 4-wire PWM fan specification
+const unsigned int DefaultFanPwmFreq = 250;			// increase to 25kHz using M106 command to meet Intel 4-wire PWM fan specification
 
 // Default Z probe values
 
-const size_t MAX_PROBE_POINTS = 16;					// Maximum number of probe points
-const size_t MAX_DELTA_PROBE_POINTS = 16;			// Must be <= MaxProbePoints, may be smaller to reduce matrix storage requirements. Preferably a power of 2.
+// The maximum number of probe points is constrained by RAM usage:
+// - Each probe point uses 12 bytes of static RAM. So 16 points use 192 bytes
+// - The delta probe points use the same static ram, but when auto-calibrating we temporarily need another 44 bytes per probe point to hold the matrices etc.
+//   So 16 points need 704 bytes of stack space.
+#ifdef DUET_NG
+const size_t MAX_PROBE_POINTS = 64;					// Maximum number of probe points
+const size_t MAX_DELTA_PROBE_POINTS = 64;			// Must be <= MaxProbePoints, may be smaller to reduce matrix storage requirements. Preferably a power of 2.
+#else
+const size_t MAX_PROBE_POINTS = 32;					// Maximum number of probe points
+const size_t MAX_DELTA_PROBE_POINTS = 32;			// Must be <= MaxProbePoints, may be smaller to reduce matrix storage requirements. Preferably a power of 2.
+#endif
 
 const float DEFAULT_Z_DIVE = 5.0;					// Millimetres
-const float DEFAULT_PROBE_SPEED = 2.0;				// Default Z probing speed
+const float DEFAULT_PROBE_SPEED = 2.0;				// Default Z probing speed mm/sec
 const float DEFAULT_TRAVEL_SPEED = 100.0;			// Default speed for travel to probe points
 
 const float TRIANGLE_ZERO = -0.001;					// Millimetres

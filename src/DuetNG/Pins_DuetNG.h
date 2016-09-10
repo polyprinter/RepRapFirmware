@@ -34,10 +34,11 @@ const size_t NUM_SERIAL_CHANNELS = 2;			// The number of serial IO channels (USB
 #define SERIAL_MAIN_DEVICE SerialUSB
 #define SERIAL_AUX_DEVICE Serial
 
-// The numbers of entries in each array must correspond with the values of DRIVES, AXES, or HEATERS. Set values to -1 to flag unavailability.
+// The numbers of entries in each array must correspond with the values of DRIVES, AXES, or HEATERS. Set values to NoPin to flag unavailability.
 
 // DRIVES
 
+const Pin GlobalTmcEnablePin = 38;				// The pin that drives ENN of all TMC2660 drivers on production boards (on pre-production boards they are grounded)
 const Pin ENABLE_PINS[DRIVES] = { 78, 41, 42, 49, 57, 87, 88, 89, 90, 31 };
 const bool ENABLE_VALUES[DRIVES] = { false, false, false, false, false, false, false, false, false, false };	// What to send to enable a drive
 const Pin STEP_PINS[DRIVES] = { 70, 71, 72, 69, 68, 66, 65, 64, 67, 91 };
@@ -67,7 +68,7 @@ const Pin TEMP_SENSE_PINS[HEATERS] = { 45, 47, 44, 61, 62, 63, 59, 18 }; // Ther
 #ifdef PROTOTYPE_1
 const Pin HEAT_ON_PINS[HEATERS] = { 19, 20, 16, 15, 37, 40, 43, 38 };	// Heater pin numbers
 #else
-const Pin HEAT_ON_PINS[HEATERS] = { 19, 20, 16, 35, 37, 40, 43, 38 };	// Heater pin numbers (heater 7 pin TBC)
+const Pin HEAT_ON_PINS[HEATERS] = { 19, 20, 16, 35, 37, 40, 43, 15 };	// Heater pin numbers (heater 7 pin TBC)
 #endif
 
 // Default thermistor parameters
@@ -118,10 +119,15 @@ const float PowerFailVoltageRange = 11.0 * 3.3;							// we use an 11:1 voltage 
 const Pin Z_PROBE_MOD_PIN = 34;											// Digital pin number to turn the IR LED on (high) or off (low) on Duet v0.6 and v1.0 (PB21)
 
 // COOLING FANS
-
 const size_t NUM_FANS = 3;
 const Pin COOLING_FAN_PINS[NUM_FANS] = { 55, 58, 00 };
 const Pin COOLING_FAN_RPM_PIN = 32;
+
+// SD cards
+const size_t NumSdCards = 2;
+const Pin SdCardDetectPins[NumSdCards] = {53, NoPin};
+const Pin SdWriteProtectPins[NumSdCards] = {NoPin, NoPin};
+const Pin SdSpiCSPins[1] = {56};
 
 #if SUPPORT_INKJET
 // Inkjet control pins

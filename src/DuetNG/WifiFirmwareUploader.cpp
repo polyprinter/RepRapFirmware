@@ -6,7 +6,6 @@
  */
 
 #include "WifiFirmwareUploader.h"
-#include "Core.h"
 #include "RepRapFirmware.h"
 
 // ESP8266 command codes
@@ -514,7 +513,8 @@ WifiFirmwareUploader::EspUploadResult WifiFirmwareUploader::flashWriteBlock(uint
 	const uint16_t hdrOfst = 0;
 	const uint16_t dataOfst = 16;
 	const uint16_t blkBufSize = dataOfst + blkSize;
-	uint8_t blkBuf[blkBufSize];
+	uint32_t blkBuf32[blkBufSize/4];
+	uint8_t * const blkBuf = reinterpret_cast<uint8_t*>(blkBuf32);
 
 	// Prepare the header for the block
 	putData(blkSize, 4, blkBuf, hdrOfst + 0);
@@ -523,8 +523,8 @@ WifiFirmwareUploader::EspUploadResult WifiFirmwareUploader::flashWriteBlock(uint
 	putData(0, 4, blkBuf, hdrOfst + 12);
 
 	// Get the data for the block
-	size_t cnt = uploadFile->Read((char *)blkBuf + dataOfst, blkSize);
-	if (cnt != EspFlashBlockSize)
+	size_t cnt = uploadFile->Read(reinterpret_cast<char *>(blkBuf + dataOfst), blkSize);
+	if (cnt != blkSize)
 	{
 		if (uploadFile->Position() == fileSize)
 		{

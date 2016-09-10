@@ -725,6 +725,9 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 		response->catf(",\"coldExtrudeTemp\":%1.f", heat->ColdExtrude() ? 0 : HOT_ENOUGH_TO_EXTRUDE);
 		response->catf(",\"coldRetractTemp\":%1.f", heat->ColdExtrude() ? 0 : HOT_ENOUGH_TO_RETRACT);
 
+		// Maximum hotend temperature
+		response->catf(",\"tempLimit\":%1.f", platform->GetTemperatureLimit());
+
 		// Endstops
 		uint16_t endstops = 0;
 		for(size_t drive = 0; drive < DRIVES; drive++)
@@ -737,11 +740,8 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 		}
 		response->catf(",\"endstops\":%d", endstops);
 
-		// Delta configuration
-		response->catf(",\"geometry\":\"%s\"", move->GetGeometryString());
-
-		// Machine name
-		response->cat(",\"name\":");
+		// Delta configuration, number of disk volumes, and machine name
+		response->catf(",\"geometry\":\"%s\",\"volumes\":%u,\"name\":", move->GetGeometryString(), NumSdCards);
 		response->EncodeString(myName, ARRAY_SIZE(myName), false);
 
 		/* Probe */
@@ -932,6 +932,9 @@ OutputBuffer *RepRap::GetConfigResponse()
 	response->catf("],\"firmwareElectronics\":\"%s\"", platform->GetElectronicsString());
 	response->catf(",\"firmwareName\":\"%s\"", NAME);
 	response->catf(",\"firmwareVersion\":\"%s\"", VERSION);
+#ifdef DUET_NG
+	response->catf(",\"dwsVersion\":\"%s\"", network->GetWiFiServerVersion());
+#endif
 	response->catf(",\"firmwareDate\":\"%s\"", DATE);
 
 	// Motor idle parameters
@@ -1044,7 +1047,7 @@ OutputBuffer *RepRap::GetLegacyStatusResponse(uint8_t type, int seq)
 	}
 	response->cat((ch == '[') ? "[]" : "]");
 
-	// Send the heater statuses (0=off, 1=standby, 2=active)
+	// Send the heater statuses (0=off, 1=standby, 2=active, 3 = fault)
 	response->cat(",\"hstat\":");
 	if (bedHeater != -1)
 	{
@@ -1163,7 +1166,7 @@ OutputBuffer *RepRap::GetLegacyStatusResponse(uint8_t type, int seq)
 	else if (type == 3)
 	{
 		// Add the static fields. For now this is just geometry and the machine name, but other fields could be added e.g. axis lengths.
-		response->catf(",\"geometry\":\"%s\",\"myName\":", move->GetGeometryString());
+		response->catf(",\"geometry\":\"%s\",\"volumes\":%u,\"myName\":", move->GetGeometryString(), NumSdCards);
 		response->EncodeString(myName, ARRAY_SIZE(myName), false);
 	}
 
@@ -1213,46 +1216,104 @@ OutputBuffer *RepRap::GetFilesResponse(const char *dir, bool flagsDirs)
 	response->copy("{\"dir\":");
 	response->EncodeString(dir, strlen(dir), false);
 	response->cat(",\"files\":[");
+	unsigned int err;
+
+	if (!platform->GetMassStorage()->CheckDriveMounted(dir))
+	{
+		err = 1;
+	}
+	else
+	{
+		err = 0;
+		FileInfo fileInfo;
+		bool firstFile = true;
+		bool gotFile = platform->GetMassStorage()->FindFirst(dir, fileInfo);	// TODO error handling here
+
+		size_t bytesLeft = OutputBuffer::GetBytesLeft(response);	// don't write more bytes than we can
+		char filename[FILENAME_LENGTH];
+		filename[0] = '*';
+		const char *fname;
+
+		while (gotFile)
+		{
+			if (fileInfo.fileName[0] != '.')						// ignore Mac resource files and Linux hidden files
+			{
+				// Get the long filename if possible
+				if (flagsDirs && fileInfo.isDirectory)
+				{
+					strncpy(filename + sizeof(char), fileInfo.fileName, FILENAME_LENGTH - 1);
+					filename[FILENAME_LENGTH - 1] = 0;
+					fname = filename;
+				}
+				else
+				{
+					fname = fileInfo.fileName;
+				}
+
+				// Make sure we can end this response properly
+				if (bytesLeft < strlen(fname) * 2 + 4)
+				{
+					// No more space available - stop here
+					break;
+				}
+
+				// Write separator and filename
+				if (!firstFile)
+				{
+					bytesLeft -= response->cat(',');
+				}
+				bytesLeft -= response->EncodeString(fname, FILENAME_LENGTH, false);
+
+				firstFile = false;
+			}
+			gotFile = platform->GetMassStorage()->FindNext(fileInfo);	// TODO error handling here
+		}
+	}
+	response->catf("],\"err\":%u}", err);
+	return response;
+}
+
+// Get a JSON-style filelist including file types and sizes
+OutputBuffer *RepRap::GetFilelistResponse(const char *dir)
+{
+	// Need something to write to...
+	OutputBuffer *response;
+	if (!OutputBuffer::Allocate(response))
+	{
+		return nullptr;
+	}
+
+	response->copy("{\"dir\":");
+	response->EncodeString(dir, strlen(dir), false);
+	response->cat(",\"files\":[");
 
 	FileInfo fileInfo;
 	bool firstFile = true;
 	bool gotFile = platform->GetMassStorage()->FindFirst(dir, fileInfo);
 	size_t bytesLeft = OutputBuffer::GetBytesLeft(response);	// don't write more bytes than we can
-	char filename[FILENAME_LENGTH];
-	filename[0] = '*';
-	const char *fname;
 
 	while (gotFile)
 	{
 		if (fileInfo.fileName[0] != '.')			// ignore Mac resource files and Linux hidden files
 		{
-			// Get the long filename if possible
-			if (flagsDirs && fileInfo.isDirectory)
-			{
-				strncpy(filename + sizeof(char), fileInfo.fileName, FILENAME_LENGTH - 1);
-				filename[FILENAME_LENGTH - 1] = 0;
-				fname = filename;
-			}
-			else
-			{
-				fname = fileInfo.fileName;
-			}
-
 			// Make sure we can end this response properly
-			if (bytesLeft < strlen(fname) * 2 + 4)
+			if (bytesLeft < strlen(fileInfo.fileName) + 32)
 			{
 				// No more space available - stop here
 				break;
 			}
 
-			// Write separator and filename
+			// Write delimiter
 			if (!firstFile)
 			{
 				bytesLeft -= response->cat(',');
 			}
-			bytesLeft -= response->EncodeString(fname, FILENAME_LENGTH, false);
-
 			firstFile = false;
+
+			// Write another file entry
+			bytesLeft -= response->catf("{\"type\":\"%c\",\"name\":", fileInfo.isDirectory ? 'd' : 'f');
+			bytesLeft -= response->EncodeString(fileInfo.fileName, FILENAME_LENGTH, false);
+			bytesLeft -= response->catf(",\"size\":%u}", fileInfo.size);
 		}
 		gotFile = platform->GetMassStorage()->FindNext(fileInfo);
 	}
