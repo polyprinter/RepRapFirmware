@@ -21,6 +21,9 @@ Licence: GPL
 #ifndef REPRAP_H
 #define REPRAP_H
 
+#include "RepRapFirmware.h"
+#include "MessageType.h"
+
 enum class ResponseSource
 {
 	HTTP,
@@ -38,7 +41,7 @@ public:
     void Spin();
     void Exit();
     void Diagnostics(MessageType mtype);
-    void Timing();
+    void Timing(MessageType mtype);
 
     bool Debug(Module module) const;
     void SetDebug(Module m, bool enable);
@@ -58,11 +61,12 @@ public:
     void StandbyTool(int toolNumber);
     Tool* GetCurrentTool() const;
     Tool* GetTool(int toolNumber) const;
-    Tool* GetOnlyTool() const;
-    //Tool* GetToolByDrive(int driveNumber);
+    Tool* GetCurrentOrDefaultTool() const;
+	uint32_t GetCurrentXAxes() const;									// Get the current axes used as X axes
     void SetToolVariables(int toolNumber, const float* standbyTemperatures, const float* activeTemperatures);
 	bool ToolWarningsAllowed();
 	bool IsHeaterAssignedToTool(int8_t heater) const;
+	unsigned int GetNumberOfContiguousTools() const;
 
     unsigned int GetProhibitedExtruderMovements(unsigned int extrusions, unsigned int retractions);
     void PrintTool(int toolNumber, StringRef& reply) const;
@@ -95,6 +99,8 @@ public:
 	void SetMessage(const char *msg);
 
     static void CopyParameterText(const char* src, char *dst, size_t length);
+    static uint32_t DoDivide(uint32_t a, uint32_t b);		// helper function for diagnostic tests
+    static uint32_t ReadDword(const char* p);				// helper function for diagnostic tests
 
 private:
 

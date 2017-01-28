@@ -6,40 +6,13 @@
  */
 
 #include "RepRapFirmware.h"
+#include "TMC2660.h"
 
 #if !defined(PROTOTYPE_1)
 
 static size_t numTmc2660Drivers;
 
 static bool driversPowered = false;
-
-// Connections between Duet 0.6 and TMC2660-EVAL board:
-
-// Driver signal name  	Eval board pin	Our signal name   	Duet 0.6 expansion connector pin #
-// SDI                 	29				MOSI              	11 (TXD1)
-// SDO                  28 				MISO               	12 (RXD1)
-// SCK                  27 				SCLK               	33 (AD7/PA16)
-// /CS                  24				/CS                	17 (PC5_PWMH1/E1_EN)
-// GND					2,3,43,44		GND					2  (GND)
-// INT_STEP				17				E1_STEP				15 (PC9_PWMH3)
-// INT_DIR				18				E1_DIR				16 (PC3_PWMH0)
-// ENN					8				connect to ground	2  (GND)
-// CLK					23				connect to ground	2  (GND
-// 5V_USB				5				+3.3V				3  (+3.3V)
-
-// Connections between DuetNG 0.6 and TMC2660-EVAL board (now using USART0):
-
-// Driver signal name  	Eval board pin	Our signal name   	DuetNG 0.6 expansion connector pin #
-// SDI                 	29				SPI1_MOSI           13 (SPI0_MOSI) was 29
-// SDO                  28 				SPI1_MISO           14 (SPI0_MISO) was 30
-// SCK                  27 				SPI1_SCLK           12 (SPI0_SCLK) was 28
-// /CS                  24				/CS                	24 (E2_EN)
-// GND					2,3,43,44		GND					2  (GND)
-// INT_STEP				19				E2_STEP				19 (E2_STEP)
-// INT_DIR				20				E2_DIR				20 (E2_DIR)
-// ENN					8				connect to ground	2  (GND)
-// CLK					23				connect to ground	2  (GND
-// 5V_USB				5				+3.3V				3  (+3.3V)
 
 // Pin assignments for the second prototype, using USART1 SPI
 const Pin DriversClockPin = 15;								// PB15/TIOA1
@@ -53,7 +26,8 @@ const Pin DriversSclkPin = 23;								// PA23
 #define TMC_CLOCK_CHAN		1
 #define TMC_CLOCK_ID		ID_TC1							// this is channel 1 on TC0
 
-const uint32_t DriversSpiClockFrequency = 1000000;			// 1MHz SPI clock for now
+const uint32_t DriversSpiClockFrequency = 4000000;			// 4MHz SPI clock
+const int StallGuardThreshold = 1;							// Range is -64..63. Zero seems to be too sensitive. Higher values reduce sensitivity of stall detection.
 
 // TMC2660 registers
 const uint32_t TMC_REG_DRVCTRL = 0;
@@ -128,15 +102,6 @@ const uint32_t TMC_SMARTEN_SEDN_1 = 3 << 13;
 const uint32_t TMC_SMARTEN_SEIMIN_HALF = 0 << 15;
 const uint32_t TMC_SMARTEN_SEIMIN_QTR = 1 << 15;
 
-// Read response. The microstep counter can also be read, but we don't include that here.
-const uint32_t TMC_RR_SG = 1 << 0;		// stall detected
-const uint32_t TMC_RR_OT = 1 << 1;		// over temperature shutdown
-const uint32_t TMC_RR_OTPW = 1 << 2;	// over temperature warning
-const uint32_t TMC_RR_S2G = 3 << 3;		// short to ground counter (2 bits)
-const uint32_t TMC_RR_OLA = 1 << 5;		// open load A
-const uint32_t TMC_RR_OLB = 1 << 6;		// open load B
-const uint32_t TMC_RR_STST = 1 << 7;	// standstill detected
-
 const unsigned int NumWriteRegisters = 5;
 
 // Chopper control register defaults
@@ -153,7 +118,7 @@ const uint32_t defaultChopConfToff = 4;	// default value for TOFF when drive is 
 // StallGuard configuration register
 const uint32_t defaultSgscConfReg =
 	  TMC_REG_SGCSCONF
-	| 0;								// minimum current until user has set it
+	| TMC_SGCSCONF_SGT(StallGuardThreshold);
 
 // Driver configuration register
 const uint32_t defaultDrvConfReg =

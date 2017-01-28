@@ -1,4 +1,6 @@
-#include "RepRapFirmware.h"
+#include "MassStorage.h"
+#include "Platform.h"
+#include "RepRap.h"
 #include "sd_mmc.h"
 
 // Static helper functions - not declared as class members to avoid having to include sd_mmc.h everywhere
@@ -152,20 +154,14 @@ bool MassStorage::FindFirst(const char *directory, FileInfo &file_info)
 			if (StringEquals(entry.fname, ".") || StringEquals(entry.fname, "..")) continue;
 
 			file_info.isDirectory = (entry.fattrib & AM_DIR);
-			file_info.size = entry.fsize;
-			uint16_t day = entry.fdate & 0x1F;
-			if (day == 0)
-			{
-				// This can happen if a transfer hasn't been processed completely.
-				day = 1;
-			}
-			file_info.day = day;
-			file_info.month = (entry.fdate & 0x01E0) >> 5;
-			file_info.year = (entry.fdate >> 9) + 1980;
+
 			if (file_info.fileName[0] == 0)
 			{
 				strncpy(file_info.fileName, entry.fname, ARRAY_SIZE(file_info.fileName));
 			}
+
+			file_info.size = entry.fsize;
+			file_info.lastModified = ConvertTimeStamp(entry.fdate, entry.ftime);
 
 			return true;
 		}
@@ -190,20 +186,13 @@ bool MassStorage::FindNext(FileInfo &file_info)
 
 	file_info.isDirectory = (entry.fattrib & AM_DIR);
 	file_info.size = entry.fsize;
-	uint16_t day = entry.fdate & 0x1F;
-	if (day == 0)
-	{
-		// This can happen if a transfer hasn't been processed completely.
-		day = 1;
-	}
-	file_info.day = day;
-	file_info.month = (entry.fdate & 0x01E0) >> 5;
-	file_info.year = (entry.fdate >> 9) + 1980;
+
 	if (file_info.fileName[0] == 0)
 	{
 		strncpy(file_info.fileName, entry.fname, ARRAY_SIZE(file_info.fileName));
 	}
 
+	file_info.lastModified = ConvertTimeStamp(entry.fdate, entry.ftime);
 	return true;
 }
 
@@ -255,6 +244,13 @@ bool MassStorage::MakeDirectory(const char *directory)
 // Rename a file or directory
 bool MassStorage::Rename(const char *oldFilename, const char *newFilename)
 {
+	if (newFilename[0] >= '0' && newFilename[0] <= '9' && newFilename[1] == ':')
+	{
+		// Workaround for DWC 1.13 which send a volume specification at the start of the new path.
+		// f_rename can't handle this, so skip past the volume specification.
+		// We are assuming that the user isn't really trying to rename across volumes. This is a safe assumption when the client is DWC.
+		newFilename += 2;
+	}
 	if (f_rename(oldFilename, newFilename) != FR_OK)
 	{
 		platform->MessageF(GENERIC_MESSAGE, "Can't rename file or directory %s to %s\n", oldFilename, newFilename);
@@ -290,6 +286,38 @@ bool MassStorage::DirectoryExists(const char *path) const
 bool MassStorage::DirectoryExists(const char* directory, const char* subDirectory)
 {
 	return DirectoryExists(CombineName(directory, subDirectory));
+}
+
+// Return the last modified time of a file, or zero if failure
+time_t MassStorage::GetLastModifiedTime(const char* directory, const char *fileName) const
+{
+	const char *location = (directory != nullptr)
+							? platform->GetMassStorage()->CombineName(directory, fileName)
+							: fileName;
+	FILINFO fil;
+	fil.lfname = nullptr;
+	if (f_stat(location, &fil) == FR_OK)
+	{
+		return ConvertTimeStamp(fil.fdate, fil.ftime);
+	}
+	return 0;
+}
+
+bool MassStorage::SetLastModifiedTime(const char* directory, const char *fileName, time_t time)
+{
+	const char *location = (directory != nullptr)
+							? platform->GetMassStorage()->CombineName(directory, fileName)
+							: fileName;
+	const struct tm * const timeInfo = gmtime(&time);
+	FILINFO fno;
+    fno.fdate = (WORD)(((timeInfo->tm_year - 80) * 512U) | (timeInfo->tm_mon + 1) * 32U | timeInfo->tm_mday);
+    fno.ftime = (WORD)(timeInfo->tm_hour * 2048U | timeInfo->tm_min * 32U | timeInfo->tm_sec / 2U);
+    const bool ok = (f_utime(location, &fno) == FR_OK);
+    if (!ok)
+	{
+		reprap.GetPlatform()->MessageF(HTTP_MESSAGE, "SetLastModifiedTime didn't work for file '%s'\n", location);
+	}
+    return ok;
 }
 
 // Mount the specified SD card, returning true if done, false if needs to be called again.
@@ -403,6 +431,21 @@ bool MassStorage::CheckDriveMounted(const char* path)
 	}
 
 	return card < NumSdCards && isMounted[card];
+}
+
+/*static*/ time_t MassStorage::ConvertTimeStamp(uint16_t fdate, uint16_t ftime)
+{
+	struct tm timeInfo;
+	memset(&timeInfo, 0, sizeof(timeInfo));
+	timeInfo.tm_year = (fdate >> 9) + 80;
+	const uint16_t month = (fdate >> 5) & 0x0F;
+	timeInfo.tm_mon = (month == 0) ? month : month - 1;		// month is 1..12 in FAT but 0..11 in struct tm
+	timeInfo.tm_mday = max<int>(fdate & 0x1F, 1);
+	timeInfo.tm_hour = (ftime >> 11) & 0x1F;
+	timeInfo.tm_min = (ftime >> 5) & 0x3F;
+	timeInfo.tm_sec = ftime & 0x1F;
+	timeInfo.tm_isdst = 0;
+	return mktime(&timeInfo);
 }
 
 // End

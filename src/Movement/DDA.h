@@ -8,7 +8,15 @@
 #ifndef DDA_H_
 #define DDA_H_
 
+#include "RepRapFirmware.h"
 #include "DriveMovement.h"
+#include "GCodes/GCodes.h"			// for class RawMove
+
+#ifdef DUET_NG
+#define DDA_LOG_PROBE_CHANGES	1
+#else
+#define DDA_LOG_PROBE_CHANGES	0		// save memory on the wired Duet
+#endif
 
 /**
  * This defines a single linear movement of the print head
@@ -41,7 +49,7 @@ public:
 	void Prepare();													// Calculate all the values and freeze this DDA
 	float CalcTime() const;											// Calculate the time needed for this move (used for simulation)
 	bool HasStepError() const;
-	bool CanPause() const { return canPause; }
+	bool CanPauseAfter() const { return canPauseAfter; }
 	bool IsPrintingMove() const { return isPrintingMove; }			// Return true if this involves both XY movement and extrusion
 
 	DDAState GetState() const { return state; }
@@ -53,7 +61,7 @@ public:
 	void SetDriveCoordinate(int32_t a, size_t drive);				// Force an end point
 	void SetFeedRate(float rate) { requestedSpeed = rate; }
 	float GetEndCoordinate(size_t drive, bool disableDeltaMapping);
-	bool FetchEndPosition(volatile int32_t ep[DRIVES], volatile float endCoords[AXES]);
+	bool FetchEndPosition(volatile int32_t ep[DRIVES], volatile float endCoords[DRIVES]);
     void SetPositions(const float move[], size_t numDrives);		// Force the endpoints to be these
     FilePosition GetFilePosition() const { return filePos; }
     float GetRequestedSpeed() const { return requestedSpeed; }
@@ -80,6 +88,12 @@ public:
 
 	static void PrintMoves();										// print saved moves for debugging
 
+#if DDA_LOG_PROBE_CHANGES
+	static const size_t MaxLoggedProbePositions = 40;
+	static size_t numLoggedProbePositions;
+	static int32_t loggedProbePositions[MIN_AXES * MaxLoggedProbePositions];
+#endif
+
 private:
 	void RecalculateMove();
 	void CalcNewSpeeds();
@@ -90,6 +104,7 @@ private:
 	DriveMovement *RemoveDM(size_t drive);
 	bool IsDecelerationMove() const;								// return true if this move is or have been might have been intended to be a deceleration-only move
 	void DebugPrintVector(const char *name, const float *vec, size_t len) const;
+	void CheckEndstops(Platform *platform);
 
 	static void DoLookahead(DDA *laDDA);							// called by AdjustEndSpeed to do the real work
     static float Normalise(float v[], size_t dim1, size_t dim2);  	// Normalise a vector of dim1 dimensions to unit length in the first dim1 dimensions
@@ -105,7 +120,7 @@ private:
 	volatile DDAState state;				// what state this DDA is in
 	uint8_t endCoordinatesValid : 1;		// True if endCoordinates can be relied on
 	uint8_t isDeltaMovement : 1;			// True if this is a delta printer movement
-	uint8_t canPause : 1;					// True if we can pause at the end of this move
+	uint8_t canPauseAfter : 1;				// True if we can pause at the end of this move
 	uint8_t goingSlow : 1;					// True if we have reduced speed during homing
 	uint8_t isPrintingMove : 1;				// True if this move includes XY movement and extrusion
 	uint8_t usePressureAdvance : 1;			// True if pressure advance should be applied to any forward extrusion
@@ -116,7 +131,7 @@ private:
     FilePosition filePos;					// The position in the SD card file after this move was read, or zero if not read fro SD card
 
 	int32_t endPoint[DRIVES];  				// Machine coordinates of the endpoint
-	float endCoordinates[AXES];				// The Cartesian coordinates at the end of the move
+	float endCoordinates[DRIVES];			// The Cartesian coordinates at the end of the move plus extrusion amounts
 	float directionVector[DRIVES];			// The normalised direction vector - first 3 are XYZ Cartesian coordinates even on a delta
     float totalDistance;					// How long is the move in hypercuboid space
 	float acceleration;						// The acceleration to use
@@ -140,6 +155,12 @@ private:
 	uint32_t clocksNeeded;					// in clocks
 	uint32_t moveStartTime;					// clock count at which the move was started
 
+#if DDA_LOG_PROBE_CHANGES
+	static bool probeTriggered;
+
+	void LogProbePosition();
+#endif
+
     DriveMovement* firstDM;					// the contained DM that needs the first step
 
 	DriveMovement ddm[DRIVES];				// These describe the state of each drive movement
@@ -158,20 +179,6 @@ inline void DDA::SetDriveCoordinate(int32_t a, size_t drive)
 {
 	endPoint[drive] = a;
 	endCoordinatesValid = false;
-}
-
-// Insert the specified drive into the step list, in step time order.
-// We insert the drive before any existing entries with the same step time for best performance. Now that we generate step pulses
-// for multiple motors simultaneously, there is no need to preserve round-robin order.
-inline void DDA::InsertDM(DriveMovement *dm)
-{
-	DriveMovement **dmp = &firstDM;
-	while (*dmp != nullptr && (*dmp)->nextStepTime < dm->nextStepTime)
-	{
-		dmp = &((*dmp)->nextDM);
-	}
-	dm->nextDM = *dmp;
-	*dmp = dm;
 }
 
 #endif /* DDA_H_ */

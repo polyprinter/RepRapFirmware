@@ -1,4 +1,27 @@
-#include "RepRapFirmware.h"
+#include "RepRap.h"
+
+#include "Network.h"
+#include "Movement/Move.h"
+#include "GCodes/GCodes.h"
+#include "Heating/Heat.h"
+#include "Platform.h"
+#include "PrintMonitor.h"
+#include "Tool.h"
+#include "Webserver.h"
+#include "Version.h"
+
+#ifndef __RADDS__
+# include "sam/drivers/hsmci/hsmci.h"
+#endif
+
+// Callback function from the hsmci driver, called while it is waiting for an SD card operation to complete
+extern "C" void hsmciIdle()
+{
+	if (reprap.GetSpinningModule() != moduleNetwork)	// I don't think this should ever be false because the Network module doesn't do file access, but just in case...
+	{
+		reprap.GetNetwork()->Spin(false);
+	}
+}
 
 // RepRap member functions.
 
@@ -43,7 +66,7 @@ void RepRap::Init()
 	Platform::EnableWatchdog();		// do this after all init calls are made
 	active = true;					// must do this before we start the network, else the watchdog may time out
 
-	platform->MessageF(HOST_MESSAGE, "%s Version %s dated %s\n", NAME, VERSION, DATE);
+	platform->MessageF(HOST_MESSAGE, "%s Version %s dated %s\n", FIRMWARE_NAME, VERSION, DATE);
 
 	// Run the configuration file
 	const char *configFile = platform->GetConfigFile();
@@ -58,11 +81,11 @@ void RepRap::Init()
 		configFile = platform->GetDefaultFile();
 	}
 
-	if (gCodes->DoFileMacro(configFile, false))
+	if (gCodes->RunConfigFile(configFile))
 	{
-		while (gCodes->DoingFileMacro())
+		while (gCodes->IsDaemonBusy())
 		{
-			// GCodes::Spin will read the macro and ensure DoFileMacro returns true when it's done
+			// GCodes::Spin will read the macro and ensure DoingFileMacro returns false when it's done
 			Spin();
 		}
 		platform->Message(HOST_MESSAGE, "Done!\n");
@@ -93,7 +116,10 @@ void RepRap::Init()
 	}
 #endif
 
-	platform->MessageF(HOST_MESSAGE, "%s is up and running.\n", NAME);
+#ifndef __RADDS__
+	hsmci_set_idle_func(hsmciIdle);
+#endif
+	platform->MessageF(HOST_MESSAGE, "%s is up and running.\n", FIRMWARE_NAME);
 	fastLoop = FLT_MAX;
 	slowLoop = 0.0;
 	lastTime = platform->Time();
@@ -122,7 +148,7 @@ void RepRap::Spin()
 
 	spinningModule = moduleNetwork;
 	ticksInSpinState = 0;
-	network->Spin();
+	network->Spin(true);
 
 	spinningModule = moduleWebserver;
 	ticksInSpinState = 0;
@@ -165,8 +191,8 @@ void RepRap::Spin()
 
 	// Keep track of the loop time
 
-	float t = platform->Time();
-	float dt = t - lastTime;
+	const float t = platform->Time();
+	const float dt = t - lastTime;
 	if(dt < fastLoop)
 	{
 		fastLoop = dt;
@@ -178,16 +204,16 @@ void RepRap::Spin()
 	lastTime = t;
 }
 
-void RepRap::Timing()
+void RepRap::Timing(MessageType mtype)
 {
-	platform->MessageF(GENERIC_MESSAGE, "Slowest main loop (seconds): %f; fastest: %f\n", slowLoop, fastLoop);
+	platform->MessageF(mtype, "Slowest main loop (seconds): %f; fastest: %f\n", slowLoop, fastLoop);
 	fastLoop = FLT_MAX;
 	slowLoop = 0.0;
 }
 
 void RepRap::Diagnostics(MessageType mtype)
 {
-	platform->Message(mtype, "Diagnostics\n");
+	platform->Message(mtype, "=== Diagnostics ===\n");
 	OutputBuffer::Diagnostics(mtype);
 	platform->Diagnostics(mtype);				// this includes a call to our Timing() function
 	move->Diagnostics(mtype);
@@ -278,6 +304,7 @@ void RepRap::PrintDebug()
 
 // Add a tool.
 // Prior to calling this, delete any existing tool with the same number
+// The tool list is maintained in tool number order.
 void RepRap::AddTool(Tool* tool)
 {
 	Tool** t = &toolList;
@@ -400,9 +427,12 @@ Tool* RepRap::GetTool(int toolNumber) const
 	return nullptr; // Not an error
 }
 
-Tool* RepRap::GetOnlyTool() const
+// Get the current tool, or failing that the default tool. May return nullptr if we can't
+// Called when a M104 or M109 command doesn't specify a tool number.
+Tool* RepRap::GetCurrentOrDefaultTool() const
 {
-	return (toolList != nullptr && toolList->Next() == nullptr) ? toolList : nullptr;
+	// If a tool is already selected, use that one, else use the lowest-numbered tool which is the one at the start of the tool list
+	return (currentTool != nullptr) ? currentTool : toolList;
 }
 
 void RepRap::SetToolVariables(int toolNumber, const float* standbyTemperatures, const float* activeTemperatures)
@@ -446,6 +476,16 @@ bool RepRap::IsHeaterAssignedToTool(int8_t heater) const
 	}
 
 	return false;
+}
+
+unsigned int RepRap::GetNumberOfContiguousTools() const
+{
+	unsigned int numTools = 0;
+	while (GetTool(numTools) != nullptr)
+	{
+		++numTools;
+	}
+	return numTools;
 }
 
 void RepRap::Tick()
@@ -495,6 +535,7 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 	response->printf("{\"status\":\"%c\",\"coords\":{", ch);
 
 	// Coordinates
+	const size_t numAxes = reprap.GetGCodes()->GetNumAxes();
 	{
 		float liveCoordinates[DRIVES + 1];
 #if SUPPORT_ROLAND
@@ -505,30 +546,33 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 		else
 #endif
 		{
-			move->LiveCoordinates(liveCoordinates);
+			move->LiveCoordinates(liveCoordinates, GetCurrentXAxes());
 		}
 
 		if (currentTool != nullptr)
 		{
 			const float *offset = currentTool->GetOffset();
-			for (size_t i = 0; i < AXES; ++i)
+			for (size_t i = 0; i < numAxes; ++i)
 			{
 				liveCoordinates[i] += offset[i];
 			}
 		}
 
 		// Homed axes
-		response->catf("\"axesHomed\":[%d,%d,%d]",
-				(gCodes->GetAxisIsHomed(0)) ? 1 : 0,
-				(gCodes->GetAxisIsHomed(1)) ? 1 : 0,
-				(gCodes->GetAxisIsHomed(2)) ? 1 : 0);
+		response->cat("\"axesHomed\":");
+		ch = '[';
+		for (size_t axis = 0; axis < numAxes; ++axis)
+		{
+			response->catf("%c%d", ch, (gCodes->GetAxisIsHomed(axis)) ? 1 : 0);
+			ch = ',';
+		}
 
 		// Actual and theoretical extruder positions since power up, last G92 or last M23
-		response->catf(",\"extr\":");		// announce actual extruder positions
+		response->catf("],\"extr\":");		// announce actual extruder positions
 		ch = '[';
 		for (size_t extruder = 0; extruder < GetExtrudersInUse(); extruder++)
 		{
-			response->catf("%c%.1f", ch, liveCoordinates[AXES + extruder]);
+			response->catf("%c%.1f", ch, liveCoordinates[numAxes + extruder]);
 			ch = ',';
 		}
 		if (ch == '[')
@@ -547,7 +591,7 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 		{
 			// On Cartesian printers, the live coordinates are (usually) valid
 			ch = '[';
-			for (size_t axis = 0; axis < AXES; axis++)
+			for (size_t axis = 0; axis < numAxes; axis++)
 			{
 				response->catf("%c%.2f", ch, liveCoordinates[axis]);
 				ch = ',';
@@ -556,7 +600,7 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 	}
 
 	// Current tool number
-	int toolNumber = (currentTool == nullptr) ? -1 : currentTool->Number();
+	const int toolNumber = (currentTool == nullptr) ? -1 : currentTool->Number();
 	response->catf("]},\"currentTool\":%d", toolNumber);
 
 	// Output - only reported once
@@ -628,7 +672,7 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 		response->cat(",\"sensors\":{");
 
 		// Probe
-		int v0 = platform->ZProbe();
+		const int v0 = platform->GetZProbeReading();
 		int v1, v2;
 		switch (platform->GetZProbeSecondaryValues(v1, v2))
 		{
@@ -675,7 +719,7 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 
 			// Current temperatures
 			ch = '[';
-			for (size_t heater = E0_HEATER; heater < GetToolHeatersInUse(); heater++)
+			for (size_t heater = DefaultE0Heater; heater < GetToolHeatersInUse(); heater++)
 			{
 				response->catf("%c%.1f", ch, heat->GetTemperature(heater));
 				ch = ',';
@@ -685,7 +729,7 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 			// Active temperatures
 			response->catf(",\"active\":");
 			ch = '[';
-			for (size_t heater = E0_HEATER; heater < GetToolHeatersInUse(); heater++)
+			for (size_t heater = DefaultE0Heater; heater < GetToolHeatersInUse(); heater++)
 			{
 				response->catf("%c%.1f", ch, heat->GetActiveTemperature(heater));
 				ch = ',';
@@ -695,7 +739,7 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 			// Standby temperatures
 			response->catf(",\"standby\":");
 			ch = '[';
-			for (size_t heater = E0_HEATER; heater < GetToolHeatersInUse(); heater++)
+			for (size_t heater = DefaultE0Heater; heater < GetToolHeatersInUse(); heater++)
 			{
 				response->catf("%c%.1f", ch, heat->GetStandbyTemperature(heater));
 				ch = ',';
@@ -705,7 +749,7 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 			// Heater statuses (0=off, 1=standby, 2=active, 3=fault)
 			response->cat(",\"state\":");
 			ch = '[';
-			for (size_t heater = E0_HEATER; heater < GetToolHeatersInUse(); heater++)
+			for (size_t heater = DefaultE0Heater; heater < GetToolHeatersInUse(); heater++)
 			{
 				response->catf("%c%d", ch, static_cast<int>(heat->GetStatus(heater)));
 				ch = ',';
@@ -725,8 +769,8 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 		response->catf(",\"coldExtrudeTemp\":%1.f", heat->ColdExtrude() ? 0 : HOT_ENOUGH_TO_EXTRUDE);
 		response->catf(",\"coldRetractTemp\":%1.f", heat->ColdExtrude() ? 0 : HOT_ENOUGH_TO_RETRACT);
 
-		// Maximum hotend temperature
-		response->catf(",\"tempLimit\":%1.f", platform->GetTemperatureLimit());
+		// Maximum hotend temperature - DWC just wants the highest one
+		response->catf(",\"tempLimit\":%1.f", heat->GetHighestTemperatureLimit());
 
 		// Endstops
 		uint16_t endstops = 0;
@@ -740,13 +784,27 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 		}
 		response->catf(",\"endstops\":%d", endstops);
 
-		// Delta configuration, number of disk volumes, and machine name
-		response->catf(",\"geometry\":\"%s\",\"volumes\":%u,\"name\":", move->GetGeometryString(), NumSdCards);
+		// Firmware name, machine geometry and number of axes
+		response->catf(",\"firmwareName\":\"%s\",\"geometry\":\"%s\",\"axes\":%u", FIRMWARE_NAME, move->GetGeometryString(), numAxes);
+
+		// Total and mounted volumes
+		size_t mountedCards = 0;
+		for(size_t i = 0; i < NumSdCards; i++)
+		{
+			if (platform->GetMassStorage()->IsDriveMounted(i))
+			{
+				mountedCards |= (1 << i);
+			}
+		}
+		response->catf(",\"volumes\":%u,\"mountedVolumes\":%u", NumSdCards, mountedCards);
+
+		// Machine name
+		response->cat(",\"name\":");
 		response->EncodeString(myName, ARRAY_SIZE(myName), false);
 
 		/* Probe */
 		{
-			const ZProbeParameters probeParams = platform->GetZProbeParameters();
+			const ZProbeParameters probeParams = platform->GetCurrentZProbeParameters();
 
 			// Trigger threshold
 			response->catf(",\"probe\":{\"threshold\":%d", probeParams.adcValue);
@@ -785,27 +843,46 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 					}
 				}
 
+				// Axis mapping. Currently we only map the X axis, but we return an array of arrays to allow for mapping other axes in future.
+				response->cat("],\"axisMap\":[[");
+				bool first = true;
+				for (size_t xi = 0; xi < MAX_AXES; ++xi)
+				{
+					if ((tool->GetXAxisMap() & (1u << xi)) != 0)
+					{
+						if (first)
+						{
+							first = false;
+						}
+						else
+						{
+							response->cat(",");
+						}
+						response->catf("%u", xi);
+					}
+				}
+
 				// Do we have any more tools?
 				if (tool->Next() != nullptr)
 				{
-					response->cat("]},");
+					response->cat("]]},");
 				}
 				else
 				{
-					response->cat("]}");
+					response->cat("]]}");
 				}
 			}
 			response->cat("]");
 		}
 
 		// MCU temperatures
+#ifndef __RADDS__
 		{
 			float minT, currT, maxT;
 			platform->GetMcuTemperatures(minT, currT, maxT);
 			response->catf(",\"mcutemp\":{\"min\":%.1f,\"cur\":%.1f,\"max\":%.1f}", minT, currT, maxT);
-			// TEMPORARY for DWC 1.11: send mcutemp.cur as cputemp as well
-			response->catf(",\"cputemp\":%.1f", currT);
 		}
+#endif
 
 #ifdef DUET_NG
 		// Power in voltages
@@ -834,7 +911,7 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 		}
 		if (ch == '[')
 		{
-			response->cat("]");
+			response->cat(ch);		// no extruders
 		}
 
 		// Fraction of file printed
@@ -868,14 +945,14 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 
 	if (source == ResponseSource::AUX)
 	{
-		OutputBuffer *response = gCodes->GetAuxGCodeReply();
+		OutputBuffer *reply = platform->GetAuxGCodeReply();
 		if (response != nullptr)
 		{
 			// Send the response to the last command. Do this last
-			response->catf(",\"seq\":%u,\"resp\":", gCodes->GetAuxSeq());			// send the response sequence number
+			response->catf(",\"seq\":%u,\"resp\":", platform->GetAuxSeq());			// send the response sequence number
 
 			// Send the JSON response
-			response->EncodeReply(response, true);									// also releases the OutputBuffer chain
+			response->EncodeReply(reply, true);										// also releases the OutputBuffer chain
 		}
 	}
 	response->cat("}");
@@ -892,10 +969,12 @@ OutputBuffer *RepRap::GetConfigResponse()
 		return nullptr;
 	}
 
+	const size_t numAxes = reprap.GetGCodes()->GetNumAxes();
+
 	// Axis minima
 	response->copy("{\"axisMins\":");
 	char ch = '[';
-	for (size_t axis = 0; axis < AXES; axis++)
+	for (size_t axis = 0; axis < numAxes; axis++)
 	{
 		response->catf("%c%.2f", ch, platform->AxisMinimum(axis));
 		ch = ',';
@@ -904,7 +983,7 @@ OutputBuffer *RepRap::GetConfigResponse()
 	// Axis maxima
 	response->cat("],\"axisMaxes\":");
 	ch = '[';
-	for (size_t axis = 0; axis < AXES; axis++)
+	for (size_t axis = 0; axis < numAxes; axis++)
 	{
 		response->catf("%c%.2f", ch, platform->AxisMaximum(axis));
 		ch = ',';
@@ -929,10 +1008,17 @@ OutputBuffer *RepRap::GetConfigResponse()
 	}
 
 	// Firmware details
-	response->catf("],\"firmwareElectronics\":\"%s\"", platform->GetElectronicsString());
-	response->catf(",\"firmwareName\":\"%s\"", NAME);
-	response->catf(",\"firmwareVersion\":\"%s\"", VERSION);
+	response->catf("],\"firmwareElectronics\":\"%s", platform->GetElectronicsString());
 #ifdef DUET_NG
+	const char* expansionName = DuetExpansion::GetExpansionBoardName();
+	if (expansionName != nullptr)
+	{
+		response->catf(" + %s", expansionName);
+	}
+#endif
+	response->catf("\",\"firmwareName\":\"%s\"", FIRMWARE_NAME);
+	response->catf(",\"firmwareVersion\":\"%s\"", VERSION);
+#if defined(DUET_NG) && defined(DUET_WIFI)
 	response->catf(",\"dwsVersion\":\"%s\"", network->GetWiFiServerVersion());
 #endif
 	response->catf(",\"firmwareDate\":\"%s\"", DATE);
@@ -1004,7 +1090,7 @@ OutputBuffer *RepRap::GetLegacyStatusResponse(uint8_t type, int seq)
 	{
 		ch = '[';
 	}
-	for (size_t heater = E0_HEATER; heater < GetToolHeatersInUse(); heater++)
+	for (size_t heater = DefaultE0Heater; heater < GetToolHeatersInUse(); heater++)
 	{
 		response->catf("%c%.1f", ch, heat->GetTemperature(heater));
 		ch = ',';
@@ -1022,7 +1108,7 @@ OutputBuffer *RepRap::GetLegacyStatusResponse(uint8_t type, int seq)
 	{
 		ch = '[';
 	}
-	for (size_t heater = E0_HEATER; heater < GetToolHeatersInUse(); heater++)
+	for (size_t heater = DefaultE0Heater; heater < GetToolHeatersInUse(); heater++)
 	{
 		response->catf("%c%.1f", ch, heat->GetActiveTemperature(heater));
 		ch = ',';
@@ -1040,7 +1126,7 @@ OutputBuffer *RepRap::GetLegacyStatusResponse(uint8_t type, int seq)
 	{
 		ch = '[';
 	}
-	for (size_t heater = E0_HEATER; heater < GetToolHeatersInUse(); heater++)
+	for (size_t heater = DefaultE0Heater; heater < GetToolHeatersInUse(); heater++)
 	{
 		response->catf("%c%.1f", ch, heat->GetStandbyTemperature(heater));
 		ch = ',';
@@ -1058,7 +1144,7 @@ OutputBuffer *RepRap::GetLegacyStatusResponse(uint8_t type, int seq)
 	{
 		ch = '[';
 	}
-	for (size_t heater = E0_HEATER; heater < GetToolHeatersInUse(); heater++)
+	for (size_t heater = DefaultE0Heater; heater < GetToolHeatersInUse(); heater++)
 	{
 		response->catf("%c%d", ch, static_cast<int>(heat->GetStatus(heater)));
 		ch = ',';
@@ -1066,20 +1152,21 @@ OutputBuffer *RepRap::GetLegacyStatusResponse(uint8_t type, int seq)
 	response->cat((ch == '[') ? "[]" : "]");
 
 	// Send XYZ positions
+	const size_t numAxes = reprap.GetGCodes()->GetNumAxes();
 	float liveCoordinates[DRIVES];
-	reprap.GetMove()->LiveCoordinates(liveCoordinates);
-	const Tool* currentTool = reprap.GetCurrentTool();
+	reprap.GetMove()->LiveCoordinates(liveCoordinates, GetCurrentXAxes());
+	const Tool* const currentTool = reprap.GetCurrentTool();
 	if (currentTool != nullptr)
 	{
 		const float *offset = currentTool->GetOffset();
-		for (size_t i = 0; i < AXES; ++i)
+		for (size_t i = 0; i < numAxes; ++i)
 		{
 			liveCoordinates[i] += offset[i];
 		}
 	}
 	response->catf(",\"pos\":");		// announce the XYZ position
 	ch = '[';
-	for (size_t drive = 0; drive < AXES; drive++)
+	for (size_t drive = 0; drive < numAxes; drive++)
 	{
 		response->catf("%c%.2f", ch, liveCoordinates[drive]);
 		ch = ',';
@@ -1106,11 +1193,11 @@ OutputBuffer *RepRap::GetLegacyStatusResponse(uint8_t type, int seq)
 	response->cat((ch == '[') ? "[]" : "]");
 
 	// Send the current tool number
-	int toolNumber = (currentTool == nullptr) ? 0 : currentTool->Number();
+	const int toolNumber = (currentTool == nullptr) ? 0 : currentTool->Number();
 	response->catf(",\"tool\":%d", toolNumber);
 
 	// Send the Z probe value
-	int v0 = platform->ZProbe();
+	const int v0 = platform->GetZProbeReading();
 	int v1, v2;
 	switch (platform->GetZProbeSecondaryValues(v1, v2))
 	{
@@ -1138,10 +1225,14 @@ OutputBuffer *RepRap::GetLegacyStatusResponse(uint8_t type, int seq)
 	response->catf("],\"fanRPM\":%u", static_cast<unsigned int>(platform->GetFanRPM()));
 
 	// Send the home state. To keep the messages short, we send 1 for homed and 0 for not homed, instead of true and false.
-	response->catf(",\"homed\":[%d,%d,%d]",
-			(gCodes->GetAxisIsHomed(0)) ? 1 : 0,
-			(gCodes->GetAxisIsHomed(1)) ? 1 : 0,
-			(gCodes->GetAxisIsHomed(2)) ? 1 : 0);
+	response->cat(",\"homed\":");
+	ch = '[';
+	for (size_t axis = 0; axis < numAxes; ++axis)
+	{
+		response->catf("%c%d", ch, (gCodes->GetAxisIsHomed(axis)) ? 1 : 0);
+		ch = ',';
+	}
+	response->cat(']');
 
 	if (printMonitor->IsPrinting())
 	{
@@ -1165,24 +1256,26 @@ OutputBuffer *RepRap::GetLegacyStatusResponse(uint8_t type, int seq)
 	}
 	else if (type == 3)
 	{
-		// Add the static fields. For now this is just geometry and the machine name, but other fields could be added e.g. axis lengths.
-		response->catf(",\"geometry\":\"%s\",\"volumes\":%u,\"myName\":", move->GetGeometryString(), NumSdCards);
+		// Add the static fields
+		response->catf(",\"geometry\":\"%s\",\"axes\":%u,\"volumes\":%u,\"numTools\":%u,\"myName\":",
+						move->GetGeometryString(), numAxes, NumSdCards, GetNumberOfContiguousTools());
 		response->EncodeString(myName, ARRAY_SIZE(myName), false);
+		response->cat(",\"firmwareName\":");
+		response->EncodeString(FIRMWARE_NAME, strlen(FIRMWARE_NAME), false);
 	}
 
-	int auxSeq = (int)gCodes->GetAuxSeq();
-	if (type < 2 || (seq != -1 && (int)auxSeq != seq))
+	const int auxSeq = (int)platform->GetAuxSeq();
+	if (type < 2 || (seq != -1 && auxSeq != seq))
 	{
 
 		// Send the response to the last command. Do this last because it can be long and may need to be truncated.
-		response->catf(",\"seq\":%u,\"resp\":", auxSeq);					// send the response sequence number
+		response->catf(",\"seq\":%d,\"resp\":", auxSeq);					// send the response sequence number
 
 		// Send the JSON response
-		response->EncodeReply(gCodes->GetAuxGCodeReply(), true);			// also releases the OutputBuffer chain
+		response->EncodeReply(platform->GetAuxGCodeReply(), true);			// also releases the OutputBuffer chain
 	}
 
 	response->cat("}");
-
 	return response;
 }
 
@@ -1283,6 +1376,20 @@ OutputBuffer *RepRap::GetFilelistResponse(const char *dir)
 		return nullptr;
 	}
 
+	// If the requested volume is not mounted, report an error
+	if (!platform->GetMassStorage()->CheckDriveMounted(dir))
+	{
+		response->copy("{\"err\":1}");
+		return response;
+	}
+
+	// Check if the directory exists
+	if (!platform->GetMassStorage()->DirectoryExists(dir))
+	{
+		response->copy("{\"err\":2}");
+		return response;
+	}
+
 	response->copy("{\"dir\":");
 	response->EncodeString(dir, strlen(dir), false);
 	response->cat(",\"files\":[");
@@ -1297,7 +1404,7 @@ OutputBuffer *RepRap::GetFilelistResponse(const char *dir)
 		if (fileInfo.fileName[0] != '.')			// ignore Mac resource files and Linux hidden files
 		{
 			// Make sure we can end this response properly
-			if (bytesLeft < strlen(fileInfo.fileName) + 32)
+			if (bytesLeft < strlen(fileInfo.fileName) + 70)
 			{
 				// No more space available - stop here
 				break;
@@ -1313,7 +1420,20 @@ OutputBuffer *RepRap::GetFilelistResponse(const char *dir)
 			// Write another file entry
 			bytesLeft -= response->catf("{\"type\":\"%c\",\"name\":", fileInfo.isDirectory ? 'd' : 'f');
 			bytesLeft -= response->EncodeString(fileInfo.fileName, FILENAME_LENGTH, false);
-			bytesLeft -= response->catf(",\"size\":%u}", fileInfo.size);
+			bytesLeft -= response->catf(",\"size\":%u", fileInfo.size);
+
+			const struct tm * const timeInfo = gmtime(&fileInfo.lastModified);
+			if (timeInfo->tm_year <= /*19*/80)
+			{
+				// Don't send the last modified date if it is invalid
+				bytesLeft -= response->cat('}');
+			}
+			else
+			{
+				bytesLeft -= response->catf(",\"date\":\"%04u-%02u-%02uT%02u:%02u:%02u\"}",
+						timeInfo->tm_year + 1900, timeInfo->tm_mon + 1, timeInfo->tm_mday,
+						timeInfo->tm_hour, timeInfo->tm_min, timeInfo->tm_sec);
+			}
 		}
 		gotFile = platform->GetMassStorage()->FindNext(fileInfo);
 	}
@@ -1328,7 +1448,7 @@ void RepRap::Beep(int freq, int ms)
 	beepFrequency = freq;
 	beepDuration = ms;
 
-	if (gCodes->HaveAux())
+	if (platform->HaveAux())
 	{
 		// If there is an LCD device present, make it beep
 		platform->Beep(freq, ms);
@@ -1341,7 +1461,7 @@ void RepRap::SetMessage(const char *msg)
 	strncpy(message, msg, MESSAGE_LENGTH);
 	message[MESSAGE_LENGTH] = 0;
 
-	if (gCodes->HaveAux())
+	if (platform->HaveAux())
 	{
 		platform->SendMessage(msg);
 	}
@@ -1355,6 +1475,7 @@ char RepRap::GetStatusCharacter() const
 			: (IsStopped()) 											? 'H'	// Halted
 			: (gCodes->IsPausing()) 									? 'D'	// Pausing / Decelerating
 			: (gCodes->IsResuming()) 									? 'R'	// Resuming
+			: (gCodes->IsDoingToolChange())								? 'T'	// Running tool change macros
 			: (gCodes->IsPaused()) 										? 'S'	// Paused / Stopped
 			: (printMonitor->IsPrinting())								? 'P'	// Printing
 			: (gCodes->DoingFileMacro() || !move->NoLiveMovement()) 	? 'B'	// Busy
@@ -1447,6 +1568,24 @@ void RepRap::ClearTemperatureFault(int8_t wasDudHeater)
 	{
 		toolList->ClearTemperatureFault(wasDudHeater);
 	}
+}
+
+// Get the current axes used as X axes
+uint32_t RepRap::GetCurrentXAxes() const
+{
+	return (currentTool == nullptr) ? DefaultXAxisMapping : currentTool->GetXAxisMap();
+}
+
+// Helper function for diagnostic tests in Platform.cpp, to cause a deliberate divide-by-zero
+/*static*/ uint32_t RepRap::DoDivide(uint32_t a, uint32_t b)
+{
+	return a/b;
+}
+
+// Helper function for diagnostic tests in Platform.cpp, to cause a deliberate unaligned memory read
+/*static*/ uint32_t RepRap::ReadDword(const char* p)
+{
+	return *reinterpret_cast<const uint32_t*>(p);
 }
 
 // End

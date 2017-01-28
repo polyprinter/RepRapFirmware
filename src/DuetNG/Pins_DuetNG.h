@@ -1,22 +1,28 @@
 #ifndef PINS_DUETNG_H__
 #define PINS_DUETNG_H__
 
-#define NAME "RepRapFirmware for Duet WiFi"
+#if defined(DUET_WIFI)
 
-const size_t NumFirmwareUpdateModules = 4;			// 3 modules, plus one for manual upload to WiFi module
-#define IAP_UPDATE_FILE		"iap4e.bin"
-#define IAP_FIRMWARE_FILE	"DuetWiFiFirmware.bin"
-#define WIFI_FIRMWARE_FILE	"DuetWiFiServer.bin"
-#define WIFI_WEB_FILE		"DuetWebControl.bin"
+# define FIRMWARE_NAME "RepRapFirmware for Duet WiFi"
+# define DEFAULT_BOARD_TYPE BoardType::DuetWiFi_10
+const size_t NumFirmwareUpdateModules = 4;		// 3 modules, plus one for manual upload to WiFi module
+# define IAP_FIRMWARE_FILE	"DuetWiFiFirmware.bin"
+# define WIFI_FIRMWARE_FILE	"DuetWiFiServer.bin"
+# define WIFI_WEB_FILE		"DuetWebControl.bin"
 
-// Default board type
-#ifdef PROTOTYPE_1
-#define DEFAULT_BOARD_TYPE BoardType::DuetWiFi_06
+#elif defined(DUET_ETHERNET)
+
+# define FIRMWARE_NAME "RepRapFirmware for Duet Ethernet"
+# define DEFAULT_BOARD_TYPE BoardType::DuetEthernet_10
+# define IAP_FIRMWARE_FILE	"DuetEthernetFirmware.bin"
+const size_t NumFirmwareUpdateModules = 1;		// 1 module
+
 #else
-#define DEFAULT_BOARD_TYPE BoardType::DuetWiFi_10
+# error Firmware name not defined
 #endif
 
-#define SUPPORT_ETHERNET	0					// set nonzero to support embedded web interface over Ethernet
+#define IAP_UPDATE_FILE		"iap4e.bin"			// hoping eventually to use the same IAP file for both Duet WiFi and Duet Ethernet
+
 #define SUPPORT_INKJET		0					// set nonzero to support inkjet control
 #define SUPPORT_ROLAND		0					// set nonzero to support Roland mill
 
@@ -29,10 +35,15 @@ const int8_t HEATERS = 8;						// The number of heaters in the machine; 0 is the
 #define HEATERS_(a,b,c,d,e,f,g,h) { a,b,c,d,e,f,g,h }
 const size_t MaxDriversPerAxis = 4;				// The maximum number of stepper drivers assigned to one axis
 
-const size_t AXES = 3;							// The number of movement axes in the machine, usually just X, Y and Z. <= DRIVES
+const size_t MAX_AXES = 6;						// The maximum number of movement axes in the machine, usually just X, Y and Z, <= DRIVES
+const size_t MIN_AXES = 3;						// The minimum and default number of axes
+const size_t MaxExtruders = DRIVES - MIN_AXES;	// The maximum number of extruders
+
 const size_t NUM_SERIAL_CHANNELS = 2;			// The number of serial IO channels (USB and one auxiliary UART)
 #define SERIAL_MAIN_DEVICE SerialUSB
 #define SERIAL_AUX_DEVICE Serial
+
+const Pin ExpansionStart = 200;					// Pin numbers at/above this are on the I/O expander
 
 // The numbers of entries in each array must correspond with the values of DRIVES, AXES, or HEATERS. Set values to NoPin to flag unavailability.
 
@@ -40,44 +51,30 @@ const size_t NUM_SERIAL_CHANNELS = 2;			// The number of serial IO channels (USB
 
 const Pin GlobalTmcEnablePin = 38;				// The pin that drives ENN of all TMC2660 drivers on production boards (on pre-production boards they are grounded)
 const Pin ENABLE_PINS[DRIVES] = { 78, 41, 42, 49, 57, 87, 88, 89, 90, 31 };
-const bool ENABLE_VALUES[DRIVES] = { false, false, false, false, false, false, false, false, false, false };	// What to send to enable a drive
 const Pin STEP_PINS[DRIVES] = { 70, 71, 72, 69, 68, 66, 65, 64, 67, 91 };
 const Pin DIRECTION_PINS[DRIVES] = { 75, 76, 77, 01, 73, 92, 86, 80, 81, 32 };
-const bool DIRECTIONS[DRIVES] = { FORWARDS, FORWARDS, FORWARDS, FORWARDS, FORWARDS, FORWARDS, FORWARDS, FORWARDS, FORWARDS, FORWARDS };	// What each axis needs to make it go forwards - defaults
+
+const Pin DueX_SG = 96;				// DueX stallguard detect pin = PE0 (was E2_STOP)
+const Pin DueX_INT = 17;			// DueX interrupt pin = PA17 (was E6_STOP)
 
 // Endstops
 // RepRapFirmware only has a single endstop per axis.
 // Gcode defines if it is a max ("high end") or min ("low end") endstop and sets if it is active HIGH or LOW.
-const Pin END_STOP_PINS[DRIVES] = { 46, 02, 93, 74, 48, 96, 97, 98, 99, 17 };
-
-// Indices for motor current digipots (if any): first 4 are for digipot 1 (on duet), second 4 for digipot 2 (on expansion board)
-#ifdef PROTOTYPE_1
-const uint8_t POT_WIPES[8] = { 1, 3, 2, 0, 1, 3, 2, 0 };
-const float SENSE_RESISTOR = 0.1;										// Stepper motor current sense resistor
-const float MAX_STEPPER_DIGIPOT_VOLTAGE = (3.3 * 2.5 / (2.7 + 2.5));	// Stepper motor current reference voltage
-const float STEPPER_DAC_VOLTAGE_RANGE = 2.02;							// Stepper motor current reference voltage for E1 if using a DAC
-const float STEPPER_DAC_VOLTAGE_OFFSET = -0.11;							// Stepper motor current offset voltage for E1 if using a DAC
-#endif
+const Pin END_STOP_PINS[DRIVES] = { 46, 02, 93, 74, 48, 200, 203, 202, 201, 213 };
 
 // HEATERS
 
 const bool HEAT_ON = false;												// false for inverted heater (e.g. Duet v0.6), true for not (e.g. Duet v0.4)
-
 const Pin TEMP_SENSE_PINS[HEATERS] = { 45, 47, 44, 61, 62, 63, 59, 18 }; // Thermistor pin numbers
-
-#ifdef PROTOTYPE_1
-const Pin HEAT_ON_PINS[HEATERS] = { 19, 20, 16, 15, 37, 40, 43, 38 };	// Heater pin numbers
-#else
 const Pin HEAT_ON_PINS[HEATERS] = { 19, 20, 16, 35, 37, 40, 43, 15 };	// Heater pin numbers (heater 7 pin TBC)
-#endif
 
 // Default thermistor parameters
-// Bed thermistor: now assuming 100K
-// Hot end thermistor: http://www.digikey.co.uk/product-search/en?x=20&y=11&KeyWords=480-3137-ND
 const float BED_R25 = 100000.0;
 const float BED_BETA = 3988.0;
+const float BED_SHC = 0.0;
 const float EXT_R25 = 100000.0;
 const float EXT_BETA = 4388.0;
+const float EXT_SHC = 0.0;
 
 // Thermistor series resistor value in Ohms
 const float THERMISTOR_SERIES_RS = 4700.0;
@@ -94,14 +91,10 @@ const Pin SpiTempSensorCsPins[MaxSpiTempSensors] = { 56, 27 };
 
 #else
 
-const size_t MaxSpiTempSensors = 4;
+const size_t MaxSpiTempSensors = 8;
 
 // Digital pins the 31855s have their select lines tied to
-# ifdef PROTOTYPE_1
-const Pin SpiTempSensorCsPins[MaxSpiTempSensors] = { 24, 25, 50, 51 };	// SPI1_CS0, SPI1_CS1, CS2, CS3
-# else
-const Pin SpiTempSensorCsPins[MaxSpiTempSensors] = { 28, 50, 51, 52 };	// SPI0_CS1, SPI0_CS2, CS3, CS4
-# endif
+const Pin SpiTempSensorCsPins[MaxSpiTempSensors] = { 28, 50, 51, 52, 24, 97, 98, 99 };	// SPI0_CS1, SPI0_CS2, CS3, CS4, CS5, CS6, CS7, CS8
 
 #endif
 
@@ -111,7 +104,7 @@ const Pin ATX_POWER_PIN = 79;											// Arduino Due pin number that controls 
 // Analogue pin numbers
 const Pin Z_PROBE_PIN = 33;												// AFE1_AD4/PC1 Z probe analog input
 const Pin PowerMonitorVinDetectPin = 36;								// AFE1_AD7/PC4 Vin monitor
-const Pin PowerMonitor5vDetectPin = 29;									// AFE1_AD1/PB3 Buck regulator input monitor
+const Pin PowerMonitor5vDetectPin = 29;									// AFE1_AD1/PB3 5V regulator input monitor
 
 const float PowerFailVoltageRange = 11.0 * 3.3;							// we use an 11:1 voltage divider
 
@@ -119,9 +112,9 @@ const float PowerFailVoltageRange = 11.0 * 3.3;							// we use an 11:1 voltage 
 const Pin Z_PROBE_MOD_PIN = 34;											// Digital pin number to turn the IR LED on (high) or off (low) on Duet v0.6 and v1.0 (PB21)
 
 // COOLING FANS
-const size_t NUM_FANS = 3;
-const Pin COOLING_FAN_PINS[NUM_FANS] = { 55, 58, 00 };
-const Pin COOLING_FAN_RPM_PIN = 32;
+const size_t NUM_FANS = 8;
+const Pin COOLING_FAN_PINS[NUM_FANS] = { 55, 58, 00, 212, 207, 206, 205, 204 };
+const Pin COOLING_FAN_RPM_PIN = 102;									// PB6 on expansion connector
 
 // SD cards
 const size_t NumSdCards = 2;
@@ -146,31 +139,15 @@ const Pin ROLAND_RTS_PIN = xx;											// Expansion pin 12, PA13_RXD1
 
 #endif
 
-// Definition of which pins we allow to be controlled using M42
-//
-// The allowed pins are these ones on the DueX4 expansion connector:
-//TODO document these
-
-const size_t NUM_PINS_ALLOWED = 96;
-
-#if 1
-#define PINS_ALLOWED { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };	//TODO temporary!
-#else
-#define PINS_ALLOWED {				\
-	/* pins 00-07 */	0b00000000,	\
-	/* pins 08-15 */	0b00000000,	\
-	/* pins 16-23 */	0b00000110,	\
-	/* pins 24-31 */	0b10000011,	\
-	/* pins 32-39 */	0b00001001,	\
-	/* pins 40-47 */	0b00000000,	\
-	/* pins 48-55 */	0b00011000,	\
-	/* pins 56-63 */	0b00000000,	\
-	/* pins 64-71 */	0b00000000,	\
-	/* pins 72-79 */	0b00000000,	\
-	/* pins 80-87 */	0b00000000,	\
-	/* pins 88-95 */	0b00001000	\
-}
-#endif
+// M42 and M208 commands now use logical pin numbers, not firmware pin numbers.
+// This next definition defines the highest one.
+// This is the mapping from logical pins 60+ to firmware pin numbers
+const Pin SpecialPinMap[] =
+{
+	88, 97, 98, 99														// We allow CS5-CS8 to be used because few users need >4 thermocouples or RTDs
+};
+const Pin DueX5GpioPinMap[] = { 211, 210, 209, 208 };					// GPIO 1-4 on DueX5
+const int HighestLogicalPin = 100 + ARRAY_SIZE(DueX5GpioPinMap) - 1;	// highest logical pin number on this electronics
 
 // SAM4E Flash locations (may be expanded in the future)
 const uint32_t IAP_FLASH_START = 0x00470000;

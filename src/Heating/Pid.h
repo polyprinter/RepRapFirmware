@@ -12,7 +12,9 @@
  * This class implements a PID controller for the heaters
  */
 
+#include "RepRapFirmware.h"
 #include "FOPDT.h"
+#include "TemperatureError.h"
 
 class PID
 {
@@ -36,12 +38,15 @@ class PID
 public:
 
 	PID(Platform* p, int8_t h);
-	void Init(float pGain, float pTc, float pTd, bool usePid);	// (Re)Set everything to start
+	void Init(float pGain, float pTc, float pTd, float tempLimit, bool usePid);	// (Re)Set everything to start
+	void Reset();
 	void Spin();									// Called in a tight loop to keep things running
 	void SetActiveTemperature(float t);
 	float GetActiveTemperature() const;
 	void SetStandbyTemperature(float t);
 	float GetStandbyTemperature() const;
+	void SetTemperatureLimit(float t);
+	float GetTemperatureLimit() const;
 	void Activate();								// Switch from idle to active
 	void Standby();									// Switch from active to idle
 	bool Active() const;							// Are we active?
@@ -59,13 +64,20 @@ public:
 
 	const FopDt& GetModel() const					// Get the process model
 		{ return model; }
+
 	bool SetModel(float gain, float tc, float td, float maxPwm, bool usePid);	// Set the process model
 
-	bool IsModelUsed() const						// Is the model being used to determine the PID parameters?
-		{ return useModel; }
+	bool IsHeaterEnabled() const					// Is this heater enabled?
+		{ return model.IsEnabled(); }
 
-	void UseModel(bool b)							// Use or don't use the model to provide the PID parameters
-		{ useModel = b; }
+	void GetHeaterProtection(float& pMaxTempExcursion, float& pMaxFaultTime) const
+		{ pMaxTempExcursion = maxTempExcursion; pMaxFaultTime = maxHeatingFaultTime; }
+
+	void SetHeaterProtection(float pMaxTempExcursion, float pMaxFaultTime)
+		{ maxTempExcursion = pMaxTempExcursion; maxHeatingFaultTime = pMaxFaultTime; }
+
+	void SetM301PidParameters(const M301PidParameters& params)
+		{ model.SetM301PidParameters(params); }
 
 private:
 
@@ -83,6 +95,9 @@ private:
 	Platform* platform;								// The instance of the class that is the RepRap hardware
 	float activeTemperature;						// The required active temperature
 	float standbyTemperature;						// The required standby temperature
+	float temperatureLimit;							// The maximum allowed temperature for this heater
+	float maxTempExcursion;							// The maximum temperature excursion permitted while maintaining the setpoint
+	float maxHeatingFaultTime;						// How long a heater fault is permitted to persist before a heater fault is raised
 	float temperature;								// The current temperature
 	float previousTemperatures[NumPreviousTemperatures]; // The temperatures of the previous NumDerivativeSamples measurements, used for calculating the derivative
 	size_t previousTemperatureIndex;				// Which slot in previousTemperature we fill in next
@@ -100,7 +115,6 @@ private:
 	HeaterMode mode;								// Current state of the heater
 	bool active;									// Are we active or standby?
 	bool tuned;										// True if tuning was successful
-	bool useModel;									// Use the model to calculate the PID parameters
 	uint8_t badTemperatureCount;					// Count of sequential dud readings
 
 	static_assert(sizeof(previousTemperaturesGood) * 8 >= NumPreviousTemperatures, "too few bits in previousTemperaturesGood");
@@ -135,6 +149,16 @@ inline float PID::GetStandbyTemperature() const
 	return standbyTemperature;
 }
 
+inline void PID::SetTemperatureLimit(float t)
+{
+	temperatureLimit = t;
+}
+
+inline float PID::GetTemperatureLimit() const
+{
+	return temperatureLimit;
+}
+
 inline float PID::GetTemperature() const
 {
 	return temperature;
@@ -158,11 +182,6 @@ inline uint32_t PID::GetLastSampleTime() const
 inline float PID::GetAccumulator() const
 {
 	return iAccumulator;
-}
-
-inline void PID::SetHeater(float power) const
-{
-	platform->SetHeater(heater, power);
 }
 
 inline bool PID::IsTuning() const

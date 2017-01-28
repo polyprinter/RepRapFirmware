@@ -4,6 +4,7 @@
 #include "FileStore.h"
 #include "MassStorage.h"
 #include "Platform.h"
+#include "RepRap.h"
 
 uint32_t FileStore::longestWriteTime = 0;
 
@@ -46,6 +47,36 @@ bool FileStore::Open(const char* directory, const char* fileName, bool write)
 								: fileName;
 	writing = write;
 	lastBufferEntry = FileBufLen;
+
+	// Try to create the path of this file if we want to write to it
+	if (writing)
+	{
+		char filePathBuffer[FILENAME_LENGTH];
+		StringRef filePath(filePathBuffer, FILENAME_LENGTH);
+		filePath.copy(location);
+
+		bool isVolume = isdigit(filePath[0]);
+		for(size_t i = 1; i < filePath.strlen(); i++)
+		{
+			if (filePath[i] == '/')
+			{
+				if (isVolume)
+				{
+					isVolume = false;
+					continue;
+				}
+
+				filePath[i] = 0;
+				if (!platform->GetMassStorage()->DirectoryExists(filePath.Pointer()) && !platform->GetMassStorage()->MakeDirectory(filePath.Pointer()))
+				{
+					platform->MessageF(GENERIC_MESSAGE, "Failed to create directory %s while trying to open file %s\n",
+							filePath.Pointer(), location);
+					return false;
+				}
+				filePath[i] = '/';
+			}
+		}
+	}
 
 	FRESULT openReturn = f_open(&file, location, (writing) ?  FA_CREATE_ALWAYS | FA_WRITE : FA_OPEN_EXISTING | FA_READ);
 	if (openReturn != FR_OK)
@@ -263,6 +294,40 @@ int FileStore::Read(char* extBuf, size_t nBytes)
 		return -1;
 	}
 	return (int)bytes_read;
+}
+
+// As Read but stop after '\n' or '\r\n' and null-terminate the string.
+// If the next line is too long to fit in the buffer then the line will be split.
+int FileStore::ReadLine(char* buf, size_t nBytes)
+{
+	const FilePosition lineStart = Position();
+	const int r = Read(buf, nBytes);
+	if (r < 0)
+	{
+		return r;
+	}
+
+	int i = 0;
+	while (i < r && buf[i] != '\r' && buf[i] != '\n')
+	{
+		++i;
+	}
+
+	if (i + 1 < r && buf[i] == '\r' && buf[i + 1] == '\n')	// if stopped at CRLF (Windows-style line end)
+	{
+		Seek(lineStart + i + 2);							// seek to just after the CRLF
+	}
+	else if (i < r)											// if stopped at CR or LF
+	{
+		Seek(lineStart + i + 1);							// seek to just after the CR or LF
+	}
+	else if (i == (int)nBytes)
+	{
+		--i;												// make room for the null terminator
+		Seek(lineStart + i);
+	}
+	buf[i] = 0;
+	return i;
 }
 
 bool FileStore::WriteBuffer()

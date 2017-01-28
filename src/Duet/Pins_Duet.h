@@ -1,7 +1,7 @@
 #ifndef PINS_DUET_H__
 #define PINS_DUET_H__
 
-#define NAME "RepRapFirmware for Duet"
+#define FIRMWARE_NAME "RepRapFirmware for Duet"
 
 const size_t NumFirmwareUpdateModules = 1;
 #define IAP_UPDATE_FILE "iap.bin"
@@ -22,7 +22,10 @@ const size_t MaxDriversPerAxis = 4;				// The maximum number of stepper drivers 
 const int8_t HEATERS = 7;						// The number of heaters in the machine; 0 is the heated bed even if there isn't one
 #define HEATERS_(a,b,c,d,e,f,g,h) { a,b,c,d,e,f,g }
 
-const size_t AXES = 3;							// The number of movement axes in the machine, usually just X, Y and Z. <= DRIVES
+const size_t MAX_AXES = 6;						// The maximum number of movement axes in the machine, usually just X, Y and Z, <= DRIVES
+const size_t MIN_AXES = 3;						// The minimum and default number of axes
+const size_t MaxExtruders = DRIVES - MIN_AXES;	// The maximum number of extruders
+
 const size_t NUM_SERIAL_CHANNELS = 3;			// The number of serial IO channels (USB and two auxiliary UARTs)
 #define SERIAL_MAIN_DEVICE SerialUSB
 #define SERIAL_AUX_DEVICE Serial
@@ -33,10 +36,8 @@ const size_t NUM_SERIAL_CHANNELS = 3;			// The number of serial IO channels (USB
 // DRIVES
 
 const Pin ENABLE_PINS[DRIVES] = { 29, 27, X1, X0, 37, X8, 50, 47, X13 };
-const bool ENABLE_VALUES[DRIVES] = { false, false, false, false, false, false, false, false, false };	// What to send to enable a drive
 const Pin STEP_PINS[DRIVES] = { 14, 25, 5, X2, 41, 39, X4, 49, X10 };
 const Pin DIRECTION_PINS[DRIVES] = { 15, 26, 4, X3, 35, 53, 51, 48, X11 };
-const bool DIRECTIONS[DRIVES] = { BACKWARDS, FORWARDS, FORWARDS, FORWARDS, FORWARDS, FORWARDS, FORWARDS, FORWARDS, FORWARDS };	// What each axis needs to make it go forwards - defaults
 
 // Endstops
 // RepRapFirmware only has a single endstop per axis.
@@ -55,17 +56,21 @@ const float STEPPER_DAC_VOLTAGE_OFFSET = -0.025;						// Stepper motor current o
 const bool HEAT_ON = false;												// false for inverted heater (e.g. Duet v0.6), true for not (e.g. Duet v0.4)
 
 const Pin TEMP_SENSE_PINS[HEATERS] = { 5, 4, 0, 7, 8, 9, 11 };			// Analogue pin numbers
-const Pin HEAT_ON_PINS[HEATERS] = { 6, X5, X7, 7, 8, 9, NoPin };		// Heater Channel 7 (pin X17) is shared with Fan1. Only define 1 or the other
+const Pin HEAT_ON_PINS[HEATERS] = { 6, X5, X7, 7, 8, 9, X17 };			// Heater Channel 7 (pin X17) is shared with Fan1
 
 // Default thermistor parameters
 // Bed thermistor: http://uk.farnell.com/epcos/b57863s103f040/sensor-miniature-ntc-10k/dp/1299930?Ntt=129-9930
 // Hot end thermistor: http://www.digikey.co.uk/product-search/en?x=20&y=11&KeyWords=480-3137-ND
 const float BED_R25 = 10000.0;
 const float BED_BETA = 3988.0;
+const float BED_SHC = 0.0;
 const float EXT_R25 = 100000.0;
-const float EXT_BETA = 4138.0;
+const float EXT_BETA = 4388.0;
+const float EXT_SHC = 0.0;
 
 // Thermistor series resistor value in Ohms
+// On later Duet 0.6 and all Duet 0.8.5 boards it is 4700 ohms. However, if we change the default then machines that have 1K series resistors
+// and don't have R1000 in the M305 commands in config.g will overheat. So for safety we leave the default as 1000.
 const float THERMISTOR_SERIES_RS = 1000.0;
 
 // Number of SPI temperature sensors to support
@@ -109,7 +114,7 @@ const Pin COOLING_FAN_RPM_PIN = 23;										// Pin PA15
 const size_t NumSdCards = 2;
 const Pin SdCardDetectPins[NumSdCards] = {13, NoPin};
 const Pin SdWriteProtectPins[NumSdCards] = {NoPin, NoPin};
-const Pin SdSpiCSPins[1] = {66};										// Note: this clashes with inkjet support
+const Pin SdSpiCSPins[1] = {67};										// Pin PB16 Note: this clashes with inkjet support
 
 #if SUPPORT_INKJET
 // Inkjet control pins
@@ -128,35 +133,17 @@ const Pin ROLAND_RTS_PIN = 17;											// Expansion pin 12, PA13_RXD1
 
 #endif
 
-// Definition of which pins we allow to be controlled using M42
-//
-// The allowed pins are these ones on the DueX4 expansion connector:
-//
-// TXD1 aka PA13 aka pin 16
-// RXD1 aka PA12 aka pin 17
-// TXD0 aka PA11 aka pin 18
-// RXD0 aka PA10 aka pin 19
-// PC4_PWML1 aka PC4 aka pin 36
-// AD13 aka PB20 aka pin 66
-// AD14 aka PB21 aka pin 52
-// PB16 aka pin 67 (could possibly allow analog output on this one)
-// RTS1 aka PA14 aka pin 23
-// TWD1 aka PB12 aka pin 20
-// TWCK1 aka PB13 aka pin 21
+// M42 and M208 commands now use logical pin numbers, not firmware pin numbers.
+// This is the mapping from logical pins 60+ to firmware pin numbers
+const Pin SpecialPinMap[] =
+{
+	19, 18,	17, 16, 23, 	// PA10/RXD0 PA11/TXD0 PA12/RXD1 PA13/TXD1 PA14/RTS1
+	20, 21, 67, 52, 		// PB12/TWD1 PB13/TWCK1 PB16/DAC1 PB21/AD14
+	36						// PC4
+};
 
-const size_t NUM_PINS_ALLOWED = 72;
-
-#define PINS_ALLOWED {				\
-	/* pins 00-07 */	0,			\
-	/* pins 08-15 */	0,			\
-	/* pins 16-23 */	0b10111111,	\
-	/* pins 24-31 */	0,			\
-	/* pins 32-39 */	0b00010000,	\
-	/* pins 40-47 */	0,			\
-	/* pins 48-55 */	0b00010000,	\
-	/* pins 56-63 */	0,			\
-	/* pins 64-71 */	0b00001100	\
-}
+// This next definition defines the highest one.
+const int HighestLogicalPin = 60 + ARRAY_SIZE(SpecialPinMap) - 1;		// highest logical pin number on this electronics
 
 // SAM3X Flash locations (may be expanded in the future)
 const uint32_t IAP_FLASH_START = 0x000F0000;

@@ -18,11 +18,12 @@ Licence: GPL
 
 ****************************************************************************************************/
 
-#include "RepRapFirmware.h"
-#include "Pid.h"
+#include "Heat.h"
+#include "Platform.h"
+#include "RepRap.h"
 
 Heat::Heat(Platform* p)
-	: platform(p), active(false), coldExtrude(false), bedHeater(BED_HEATER), chamberHeater(-1), heaterBeingTuned(-1), lastHeaterTuned(-1)
+	: platform(p), active(false), coldExtrude(false), bedHeater(DefaultBedHeater), chamberHeater(DefaultChamberHeater), heaterBeingTuned(-1), lastHeaterTuned(-1)
 {
 	for (size_t heater = 0; heater < HEATERS; heater++)
 	{
@@ -30,20 +31,49 @@ Heat::Heat(Platform* p)
 	}
 }
 
+// Reset all heater models to defaults. Called when running M502.
+void Heat::ResetHeaterModels()
+{
+	for (int heater = 0; heater < HEATERS; heater++)
+	{
+		if (pids[heater]->IsHeaterEnabled())
+		{
+			if (heater == DefaultBedHeater || heater == DefaultChamberHeater)
+			{
+				pids[heater]->SetModel(DefaultBedHeaterGain, DefaultBedHeaterTimeConstant, DefaultBedHeaterDeadTime, 1.0, false);
+			}
+			else
+			{
+				pids[heater]->SetModel(DefaultHotEndHeaterGain, DefaultHotEndHeaterTimeConstant, DefaultHotEndHeaterDeadTime, 1.0, true);
+			}
+		}
+	}
+}
+
 void Heat::Init()
 {
 	for (int heater = 0; heater < HEATERS; heater++)
 	{
-		if (heater == bedHeater || heater == chamberHeater)
+		if (heater == DefaultBedHeater || heater == DefaultChamberHeater)
 		{
-			pids[heater]->Init(DefaultBedHeaterGain, DefaultBedHeaterTimeConstant, DefaultBedHeaterDeadTime, false);
+			pids[heater]->Init(DefaultBedHeaterGain, DefaultBedHeaterTimeConstant, DefaultBedHeaterDeadTime,
+								DefaultBedTemperatureLimit, false);
 		}
+#if !defined(DUET_NG) && !defined(__RADDS__)
+		else if (heater == HEATERS - 1)
+		{
+			// Heater 6 pin is shared with fan 1. By default we support fan 1, so disable heater 6.
+			pids[heater]->Init(-1.0, -1.0, -1.0, DefaultExtruderTemperatureLimit, true);
+		}
+#endif
 		else
 		{
-			pids[heater]->Init(DefaultHotEndHeaterGain, DefaultHotEndHeaterTimeConstant, DefaultHotEndHeaterDeadTime, true);
+			pids[heater]->Init(DefaultHotEndHeaterGain, DefaultHotEndHeaterTimeConstant, DefaultHotEndHeaterDeadTime,
+								DefaultExtruderTemperatureLimit, true);
 		}
 	}
-	lastTime = millis();
+
+	lastTime = millis() - platform->HeatSampleInterval();		// flag the PIDS as due for spinning
 	longWait = platform->Time();
 	coldExtrude = false;
 	active = true;
@@ -86,7 +116,7 @@ void Heat::Spin()
 
 void Heat::Diagnostics(MessageType mtype)
 {
-	platform->MessageF(mtype, "Heat Diagnostics:\nBed heater = %d, chamber heater = %d\n", bedHeater, chamberHeater);
+	platform->MessageF(mtype, "=== Heat ===\nBed heater = %d, chamber heater = %d\n", bedHeater, chamberHeater);
 	for (size_t heater=0; heater < HEATERS; heater++)
 	{
 		if (pids[heater]->Active())
@@ -98,12 +128,9 @@ void Heat::Diagnostics(MessageType mtype)
 
 bool Heat::AllHeatersAtSetTemperatures(bool includingBed) const
 {
-	size_t firstHeater = 	(bedHeater == -1) ? E0_HEATER :
-							(includingBed) ? min<int8_t>(bedHeater, E0_HEATER) : E0_HEATER;
-
-	for(size_t heater = firstHeater; heater < HEATERS; heater++)
+	for(int8_t heater = 0; heater < HEATERS; heater++)
 	{
-		if (!HeaterAtSetTemperature(heater))
+		if (!HeaterAtSetTemperature(heater, true) && (includingBed || heater != bedHeater))
 		{
 			return false;
 		}
@@ -112,7 +139,7 @@ bool Heat::AllHeatersAtSetTemperatures(bool includingBed) const
 }
 
 //query an individual heater
-bool Heat::HeaterAtSetTemperature(int8_t heater) const
+bool Heat::HeaterAtSetTemperature(int8_t heater, bool waitWhenCooling) const
 {
 	// If it hasn't anything to do, it must be right wherever it is...
 	if (heater < 0 || heater >= HEATERS || pids[heater]->SwitchedOff() || pids[heater]->FaultOccurred())
@@ -122,7 +149,9 @@ bool Heat::HeaterAtSetTemperature(int8_t heater) const
 
 	const float dt = GetTemperature(heater);
 	const float target = (pids[heater]->Active()) ? GetActiveTemperature(heater) : GetStandbyTemperature(heater);
-	return (target < TEMPERATURE_LOW_SO_DONT_CARE) || (fabsf(dt - target) <= TEMPERATURE_CLOSE_ENOUGH);
+	return (target < TEMPERATURE_LOW_SO_DONT_CARE)
+		|| (fabsf(dt - target) <= TEMPERATURE_CLOSE_ENOUGH)
+		|| (target < dt && !waitWhenCooling);
 }
 
 Heat::HeaterStatus Heat::GetStatus(int8_t heater) const
@@ -163,6 +192,19 @@ void Heat::SetStandbyTemperature(int8_t heater, float t)
 float Heat::GetStandbyTemperature(int8_t heater) const
 {
 	return (heater >= 0 && heater < HEATERS) ? pids[heater]->GetStandbyTemperature() : ABS_ZERO;
+}
+
+void Heat::SetTemperatureLimit(int8_t heater, float t)
+{
+	if (heater >= 0 && heater < HEATERS)
+	{
+		pids[heater]->SetTemperatureLimit(t);
+	}
+}
+
+float Heat::GetTemperatureLimit(int8_t heater) const
+{
+	return (heater >= 0 && heater < HEATERS) ? pids[heater]->GetTemperatureLimit() : ABS_ZERO;
 }
 
 float Heat::GetTemperature(int8_t heater) const
@@ -210,12 +252,12 @@ void Heat::ResetFault(int8_t heater)
 	}
 }
 
-float Heat::GetAveragePWM(int8_t heater) const
+float Heat::GetAveragePWM(size_t heater) const
 {
 	return pids[heater]->GetAveragePWM();
 }
 
-uint32_t Heat::GetLastSampleTime(int8_t heater) const
+uint32_t Heat::GetLastSampleTime(size_t heater) const
 {
 	return pids[heater]->GetLastSampleTime();
 }
@@ -256,6 +298,45 @@ void Heat::GetAutoTuneStatus(StringRef& reply) const
 	{
 		reply.copy("No heater has been tuned yet");
 	}
+}
+
+// Get the highest temperature limit of any heater
+float Heat::GetHighestTemperatureLimit() const
+{
+	float limit = ABS_ZERO;
+	for (size_t h = 0; h < HEATERS; ++h)
+	{
+		if (h < reprap.GetToolHeatersInUse() || (int)h == bedHeater || (int)h == chamberHeater)
+		{
+			const float t = pids[h]->GetTemperatureLimit();
+			if (t > limit)
+			{
+				limit = t;
+			}
+		}
+	}
+	return limit;
+}
+
+// Override the model-generated PID parameters
+void Heat::SetM301PidParameters(size_t heater, const M301PidParameters& params)
+{
+	pids[heater]->SetM301PidParameters(params);
+}
+
+// Write heater model parameters to file returning true if no error
+bool Heat::WriteModelParameters(FileStore *f) const
+{
+	bool ok = f->Write("; Heater model parameters\n");
+	for (size_t h = 0; ok && h < HEATERS; ++h)
+	{
+		const FopDt& model = pids[h]->GetModel();
+		if (model.IsEnabled())
+		{
+			ok = model.WriteParameters(f, h);
+		}
+	}
+	return ok;
 }
 
 // End
