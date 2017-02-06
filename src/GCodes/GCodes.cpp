@@ -1790,7 +1790,7 @@ bool GCodes::DeactivateAllDrives()
 {
 	for (size_t drive = 0; drive <= DRIVES; drive++)
 	{
-		activeDrive[drive] = false;
+		cannedMoveType[drive] = CannedMoveType::none;
 	}
 }
 

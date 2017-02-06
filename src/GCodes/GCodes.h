@@ -128,7 +128,7 @@ public:
 
 private:
 
-#define USE_BED_CONTACT_PROBING
+//#define USE_BED_CONTACT_PROBING
 #ifdef USE_BED_CONTACT_PROBING
     bool DeactivateAllDrives();
     bool CannedMoveZToDiveHeight();
