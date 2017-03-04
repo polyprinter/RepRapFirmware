@@ -68,21 +68,22 @@ public:
 
 	void DebugPrint() const;
 
-	static const uint32_t stepClockRate = VARIANT_MCK/32;			// the frequency of the clock used for stepper pulse timing, about 0.38us resolution on the Duet
+	static const uint32_t stepClockRate = VARIANT_MCK/128;			// the frequency of the clock used for stepper pulse timing (see Platform::InitialiseInterrupts)
 	static const uint64_t stepClockRateSquared = (uint64_t)stepClockRate * stepClockRate;
 
 	// Note on the following constant:
 	// If we calculate the step interval on every clock, we reach a point where the calculation time exceeds the step interval.
 	// The worst case is pure Z movement on a delta. On a Mini Kossel with 80 steps/mm with this firmware running on a Duet (84MHx SAM3X8 processor),
 	// the calculation can just be managed in time at speeds of 15000mm/min (step interval 50us), but not at 20000mm/min (step interval 37.5us).
-	// Therefore, where the step interval falls below 70us, we don't calculate on every step.
+	// Therefore, where the step interval falls below 60us, we don't calculate on every step.
+	// Note: the above measurements were taken some time ago, before some firmware optimisations.
 #ifdef DUET_NG
-	static const int32_t MinCalcIntervalDelta = (50 * stepClockRate)/1000000; 		// the smallest sensible interval between calculations (70us) in step timer clocks
-	static const int32_t MinCalcIntervalCartesian = (50 * stepClockRate)/1000000;	// same as delta for now, but could be lower
+	static const int32_t MinCalcIntervalDelta = (40 * stepClockRate)/1000000; 		// the smallest sensible interval between calculations (40us) in step timer clocks
+	static const int32_t MinCalcIntervalCartesian = (40 * stepClockRate)/1000000;	// same as delta for now, but could be lower
 	static const uint32_t minInterruptInterval = 6;					// about 2us minimum interval between interrupts, in clocks
 #else
-	static const int32_t MinCalcIntervalDelta = (70 * stepClockRate)/1000000; 		// the smallest sensible interval between calculations (70us) in step timer clocks
-	static const int32_t MinCalcIntervalCartesian = (70 * stepClockRate)/1000000;	// same as delta for now, but could be lower
+	static const int32_t MinCalcIntervalDelta = (60 * stepClockRate)/1000000; 		// the smallest sensible interval between calculations (60us) in step timer clocks
+	static const int32_t MinCalcIntervalCartesian = (60 * stepClockRate)/1000000;	// same as delta for now, but could be lower
 	static const uint32_t minInterruptInterval = 6;					// about 2us minimum interval between interrupts, in clocks
 #endif
 
@@ -105,8 +106,9 @@ private:
 	bool IsDecelerationMove() const;								// return true if this move is or have been might have been intended to be a deceleration-only move
 	void DebugPrintVector(const char *name, const float *vec, size_t len) const;
 	void CheckEndstops(Platform *platform);
+	void AdvanceBabyStepping(float amount);							// Try to push babystepping earlier in the move queue
 
-	static void DoLookahead(DDA *laDDA);							// called by AdjustEndSpeed to do the real work
+	static void DoLookahead(DDA *laDDA);							// Try to smooth out moves in the queue
     static float Normalise(float v[], size_t dim1, size_t dim2);  	// Normalise a vector of dim1 dimensions to unit length in the first dim1 dimensions
     static void Absolute(float v[], size_t dimensions);				// Put a vector in the positive hyperquadrant
     static float Magnitude(const float v[], size_t dimensions);  	// Return the length of a vector

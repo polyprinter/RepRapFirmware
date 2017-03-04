@@ -23,7 +23,7 @@ void GCodeBuffer::Init()
 {
 	gcodePointer = 0;
 	readPointer = -1;
-	inComment = false;
+	inComment = timerRunning = false;
 	bufferState = GCodeBufferState::idle;
 }
 
@@ -134,7 +134,7 @@ bool GCodeBuffer::Put(char c)
 		gcodeBuffer[gcodePointer++] = c;
 		if (gcodePointer >= (int)GCODE_LENGTH)
 		{
-			reprap.GetPlatform()->Message(GENERIC_MESSAGE, "Error: G-Code buffer length overflow.\n");
+			reprap.GetPlatform()->MessageF(GENERIC_MESSAGE, "Error: G-Code buffer '$s' length overflow\n", identity);
 			gcodePointer = 0;
 			gcodeBuffer[0] = 0;
 		}

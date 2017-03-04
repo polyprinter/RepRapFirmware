@@ -70,6 +70,7 @@ public:
 		float feedRate;													// feed rate of this move
 		FilePosition filePos;											// offset in the file being printed at the end of reading this move
 		uint32_t xAxes;													// axes that X is mapped to
+		float newBabyStepping;											// the adjustment we made to the Z offset in this move
 		EndstopChecks endStopsToCheck;									// endstops to check
 		uint8_t moveType;												// the S parameter from the G0 or G1 command, 0 for a normal move
 		bool isFirmwareRetraction;										// true if this is a firmware retraction/un-retraction move
@@ -106,6 +107,7 @@ public:
 	float GetRawExtruderPosition(size_t drive) const;					// Get the actual extruder position, after adjusting the extrusion factor
 	float GetRawExtruderTotalByDrive(size_t extruder) const;			// Get the total extrusion since start of print, for one drive
 	float GetTotalRawExtrusion() const { return rawExtruderTotal; }		// Get the total extrusion since start of print, all drives
+	float GetBabyStepOffset() const;									// Get the current baby stepping Z offset
 
 	bool IsFlashing() const { return isFlashing; }						// Is a new firmware binary going to be flashed?
 
@@ -177,7 +179,7 @@ private:
 	bool HandleTcode(GCodeBuffer& gb, StringRef& reply);				// Do a T code
 	int SetUpMove(GCodeBuffer& gb, StringRef& reply);					// Pass a move on to the Move module
 	bool DoDwell(GCodeBuffer& gb);										// Wait for a bit
-	bool DoDwellTime(float dwell);										// Really wait for a bit
+	bool DoDwellTime(GCodeBuffer& gb, uint32_t dwellMillis);			// Really wait for a bit
 	bool DoHome(GCodeBuffer& gb, StringRef& reply, bool& error);		// Home some axes
 	bool DoSingleZProbeAtPoint(GCodeBuffer& gb, size_t probePointIndex, float heightAdjust); // Probe at a given point
 	bool DoSingleZProbe(GCodeBuffer& gb, StringRef& reply, bool reportOnly, float heightAdjust); // Probe where we are
@@ -210,6 +212,7 @@ private:
 	void ManageTool(GCodeBuffer& gb, StringRef& reply);					// Create a new tool definition
 	void SetToolHeaters(Tool *tool, float temperature);					// Set all a tool's heaters to the temperature.  For M104...
 	bool ToolHeatersAtSetTemperatures(const Tool *tool, bool waitWhenCooling) const; // Wait for the heaters associated with the specified tool to reach their set temperatures
+	void GenerateTemperatureReport(StringRef& reply);					// Store a standard-format temperature report in reply
 
 	void SetAllAxesNotHomed();											// Flag all axes as not homed
 	void SetPositions(const float positionNow[DRIVES], bool doBedCompensation = true); // Set the current position to be this
@@ -234,10 +237,12 @@ private:
 	bool WriteConfigOverrideFile(StringRef& reply, const char *fileName) const; // Write the config-override file
 	void CopyConfigFinalValues(GCodeBuffer& gb);						// Copy the feed rate etc. from the daemon to the input channels
 
+	void ClearBabyStepping();
+
 	static uint32_t LongArrayToBitMap(const long *arr, size_t numEntries);	// Convert an array of longs to a bit map
 
-	Platform* const platform;													// The RepRap machine
-	Webserver* const webserver;												// The web server class
+	Platform* const platform;											// The RepRap machine
+	Webserver* const webserver;											// The web server class
 
 	GCodeBuffer* gcodeSources[6];										// The various sources of gcodes
 
@@ -253,11 +258,8 @@ private:
 
 	bool active;								// Live and running?
 	bool isPaused;								// true if the print has been paused
-	bool dwellWaiting;							// We are in a dwell
 	bool runningConfigFile;						// We are running config.g during the startup process
 	bool doingToolChange;						// We are running tool change macros
-
-	float dwellTime;							// How long a pause for a dwell (seconds)?
 
 	// The following contain the details of moves that the Move module fetches
 	RawMove moveBuffer;							// Move details to pass to Move class
@@ -302,6 +304,8 @@ private:
 	float lastDefaultFanSpeed;					// Last speed given in a M106 command with on fan number
 	float speedFactor;							// speed factor, including the conversion from mm/min to mm/sec, normally 1/60
 	float extrusionFactors[MaxExtruders];		// extrusion factors (normally 1.0)
+	float currentBabyStepZOffset;				// The accumulated Z offset due to baby stepping requests
+	float pendingBabyStepZOffset;				// The amount of additional baby stepping requested but not yet acted on
 
 	// Z probe
 	float lastProbedZ;							// the last height at which the Z probe stopped

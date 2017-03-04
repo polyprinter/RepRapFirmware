@@ -41,7 +41,6 @@ void Socket::ReInit()
 	persistConnection = true;
 	isTerminated = false;
 	isSending = false;
-	needTransaction = false;
 	state = SocketState::inactive;
 
 	// Re-initialise the socket on the W5500
@@ -147,6 +146,19 @@ bool Socket::ReadBuffer(const char *&buffer, size_t &len)
 // Poll a socket to see if it needs to be serviced
 void Socket::Poll(bool full)
 {
+	// The mechanism used by class OutputBuffer and now by NetworkBuffer of marking data taken as soon as we return a pointer to it
+	// is DANGEROUS and will have to be rewritten for RTOS. We need to recycle empty buffers, otherwise multiple file uploads get stalled.
+	// However, we MUST NOT do this until the data had DEFINITELY been finished with. Temporarily use this conditional to avoid a bug
+	// with data corruption when this is not the case.
+	if (full)
+	{
+		// Recycle any receive buffers that are now empty
+		while (receivedData != nullptr && receivedData->IsEmpty())
+		{
+			receivedData = receivedData->Release();		// discard empty buffer at head of chain
+		}
+	}
+
 	switch(getSn_SR(socketNum))
 	{
 	case SOCK_INIT:
@@ -172,8 +184,7 @@ void Socket::Poll(bool full)
 
 		if (state == SocketState::listening)		// if it is a new connection
 		{
-			needTransaction = false;
-			if (socketNum == FtpSocketNumber || socketNum == TelnetSocketNumber)
+			if (socketNum == FtpSocketNumber || socketNum == FtpDataSocketNumber || socketNum == TelnetSocketNumber)
 			{
 				// FTP and Telnet protocols need a connection reply, so tell the Webserver module about the new connection
 				if (currentTransaction == nullptr)
@@ -187,7 +198,7 @@ void Socket::Poll(bool full)
 				else
 				{
 					// This should not happen
-					debugPrintf("ERROR:currentTransation should be null but isn't\n");
+//					debugPrintf("ERROR:currentTransation should be null but isn't\n");
 				}
 			}
 			state = SocketState::connected;
@@ -214,13 +225,12 @@ void Socket::Poll(bool full)
 			}
 		}
 
-		if (currentTransaction == nullptr && (receivedData != nullptr || needTransaction))
+		if (currentTransaction == nullptr && receivedData != nullptr)
 		{
 			currentTransaction = NetworkTransaction::Allocate();
 			if (currentTransaction != nullptr)
 			{
-				currentTransaction->Set(this, (needTransaction) ? TransactionStatus::acquired : TransactionStatus::receiving);
-				needTransaction = false;
+				currentTransaction->Set(this, TransactionStatus::receiving);
 			}
 		}
 
@@ -272,27 +282,16 @@ void Socket::Poll(bool full)
 		break;
 
 	case SOCK_CLOSED:
-#ifdef _HTTPSERVER_DEBUG_
-		printf("> HTTPSocket[%d] : CLOSED\r\n", s);
-#endif
-		reprap.GetWebserver()->ConnectionLost(this);						// the webserver needs this to be called for both graceful and disgraceful disconnects
-		state = SocketState::inactive;
-
-		if (socket(socketNum, Sn_MR_TCP, localPort, 0x00) == socketNum)		// Reinitialize the socket
+		if (full)									// don't make a call to webserver if we might be in it already
 		{
-#ifdef _HTTPSERVER_DEBUG_
-			printf("> HTTPSocket[%d] : OPEN\r\n", socketNum);
-#endif
+			reprap.GetWebserver()->ConnectionLost(this);	// the webserver needs this to be called for both graceful and disgraceful disconnects
+			ReInit();
 		}
 		break;
 
 	default:
 		break;
-	} // end of switch
-
-#ifdef _USE_WATCHDOG_
-	HTTPServer_WDT_Reset();
-#endif
+	}
 }
 
 // Try to send data, returning true if all data has been sent and we ought to close the socket
@@ -307,7 +306,7 @@ bool Socket::TrySendData()
 			setSn_IR(socketNum, Sn_IR_SENDOK);		// if yes
 			isSending = false;
 		}
-		else if(tmp & Sn_IR_TIMEOUT)				// did it time out?
+		else if (tmp & Sn_IR_TIMEOUT)				// did it time out?
 		{
 			isSending = false;
 			disconnectNoWait(socketNum);			// if so, close the socket
@@ -368,20 +367,24 @@ void Socket::DiscardReceivedData()
 	}
 }
 
-// The webserver calls this to tell the socket that it needs a transaction, e.g. for sending a Telnet os FTP response.
+// The webserver calls this to tell the socket that it needs a transaction, e.g. for sending a Telnet or FTP response.
 // An empty transaction will do.
 // Return true if we can do it, false if the connection is closed or closing.
 bool Socket::AcquireTransaction()
 {
-	if (currentTransaction != nullptr && currentTransaction->GetStatus() == TransactionStatus::acquired)
+	if (currentTransaction != nullptr)
 	{
-		return true;
+		return currentTransaction->GetStatus() == TransactionStatus::acquired;
 	}
 
 	if (getSn_SR(socketNum) == SOCK_ESTABLISHED)
 	{
-		needTransaction = true;
-		return true;
+		currentTransaction = NetworkTransaction::Allocate();
+		if (currentTransaction != nullptr)
+		{
+			currentTransaction->Set(this, TransactionStatus::acquired);
+			return true;
+		}
 	}
 	return false;
 }

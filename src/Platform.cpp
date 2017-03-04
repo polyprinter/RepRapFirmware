@@ -27,6 +27,7 @@
 #include "Network.h"
 #include "RepRap.h"
 #include "Webserver.h"
+#include "Libraries/Math/Isqrt.h"
 
 #include "sam/drivers/tc/tc.h"
 #include "sam/drivers/hsmci/hsmci.h"
@@ -46,7 +47,7 @@ extern "C" char *sbrk(int i);
 #ifdef DUET_NG
 const uint16_t driverPowerOnAdcReading = (uint16_t)(4096 * 10.0/PowerFailVoltageRange);			// minimum voltage at which we initialise the drivers
 const uint16_t driverPowerOffAdcReading = (uint16_t)(4096 * 9.5/PowerFailVoltageRange);			// voltages below this flag the drivers as unusable
-const uint16_t driverOverVoltageAdcReading = (uint16_t)(4096 * 29.5/PowerFailVoltageRange);		// voltages above this cause driver shutdown
+const uint16_t driverOverVoltageAdcReading = (uint16_t)(4096 * 29.0/PowerFailVoltageRange);		// voltages above this cause driver shutdown
 const uint16_t driverNormalVoltageAdcReading = (uint16_t)(4096 * 27.5/PowerFailVoltageRange);	// voltages at or below this are normal
 #endif
 
@@ -112,7 +113,7 @@ void setup()
 	SCB->CCR |= SCB_CCR_DIV_0_TRP_Msk;
 
 	// When doing a software reset, we disable the NRST input (User reset) to prevent the negative-going pulse that gets generated on it
-	// being held in the capacitor and changing the reset reason form Software to User. So enable it again here. We hope that the reset signal
+	// being held in the capacitor and changing the reset reason from Software to User. So enable it again here. We hope that the reset signal
 	// will have gone away by now.
 #ifndef RSTC_MR_KEY_PASSWD
 // Definition of RSTC_MR_KEY_PASSWD is missing in the SAM3X ASF files
@@ -145,8 +146,7 @@ extern "C"
 	// Also get the program counter when the exception occurred.
 	void prvGetRegistersFromStack(const uint32_t *pulFaultStackAddress)
 	{
-		const uint32_t pc = pulFaultStackAddress[6];
-	    reprap.GetPlatform()->SoftwareReset((uint16_t)SoftwareResetReason::hardFault, pc);
+	    reprap.GetPlatform()->SoftwareReset((uint16_t)SoftwareResetReason::hardFault, pulFaultStackAddress + 5);
 	}
 
 	// The fault handler implementation calls a function called prvGetRegistersFromStack()
@@ -400,7 +400,7 @@ void Platform::Init()
 		break;
 	}
 
-	// Initialise TMC2660 drivers
+	// Initialise TMC2660 driver module
 	driversPowered = false;
 	TMC2660::Init(ENABLE_PINS, numTMC2660Drivers);
 #endif
@@ -828,8 +828,6 @@ void Platform::UpdateFirmware()
 #if (SAM4S || SAM4E)
 	// The EWP command is not supported for non-8KByte sectors in the SAM4 series.
 	// So we have to unlock and erase the complete 64Kb sector first.
-	// TODO save the NVRAM area and restore it later
-
 	flash_unlock(IAP_FLASH_START, IAP_FLASH_END, nullptr, nullptr);
 	flash_erase_sector(IAP_FLASH_START);
 
@@ -936,7 +934,7 @@ void Platform::UpdateFirmware()
 	Message(FIRMWARE_UPDATE_MESSAGE, "Updating main firmware\n");
 
 	// Allow time for the firmware update message to be sent
-	uint32_t now = millis();
+	const uint32_t now = millis();
 	while (FlushMessages() && millis() - now < 2000) { }
 
 	// Step 2 - Let the firmware do whatever is necessary before we exit this program
@@ -946,15 +944,29 @@ void Platform::UpdateFirmware()
 	// This does essentially what the Atmel AT02333 paper suggests (see 3.2.2 ff)
 
 	// Disable all IRQs
+	SysTick->CTRL  = SysTick_CTRL_CLKSOURCE_Msk;	// disable the system tick exception
 	cpu_irq_disable();
-	for(size_t i = 0; i < 8; i++)
+	for (size_t i = 0; i < 8; i++)
 	{
-		NVIC->ICER[i] = 0xFFFFFFFF;		// Disable IRQs
-		NVIC->ICPR[i] = 0xFFFFFFFF;		// Clear pending IRQs
+		NVIC->ICER[i] = 0xFFFFFFFF;					// Disable IRQs
+		NVIC->ICPR[i] = 0xFFFFFFFF;					// Clear pending IRQs
 	}
 
-	// Our SAM3X doesn't support disabling the watchdog, so leave it running.
-	// The IAP binary will kick it as soon as it's started
+	// Newer versions of iap4e.bin reserve space above the stack for us to pass the firmware filename
+	static const char filename[] = "0:/sys/" IAP_FIRMWARE_FILE;
+	const uint32_t topOfStack = *reinterpret_cast<uint32_t *>(IAP_FLASH_START);
+	if (topOfStack + sizeof(filename) <=
+#if (SAM4S || SAM4E)
+						IRAM_ADDR + IRAM_SIZE
+#else
+						IRAM1_ADDR + IRAM1_SIZE
+#endif
+	   )
+	{
+		memcpy(reinterpret_cast<char*>(topOfStack), filename, sizeof(filename));
+	}
+
+	wdt_restart(WDT);								// kick the watchdog one last time
 
 	// Modify vector table location
 	__DSB();
@@ -963,12 +975,13 @@ void Platform::UpdateFirmware()
 	__DSB();
 	__ISB();
 
-	// Reset stack pointer, enable IRQs again and start the new IAP binary
-	__set_MSP(*(uint32_t *)IAP_FLASH_START);
 	cpu_irq_enable();
 
-	void *entryPoint = (void *)(*(uint32_t *)(IAP_FLASH_START + 4));
-	goto *entryPoint;
+	__asm volatile ("mov r3, %0" : : "r" (IAP_FLASH_START) : "r3");
+	__asm volatile ("ldr sp, [r3]");
+	__asm volatile ("ldr r1, [r3, #4]");
+	__asm volatile ("orr r1, r1, #1");
+	__asm volatile ("bx r1");
 }
 
 // Send the beep command to the aux channel. There is no flow control on this port, so it can't block for long.
@@ -1008,7 +1021,7 @@ float Platform::Time()
 void Platform::Exit()
 {
 	// Close all files
-	for(size_t i = 0; i < MAX_FILES; i++)
+	for (size_t i = 0; i < MAX_FILES; i++)
 	{
 		while (files[i]->inUse)
 		{
@@ -1024,6 +1037,14 @@ void Platform::Exit()
 
 	// Stop processing data. Don't try to send a message because it will probably never get there.
 	active = false;
+
+	// Close down USB and serial ports
+	SERIAL_MAIN_DEVICE.end();
+	SERIAL_AUX_DEVICE.end();
+#ifdef SERIAL_AUX2_DEVICE
+	SERIAL_AUX2_DEVICE.end();
+#endif
+
 }
 
 Compatibility Platform::Emulating() const
@@ -1219,7 +1240,8 @@ void Platform::Spin()
 	ClassReport(longWait);
 }
 
-void Platform::SoftwareReset(uint16_t reason, uint32_t pc)
+// Perform a software reset. 'stk' points to the program counter on the stack if the cause is an exception, otherwise it is nullptr.
+void Platform::SoftwareReset(uint16_t reason, const uint32_t *stk)
 {
 	wdt_restart(WDT);							// kick the watchdog
 	if (reason == (uint16_t)SoftwareResetReason::erase)
@@ -1277,10 +1299,19 @@ void Platform::SoftwareReset(uint16_t reason, uint32_t pc)
 		}
 		srdBuf[slot].magic = SoftwareResetData::magicValue;
 		srdBuf[slot].resetReason = reason;
-		GetStackUsage(NULL, NULL, &srdBuf[slot].neverUsedRam);
+		GetStackUsage(nullptr, nullptr, &srdBuf[slot].neverUsedRam);
 		srdBuf[slot].hfsr = SCB->HFSR;
 		srdBuf[slot].cfsr = SCB->CFSR;
-		srdBuf[slot].pc = pc;
+		srdBuf[slot].icsr = SCB->ICSR;
+		srdBuf[slot].bfar = SCB->BFAR;
+		if (stk != nullptr)
+		{
+			srdBuf[slot].sp = reinterpret_cast<uint32_t>(stk);
+			for (size_t i = 0; i < ARRAY_SIZE(srdBuf[slot].stack); ++i)
+			{
+				srdBuf[slot].stack[i] = stk[i];
+			}
+		}
 
 		// Save diagnostics data to Flash
 #ifdef DUET_NG
@@ -1331,10 +1362,10 @@ void Platform::InitialiseInterrupts()
 
 	// Timer interrupt for stepper motors
 	// The clock rate we use is a compromise. Too fast and the 64-bit square roots take a long time to execute. Too slow and we lose resolution.
-	// We choose a clock divisor of 32, which gives us 0.38us resolution. The next option is 128 which would give 1.524us resolution.
+	// We choose a clock divisor of 128 which gives 1.524us resolution on the Duet 085 (84MHz clock) and 0.9375us resolution on the Duet WiFi.
 	pmc_set_writeprotect(false);
 	pmc_enable_periph_clk((uint32_t) STEP_TC_IRQN);
-	tc_init(STEP_TC, STEP_TC_CHAN, TC_CMR_WAVE | TC_CMR_WAVSEL_UP | TC_CMR_TCCLKS_TIMER_CLOCK3);
+	tc_init(STEP_TC, STEP_TC_CHAN, TC_CMR_WAVE | TC_CMR_WAVSEL_UP | TC_CMR_TCCLKS_TIMER_CLOCK4);
 	STEP_TC->TC_CHANNEL[STEP_TC_CHAN].TC_IDR = ~(uint32_t)0; // interrupts disabled for now
 	tc_start(STEP_TC, STEP_TC_CHAN);
 	tc_get_status(STEP_TC, STEP_TC_CHAN);					// clear any pending interrupt
@@ -1429,7 +1460,12 @@ void Platform::Diagnostics(MessageType mtype)
 		int slot = -1;
 
 #ifdef DUET_NG
-		if (flash_read_user_signature(reinterpret_cast<uint32_t*>(srdBuf), sizeof(srdBuf)/sizeof(uint32_t)) == FLASH_RC_OK)
+		// Work around bug in ASF flash library: flash_read_user_signature calls a RAMFUNC wito7ut disabling interrupts first.
+		// This caused a crash (watchdog timeout) sometimes if we run M122 while a print is in progress
+		const irqflags_t flags = cpu_irq_save();
+		const uint32_t rc = flash_read_user_signature(reinterpret_cast<uint32_t*>(srdBuf), sizeof(srdBuf)/sizeof(uint32_t));
+		cpu_irq_restore(flags);
+		if (rc == FLASH_RC_OK)
 #else
 		DueFlashStorage::read(SoftwareResetData::nvAddress, srdBuf, sizeof(srdBuf));
 #endif
@@ -1445,9 +1481,21 @@ void Platform::Diagnostics(MessageType mtype)
 		Message(mtype, "Last software reset code ");
 		if (slot >= 0 && srdBuf[slot].magic == SoftwareResetData::magicValue)
 		{
-			MessageF(mtype, "0x%04x, PC 0x%08x, HFSR 0x%08x, CFSR 0x%08x, available RAM %u bytes (slot %d)\n",
-					srdBuf[slot].resetReason, srdBuf[slot].pc, srdBuf[slot].hfsr, srdBuf[slot].cfsr, srdBuf[slot].neverUsedRam, slot);
-			MessageF(mtype, "Spinning module during software reset: %s\n", moduleName[srdBuf[slot].resetReason & 0x0F]);
+			// Our format buffer is only 256 characters long, so the next 2 lines must be written separately
+			MessageF(mtype, "0x%04x, HFSR 0x%08x, CFSR 0x%08x, ICSR 0x%08x, BFAR 0x%08x, SP 0x%08x\n",
+						srdBuf[slot].resetReason, srdBuf[slot].hfsr, srdBuf[slot].cfsr, srdBuf[slot].icsr, srdBuf[slot].bfar, srdBuf[slot].sp);
+			if (srdBuf[slot].sp != 0xFFFFFFFF)
+			{
+				// We saved a stack dump, so print it
+				scratchString.Clear();
+				for (size_t i = 0; i < ARRAY_SIZE(srdBuf[slot].stack); ++i)
+				{
+					scratchString.catf(" %08x", srdBuf[slot].stack[i]);
+				}
+				MessageF(mtype, "Stack:%s\n", scratchString.Pointer());
+			}
+			MessageF(mtype, "Spinning module during software reset: %s, available RAM %u bytes (slot %d)\n",
+					moduleName[srdBuf[slot].resetReason & 0x0F], srdBuf[slot].neverUsedRam, slot);
 		}
 		else
 		{
@@ -1457,11 +1505,6 @@ void Platform::Diagnostics(MessageType mtype)
 
 	// Show the current error codes
 	MessageF(mtype, "Error status: %u\n", errorCodeBits);
-
-	//***TEMPORARY show the maximum PWM loop count, which should never exceed 1
-	extern uint32_t maxPwmLoopCount;
-	MessageF(mtype, "Max PWM loop count %u\n", maxPwmLoopCount);
-	maxPwmLoopCount = 0;
 
 	// Show the number of free entries in the file table
 	unsigned int numFreeFiles = 0;
@@ -1579,8 +1622,34 @@ void Platform::DiagnosticTest(int d)
 		(void)RepRap::ReadDword(reinterpret_cast<const char*>(dummy) + 1);	// call function in another module so it can't be optimised away
 		break;
 
+	case (int)DiagnosticTestType::BusFault:
+		// Read from the "Undefined (Abort)" area
+#ifdef DUET_NG
+		(void)RepRap::ReadDword(reinterpret_cast<const char*>(0x20800000));
+#else
+		(void)RepRap::ReadDword(reinterpret_cast<const char*>(0x20200000));
+#endif
+		break;
+
 	case (int)DiagnosticTestType::PrintMoves:
 		DDA::PrintMoves();
+		break;
+
+	case (int)DiagnosticTestType::TimeSquareRoot:		// Show the square root calculation time. The displayed value is subject to interrupts.
+		{
+			const uint32_t num1 = 0x7265ac3d;
+			const uint32_t now1 = Platform::GetInterruptClocks();
+			const uint32_t num1a = isqrt64((uint64_t)num1 * num1);
+			const uint32_t tim1 = Platform::GetInterruptClocks() - now1;
+
+			const uint32_t num2 = 0x0000a4c5;
+			const uint32_t now2 = Platform::GetInterruptClocks();
+			const uint32_t num2a = isqrt64((uint64_t)num2 * num2);
+			const uint32_t tim2 = Platform::GetInterruptClocks() - now2;
+			MessageF(GENERIC_MESSAGE, "Square roots: 64-bit %.1fus %s, 32-bit %.1fus %s\n",
+					(float)(tim1 * 1000000)/DDA::stepClockRate, (num1a == num1) ? "ok" : "ERROR",
+							(float)(tim2 * 1000000)/DDA::stepClockRate, (num2a == num2) ? "ok" : "ERROR");
+		}
 		break;
 
 #ifdef DUET_NG

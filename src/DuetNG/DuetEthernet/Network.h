@@ -65,9 +65,9 @@ public:
 	void SaveFTPConnection() {}
 	void SaveTelnetConnection() {}
 
-	bool AcquireFTPTransaction();
-	bool AcquireDataTransaction();
-	bool AcquireTelnetTransaction();
+	bool AcquireFTPTransaction() { return AcquireTransaction(FtpSocketNumber); }
+	bool AcquireDataTransaction() { return AcquireTransaction(FtpDataSocketNumber); }
+	bool AcquireTelnetTransaction() { return AcquireTransaction(TelnetSocketNumber); }
 
 	void Defer(NetworkTransaction *tr);
 
@@ -81,17 +81,20 @@ public:
 private:
 	enum class NetworkState
 	{
-		disabled,					// WiFi not active
-		enabled,					// WiFi enabled but not started yet
-		establishingLink,			// starting up (waiting for initialisation)
-		obtainingIP,
-		active
+		disabled,					// Network disabled
+		enabled,					// Network enabled but not started yet
+		establishingLink,			// starting up, waiting for link
+		obtainingIP,				// link established, waiting for DHCP
+		active						// network running
 	};
 
 	void InitSockets();
 	void TerminateSockets();
 
-	Platform *platform;
+	bool AcquireTransaction(size_t socketNumber)
+	pre(socketNumber < NumTcpSockets);
+
+	Platform * const platform;
 	float longWait;
 	uint32_t lastTickMillis;
 

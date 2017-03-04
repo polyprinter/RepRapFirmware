@@ -490,28 +490,24 @@ unsigned int RepRap::GetNumberOfContiguousTools() const
 
 void RepRap::Tick()
 {
-	if (active)
+	if (active && !resetting)
 	{
-		Platform::KickWatchdog();
-		if (!resetting)
+		platform->Tick();
+		++ticksInSpinState;
+		if (ticksInSpinState >= 20000)	// if we stall for 20 seconds, save diagnostic data and reset
 		{
-			platform->Tick();
-			++ticksInSpinState;
-			if (ticksInSpinState >= 20000)	// if we stall for 20 seconds, save diagnostic data and reset
+			resetting = true;
+			for(size_t i = 0; i < HEATERS; i++)
 			{
-				resetting = true;
-				for(size_t i = 0; i < HEATERS; i++)
-				{
-					platform->SetHeater(i, 0.0);
-				}
-				for(size_t i = 0; i < DRIVES; i++)
-				{
-					platform->DisableDrive(i);
-					// We can't set motor currents to 0 here because that requires interrupts to be working, and we are in an ISR
-				}
-
-				platform->SoftwareReset((uint16_t)SoftwareResetReason::stuckInSpin);
+				platform->SetHeater(i, 0.0);
 			}
+			for(size_t i = 0; i < DRIVES; i++)
+			{
+				platform->DisableDrive(i);
+				// We can't set motor currents to 0 here because that requires interrupts to be working, and we are in an ISR
+			}
+
+			platform->SoftwareReset((uint16_t)SoftwareResetReason::stuckInSpin);
 		}
 	}
 }
@@ -655,7 +651,8 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 			response->catf("%c%.2f", ch, gCodes->GetExtrusionFactor(extruder) * 100.0);
 			ch = ',';
 		}
-		response->cat((ch == '[') ? "[]}" : "]}");
+		response->cat((ch == '[') ? "[]" : "]");
+		response->catf(",\"babystep\":%.03f}", gCodes->GetBabyStepOffset());
 	}
 
 	// G-code reply sequence for webserver (seqence number for AUX is handled later)
@@ -1191,6 +1188,9 @@ OutputBuffer *RepRap::GetLegacyStatusResponse(uint8_t type, int seq)
 		ch = ',';
 	}
 	response->cat((ch == '[') ? "[]" : "]");
+
+	// Send the baby stepping offset
+	response->catf(",\"babystep\":%.03f", gCodes->GetBabyStepOffset());
 
 	// Send the current tool number
 	const int toolNumber = (currentTool == nullptr) ? 0 : currentTool->Number();

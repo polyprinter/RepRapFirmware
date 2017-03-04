@@ -97,7 +97,6 @@ void GCodes::Init()
 	doingToolChange = false;
 	active = true;
 	longWait = platform->Time();
-	dwellTime = longWait;
 	limitAxes = true;
 	for(size_t axis = 0; axis < MAX_AXES; axis++)
 	{
@@ -132,7 +131,6 @@ void GCodes::Reset()
 
 	fileToPrint.Close();
 	fileBeingWritten = NULL;
-	dwellWaiting = false;
 	probeCount = 0;
 	cannedCycleMoveCount = 0;
 	cannedCycleMoveQueued = false;
@@ -151,6 +149,7 @@ void GCodes::Reset()
 	toolChangeRestorePoint.Init();
 
 	ClearMove();
+	ClearBabyStepping();
 
 	for (size_t i = 0; i < MaxTriggers; ++i)
 	{
@@ -171,6 +170,11 @@ void GCodes::Reset()
 	{
 		resourceOwners[i] = nullptr;
 	}
+}
+
+void GCodes::ClearBabyStepping()
+{
+	pendingBabyStepZOffset = currentBabyStepZOffset = 0.0;
 }
 
 bool GCodes::DoingFileMacro() const
@@ -329,8 +333,31 @@ void GCodes::Spin()
 				cancelWait = isWaiting = false;
 				gb.SetState(GCodeState::normal);
 			}
-			// In Marlin emulation mode we should return some sort of (undocumented) message here every second...
-			isWaiting = true;
+			else
+			{
+				isWaiting = true;
+
+				// In Marlin emulation mode we should return some sort of undocumented message here every second. Try a standard temperature report.
+				if (platform->Emulating() == marlin && gb.GetResponseMessageType() == MessageType::HOST_MESSAGE)
+				{
+					const uint32_t now = millis();
+					if (gb.timerRunning)
+					{
+						if (now - gb.whenTimerStarted >= 1000)
+						{
+							gb.whenTimerStarted = now;
+							GenerateTemperatureReport(reply);
+							reply.cat('\n');
+							platform->Message(HOST_MESSAGE, reply.Pointer());
+						}
+					}
+					else
+					{
+						gb.whenTimerStarted = now;
+						gb.timerRunning = true;
+					}
+				}
+			}
 			break;
 
 		case GCodeState::pausing1:
@@ -618,6 +645,7 @@ void GCodes::Spin()
 		if (gb.GetState() == GCodeState::normal)
 		{
 			// We completed a command, so unlock resources and tell the host about it
+			gb.timerRunning = false;
 			UnlockAll(gb);
 			HandleReply(gb, error, reply.Pointer());
 		}
@@ -756,14 +784,14 @@ void GCodes::DoFilePrint(GCodeBuffer& gb, StringRef& reply)
 
 			gb.Init();								// mark buffer as empty
 
-			// Don't close the file until all moves have been completed, in case the print gets paused.
-			// Also, this keeps the state as 'Printing' until the print really has finished.
-			if (LockMovementAndWaitForStandstill(gb))
+			if (gb.MachineState().previous == nullptr)
 			{
-				fd.Close();
-				if (gb.MachineState().previous == nullptr)
+				// Finished printing SD card file
+				// Don't close the file until all moves have been completed, in case the print gets paused.
+				// Also, this keeps the state as 'Printing' until the print really has finished.
+				if (LockMovementAndWaitForStandstill(gb))
 				{
-					// Finished printing SD card file
+					fd.Close();
 					UnlockAll(gb);
 					reprap.GetPrintMonitor()->StoppedPrint();
 					if (platform->Emulating() == marlin)
@@ -772,21 +800,22 @@ void GCodes::DoFilePrint(GCodeBuffer& gb, StringRef& reply)
 						HandleReply(gb, false, "Done printing file");
 					}
 				}
-				else
+			}
+			else
+			{
+				// Finished a macro or finished processing config.g
+				fd.Close();
+				if (runningConfigFile)
 				{
-					// Finished a macro or finished processing config.g
-					if (runningConfigFile)
-					{
-						CopyConfigFinalValues(gb);
-						runningConfigFile = false;
-					}
-					Pop(gb);
-					gb.Init();
-					if (gb.GetState() == GCodeState::normal)
-					{
-						UnlockAll(gb);
-						HandleReply(gb, false, "");
-					}
+					CopyConfigFinalValues(gb);
+					runningConfigFile = false;
+				}
+				Pop(gb);
+				gb.Init();
+				if (gb.GetState() == GCodeState::normal)
+				{
+					UnlockAll(gb);
+					HandleReply(gb, false, "");
 				}
 			}
 			return;
@@ -952,9 +981,6 @@ bool GCodes::LockMovementAndWaitForStandstill(const GCodeBuffer& gb)
 	{
 		return false;
 	}
-
-	// Allow movement again
-	reprap.GetMove()->ResumeMoving();
 
 	// Get the current positions. These may not be the same as the ones we remembered from last time if we just did a special move.
 	reprap.GetMove()->GetCurrentUserPosition(moveBuffer.coords, 0, reprap.GetCurrentXAxes());
@@ -1142,6 +1168,7 @@ unsigned int GCodes::LoadMoveBufferFromGCode(GCodeBuffer& gb, int moveType)
 				}
 				else if (moveType == 0)
 				{
+					moveArg += currentBabyStepZOffset;
 					if (axis == Z_AXIS && isRetracted)
 					{
 						moveArg += retractHop;						// handle firmware retraction on layer change
@@ -1351,7 +1378,7 @@ bool GCodes::DoArcMove(GCodeBuffer& gb, bool clockwise)
 		}
 		else
 		{
-			moveBuffer.coords[Z_AXIS] = zParam;
+			moveBuffer.coords[Z_AXIS] = zParam + currentBabyStepZOffset + retractHop;		// handle firmware retraction on layer change
 			if (currentTool != nullptr)
 			{
 				moveBuffer.coords[Z_AXIS] -= currentTool->GetOffset()[Z_AXIS];
@@ -1448,6 +1475,7 @@ bool GCodes::ReadMove(RawMove& m)
 	}
 
 	m = moveBuffer;
+
 	if (segmentsLeft == 1)
 	{
 		// If there is just 1 segment left, it doesn't matter if it is an arc move or not, just move to the end position
@@ -1496,6 +1524,36 @@ bool GCodes::ReadMove(RawMove& m)
 
 		--segmentsLeft;
 	}
+
+	// Check for pending baby stepping
+	if (m.moveType == 0 && pendingBabyStepZOffset != 0.0)
+	{
+		// Calculate the move length, to see how much new babystepping is appropriate for this move
+		float xMoveLength = 0.0;
+		for (size_t drive = 0; drive < numAxes; ++drive)
+		{
+			if ((arcAxesMoving & (1 << drive)) != 0)
+			{
+				xMoveLength = max<float>(xMoveLength, fabs(m.coords[drive] - m.initialCoords[drive]));
+			}
+		}
+		const float distance = sqrtf(fsquare(xMoveLength) + fsquare(m.coords[Y_AXIS] - m.initialCoords[Y_AXIS]) + fsquare(m.coords[Z_AXIS] - m.initialCoords[Z_AXIS]));
+
+		// The maximum Z speed change due to baby stepping that we allow is the Z jerk rate, to avoid slowing the print down too much
+		const float minMoveTime = distance/m.feedRate;
+		const float maxBabyStepping = minMoveTime * platform->ConfiguredInstantDv(Z_AXIS);
+		const float babySteppingToDo = constrain<float>(pendingBabyStepZOffset, -maxBabyStepping, maxBabyStepping);
+		m.coords[Z_AXIS] += babySteppingToDo;
+		m.newBabyStepping = babySteppingToDo;
+		moveBuffer.initialCoords[Z_AXIS] = m.coords[Z_AXIS];
+		moveBuffer.coords[Z_AXIS] += babySteppingToDo;
+		pendingBabyStepZOffset -= babySteppingToDo;
+		currentBabyStepZOffset += babySteppingToDo;
+	}
+	else
+	{
+		m.newBabyStepping = 0.0;
+	}
 	return true;
 }
 
@@ -1506,6 +1564,11 @@ void GCodes::ClearMove()
 	moveBuffer.endStopsToCheck = 0;
 	moveBuffer.moveType = 0;
 	moveBuffer.isFirmwareRetraction = false;
+}
+
+float GCodes::GetBabyStepOffset() const
+{
+	return currentBabyStepZOffset + pendingBabyStepZOffset;
 }
 
 // Run a file macro. Prior to calling this, 'state' must be set to the state we want to enter when the macro has been completed.
@@ -1597,65 +1660,51 @@ bool GCodes::DoCannedCycleMove(GCodeBuffer& gb, EndstopChecks ce)
 // This handles G92. Return true if completed, false if it needs to be called again.
 bool GCodes::SetPositions(GCodeBuffer& gb)
 {
-	if (gb.Seen('R') && gb.GetIValue() == 1)
+	// Don't pause the machine if only extruder drives are being reset (DC, 2015-09-06).
+	// This avoids blobs and seams when the gcode uses absolute E coordinates and periodically includes G92 E0.
+	bool includingAxes = false;
+	for (size_t drive = 0; drive < numAxes; ++drive)
 	{
-		// Babystepping command. All coordinates except Z are ignored.
-		if (gb.Seen('Z'))
+		if (gb.Seen(axisLetters[drive]))
 		{
-			const float babystepAmount = gb.GetFValue() * distanceScale;
-			if (fabs(babystepAmount) <= 1.0)		// limit babystepping to 1mm
-			{
-				reprap.GetMove()->Babystep(babystepAmount);
-			}
+			includingAxes = true;
+			break;
 		}
 	}
-	else
-	{
-		// Don't pause the machine if only extruder drives are being reset (DC, 2015-09-06).
-		// This avoids blobs and seams when the gcode uses absolute E coordinates and periodically includes G92 E0.
-		bool includingAxes = false;
-		for (size_t drive = 0; drive < numAxes; ++drive)
-		{
-			if (gb.Seen(axisLetters[drive]))
-			{
-				includingAxes = true;
-				break;
-			}
-		}
 
-		if (includingAxes)
-		{
-			if (!LockMovementAndWaitForStandstill(gb))	// lock movement and get current coordinates
-			{
-				return false;
-			}
-		}
-		else if (segmentsLeft != 0)			// wait for previous move to be taken so that GetCurrentUserPosition returns the correct value
+	if (includingAxes)
+	{
+		if (!LockMovementAndWaitForStandstill(gb))	// lock movement and get current coordinates
 		{
 			return false;
 		}
+		ClearBabyStepping();						// G92 on any axis clears pending babystepping
+	}
+	else if (segmentsLeft != 0)						// wait for previous move to be taken so that GetCurrentUserPosition returns the correct value
+	{
+		return false;
+	}
 
-		// Handle any E parameter in the G92 command. If we get an error, ignore it and do the axes anyway.
-		(void)LoadExtrusionAndFeedrateFromGCode(gb, -1);
+	// Handle any E parameter in the G92 command. If we get an error, ignore it and do the axes anyway.
+	(void)LoadExtrusionAndFeedrateFromGCode(gb, -1);
 
-		if (includingAxes)
-		{
-			(void)LoadMoveBufferFromGCode(gb, -1);
+	if (includingAxes)
+	{
+		(void)LoadMoveBufferFromGCode(gb, -1);
 
 #if SUPPORT_ROLAND
-			if (reprap.GetRoland()->Active())
+		if (reprap.GetRoland()->Active())
+		{
+			for(size_t axis = 0; axis < AXES; axis++)
 			{
-				for(size_t axis = 0; axis < AXES; axis++)
+				if (!reprap.GetRoland()->ProcessG92(moveBuffer[axis], axis))
 				{
-					if (!reprap.GetRoland()->ProcessG92(moveBuffer[axis], axis))
-					{
-						return false;
-					}
+					return false;
 				}
 			}
-#endif
-			SetPositions(moveBuffer.coords);
 		}
+#endif
+		SetPositions(moveBuffer.coords);
 	}
 	return true;
 }
@@ -1748,6 +1797,7 @@ bool GCodes::DoHome(GCodeBuffer& gb, StringRef& reply, bool& error)
 	if (reprap.GetMove()->IsDeltaMode())
 	{
 		SetAllAxesNotHomed();
+		ClearBabyStepping();
 		DoFileMacro(gb, HOME_DELTA_G, true);
 	}
 	else
@@ -1762,6 +1812,10 @@ bool GCodes::DoHome(GCodeBuffer& gb, StringRef& reply, bool& error)
 			}
 		}
 
+		if (toBeHomed == 0 || (toBeHomed & (1u << Z_AXIS)) != 0)
+		{
+			ClearBabyStepping();
+		}
 		if (toBeHomed == 0 || toBeHomed == ((1u << numAxes) - 1))
 		{
 			// Homing everything
@@ -2408,6 +2462,7 @@ bool GCodes::ProbeGrid(GCodeBuffer& gb, StringRef& reply)
 
 bool GCodes::LoadHeightMap(GCodeBuffer& gb, StringRef& reply) const
 {
+	reprap.GetMove()->SetIdentityTransform();					// stop using old-style bed compensation and clear the height map
 	const char* heightMapFileName;
 	if (gb.Seen('P'))
 	{
@@ -2418,7 +2473,6 @@ bool GCodes::LoadHeightMap(GCodeBuffer& gb, StringRef& reply) const
 		heightMapFileName = DefaultHeightMapFile;
 	}
 	FileStore * const f = platform->GetFileStore(platform->GetSysDir(), heightMapFileName, false);
-
 	if (f == nullptr)
 	{
 		reply.printf("Height map file %s not found", heightMapFileName);
@@ -2658,28 +2712,33 @@ void GCodes::DeleteFile(const char* fileName)
 	}
 }
 
-// Function to handle dwell delays.  Return true for dwell finished, false otherwise.
+// Function to handle dwell delays. Returns true for dwell finished, false otherwise.
 bool GCodes::DoDwell(GCodeBuffer& gb)
 {
-	float dwell;
+	int32_t dwell;
 	if (gb.Seen('S'))
 	{
-		dwell = gb.GetFValue();
+		dwell = (int32_t)(gb.GetFValue() * 1000.0);		// S values are in seconds
 	}
 	else if (gb.Seen('P'))
 	{
-		dwell = 0.001 * (float) gb.GetIValue(); // P values are in milliseconds; we need seconds
+		dwell = gb.GetIValue();							// P value are in milliseconds
 	}
 	else
 	{
 		return true;  // No time given - throw it away
 	}
 
+	if (dwell <= 0)
+	{
+		return true;
+	}
+
 #if SUPPORT_ROLAND
 	// Deal with a Roland configuration
 	if (reprap.GetRoland()->Active())
 	{
-		return reprap.GetRoland()->ProcessDwell(gb.GetLValue());
+		return reprap.GetRoland()->ProcessDwell(dwell);
 	}
 #endif
 
@@ -2691,32 +2750,33 @@ bool GCodes::DoDwell(GCodeBuffer& gb)
 
 	if (simulationMode != 0)
 	{
-		simulationTime += dwell;
+		simulationTime += (float)dwell * 0.001;
 		return true;
 	}
 	else
 	{
-		return DoDwellTime(dwell);
+		return DoDwellTime(gb, (uint32_t)dwell);
 	}
 }
 
-bool GCodes::DoDwellTime(float dwell)
+bool GCodes::DoDwellTime(GCodeBuffer& gb, uint32_t dwellMillis)
 {
+	const uint32_t now = millis();
+
 	// Are we already in the dwell?
-	if (dwellWaiting)
+	if (gb.timerRunning)
 	{
-		if (platform->Time() - dwellTime >= 0.0)
+		if (now - gb.whenTimerStarted >= dwellMillis)
 		{
-			dwellWaiting = false;
-			reprap.GetMove()->ResumeMoving();
+			gb.timerRunning = false;
 			return true;
 		}
 		return false;
 	}
 
 	// New dwell - set it up
-	dwellWaiting = true;
-	dwellTime = platform->Time() + dwell;
+	gb.whenTimerStarted = now;
+	gb.timerRunning = true;
 	return false;
 }
 
@@ -3647,6 +3707,38 @@ bool GCodes::WriteConfigOverrideFile(StringRef& reply, const char *fileName) con
 		platform->GetMassStorage()->Delete(platform->GetSysDir(), fileName);
 	}
 	return !ok;
+}
+
+// Store a standard-format temperature report in 'reply'. This doesn't put a newline character at the end.
+void GCodes::GenerateTemperatureReport(StringRef& reply)
+{
+	const int8_t bedHeater = reprap.GetHeat()->GetBedHeater();
+	const int8_t chamberHeater = reprap.GetHeat()->GetChamberHeater();
+	reply.copy("T:");
+	for (int8_t heater = 0; heater < HEATERS; heater++)
+	{
+		if (heater != bedHeater && heater != chamberHeater)
+		{
+			Heat::HeaterStatus hs = reprap.GetHeat()->GetStatus(heater);
+			if (hs != Heat::HS_off && hs != Heat::HS_fault)
+			{
+				reply.catf("%.1f ", reprap.GetHeat()->GetTemperature(heater));
+			}
+		}
+	}
+	if (bedHeater >= 0)
+	{
+		reply.catf("B:%.1f", reprap.GetHeat()->GetTemperature(bedHeater));
+	}
+	else
+	{
+		// I'm not sure whether Pronterface etc. can handle a missing bed temperature, so return zero
+		reply.cat("B:0.0");
+	}
+	if (chamberHeater >= 0.0)
+	{
+		reply.catf(" C:%.1f", reprap.GetHeat()->GetTemperature(chamberHeater));
+	}
 }
 
 // Resource locking/unlocking

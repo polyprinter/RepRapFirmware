@@ -47,8 +47,6 @@ void Move::Init()
 	} while (dda != ddaRingAddPointer);
 
 	currentDda = nullptr;
-	addNoMoreMoves = false;
-	babysteppingLeft = 0.0;
 	stepErrors = 0;
 	numLookaheadUnderruns = numPrepareUnderruns = 0;
 
@@ -145,9 +143,11 @@ void Move::Spin()
 	// See if we can add another move to the ring
 	if (
 #if SUPPORT_ROLAND
-			!reprap.GetRoland()->Active() &&
+		   !reprap.GetRoland()->Active() &&
 #endif
-			!addNoMoreMoves && ddaRingAddPointer->GetState() == DDA::empty)
+		   ddaRingAddPointer->GetState() == DDA::empty
+		&& ddaRingAddPointer->GetNext()->GetState() != DDA::provisional		// function Prepare needs to access the endpoints in the previous move, so don't change them
+	   )
 	{
 		// In order to react faster to speed and extrusion rate changes, only add more moves if the total duration of
 		// all un-frozen moves is less than 2 seconds, or the total duration of all but the first un-frozen move is
@@ -389,13 +389,6 @@ FilePosition Move::PausePrint(float positions[DRIVES], float& pausedFeedRate, ui
 	return fPos;
 }
 
-// Request babystepping
-void Move::Babystep(float zMovement)
-{
-	babysteppingLeft += zMovement;
-	// TODO use this value somewhere
-}
-
 uint32_t maxReps = 0;
 
 #if 0
@@ -414,7 +407,16 @@ void Move::Diagnostics(MessageType mtype)
 	numLookaheadUnderruns = numPrepareUnderruns = 0;
 	longestGcodeWaitInterval = 0;
 
-	// Show the current probe position heights
+	// Show the current probe position heights and type of bed compensation in use
+	p->Message(mtype, "Bed compensation in use: ");
+	if (numBedCompensationPoints == 0)
+	{
+		p->MessageF(mtype, "%s\n", (grid.UsingHeightMap()) ? "mesh" : "none");
+	}
+	else
+	{
+		p->MessageF(mtype, "%d point\n", numBedCompensationPoints);
+	}
 	p->Message(mtype, "Bed probe heights:");
 	for (size_t i = 0; i < MaxProbePoints; ++i)
 	{
@@ -1061,7 +1063,7 @@ void Move::DoDeltaCalibration(size_t numFactors, StringRef& reply)
 	// Transform the probing points to motor endpoints and store them in a matrix, so that we can do multiple iterations using the same data
 	FixedMatrix<floatc_t, MaxDeltaCalibrationPoints, DELTA_AXES> probeMotorPositions;
 	floatc_t corrections[MaxDeltaCalibrationPoints];
-	float_t initialSumOfSquares = 0.0;
+	float initialSumOfSquares = 0.0;
 	for (size_t i = 0; i < numPoints; ++i)
 	{
 		corrections[i] = 0.0;

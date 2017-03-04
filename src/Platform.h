@@ -167,7 +167,7 @@ enum class SoftwareResetReason : uint16_t
 	inUsbOutput = 0x4000			// this bit is or'ed in if we were in USB output at the time
 };
 
-// Enumeration to describe various tests we do in response to the M111 command
+// Enumeration to describe various tests we do in response to the M122 command
 enum class DiagnosticTestType : int
 {
 	TestWatchdog = 1001,			// test that we get a watchdog reset if the tick interrupt stops
@@ -175,11 +175,13 @@ enum class DiagnosticTestType : int
 	TestSerialBlock = 1003,			// test what happens when we write a blocking message via debugPrintf()
 	DivideByZero = 1004,			// do an integer divide by zero to test exception handling
 	UnalignedMemoryAccess = 1005,	// do an unaligned memory access to test exception handling
+	BusFault = 1006,				// generate a bus fault
 
 	PrintMoves = 100,				// print summary of recent moves
 #ifdef DUET_NG
 	PrintExpanderStatus = 101,		// print DueXn expander status
 #endif
+	TimeSquareRoot = 102			// do a timing test on the square roor function
 };
 
 // Enumeration to describe what we want to do with a logical pin
@@ -326,7 +328,7 @@ public:
 	void ClassReport(float &lastTime);  			// Called on Spin() return to check everything's live.
 	void LogError(ErrorCode e) { errorCodeBits |= (uint32_t)e; }
 
-	void SoftwareReset(uint16_t reason, uint32_t pc = 0);
+	void SoftwareReset(uint16_t reason, const uint32_t *stk = nullptr);
 	bool AtxPower() const;
 	void SetAtxPower(bool on);
 	void SetBoardType(BoardType bt);
@@ -609,22 +611,35 @@ private:
 	// directly from/to flash memory.
 	struct SoftwareResetData
 	{
-		static const uint16_t versionValue = 4;		// increment this whenever this struct changes
+		static const uint16_t versionValue = 7;		// increment this whenever this struct changes
 		static const uint16_t magicValue = 0x7D00 | versionValue;	// value we use to recognise that all the flash data has been written
+#ifndef DUET_NG
 		static const uint32_t nvAddress = 0;		// must be 4-byte aligned
-		static const size_t numberOfSlots = 8;		// number of storage slots used to implement wear levelling
+#endif
+		static const size_t numberOfSlots = 5;		// number of storage slots used to implement wear levelling - must fit in 512 bytes
 
 		uint16_t magic;								// the magic number, including the version
 		uint16_t resetReason;						// this records why we did a software reset, for diagnostic purposes
 		uint32_t neverUsedRam;						// the amount of never used RAM at the last abnormal software reset
 		uint32_t hfsr;								// hard fault status register
 		uint32_t cfsr;								// configurable fault status register
-		uint32_t pc;								// program counter when the exception occurred
+		uint32_t icsr;								// interrupt control and state register
+		uint32_t bfar;								// bus fault address register
+		uint32_t sp;								// stack pointer
+		uint32_t stack[18];							// stack when the exception occurred, with the program counter at the bottom
 
 		bool isVacant() const						// return true if this struct can be written without erasing it first
 		{
-			return magic == 0xFFFF && resetReason == 0xFFFF && neverUsedRam == 0xFFFFFFFF
-					&& hfsr == 0xFFFFFFFF && cfsr == 0xFFFFFFFF && pc == 0xFFFFFFFF;
+			const uint32_t *p = reinterpret_cast<const uint32_t*>(this);
+			for (size_t i = 0; i < sizeof(*this)/sizeof(uint32_t); ++i)
+			{
+				if (*p != 0xFFFFFFFF)
+				{
+					return false;
+				}
+				++p;
+			}
+			return true;
 		}
 	};
 
@@ -1253,7 +1268,7 @@ inline float Platform::AdcReadingToPowerVoltage(uint16_t adcVal)
 //	The PC and PD bit numbers don't overlap, so we use their actual positions.
 //	PA0 clashes with PD0, so we use bit 1 to represent PA0.
 // RADDS:
-//	To be done
+//	Step pins are distributed over all 4 ports, but they are in different bit positions except for port C
 
 // Calculate the step bit for a driver. This doesn't need to be fast.
 /*static*/ inline uint32_t Platform::CalcDriverBitmap(size_t driver)
