@@ -949,9 +949,10 @@ void GCodes::DoEmergencyStop()
 void GCodes::DoPrintAbort()
 {
 	// make sure we don't read any more lines from a file
-	CancelPrint(); // even just doing this prevents it from being able to print again.
-#ifdef never
+//	CancelPrint(); // this leaves it able to print again, when tested by itself
+
 	// Problems: can't seem to print anything else from SD after bed contact when printing SD. But does work from SD after stopping USB print from contact.
+	// this doesn't do much
 	reprap.FastStop();		// stop everything but does not officially Halt or completely disable things, so doesn't need a reboot to be active again
 
 	// make sure we don't read any more lines from a file
@@ -959,13 +960,12 @@ void GCodes::DoPrintAbort()
 
 	// with these two commented out, works fine and restarts a print OK but moves a little after the detection - not ideal
 	// PROBLEM the extruder wiggles just a bit when ignoring the rest of the print.
-	// However, EITHER one of these lines kills the acceptance of new gcode coming in
+	//
 	reprap.GetMove()->ClearPendingMoves();
-	//ClearMove();// PROBLEM: after FastStop, it seems to lock up and won't respond.
+	ClearMove();// PROBLEM: after FastStop, it seems to lock up and won't respond.
 
 
 	SetAllAxesNotHomed(); 	// safest to assume nothing is valid after such an instant stop
-#endif
 	platform->Message(GENERIC_MESSAGE, "Printing Aborted. Clear errors before restarting.\n");
 // it would be nice to do this:	gb.SetState(GCodeState::sleeping);
 	//isPaused = true;
@@ -3637,10 +3637,14 @@ void GCodes::CancelPrint()
 	if (fileBeingPrinted.IsLive())
 	{
 		fileBeingPrinted.Close();
-
+		Platform * const platform = reprap.GetPlatform();
+		platform->Message(GENERIC_MESSAGE, "CancelPrint - closed file\n");
 	}
 
 	fileGCode->Init();
+	fileGCode->SetState( GCodeState::normal );
+	// There is a potential issue here if fileGCode holds any locks, so unlock everything.
+	UnlockAll(*fileGCode);
 
 	reprap.GetPrintMonitor()->StoppedPrint();
 }

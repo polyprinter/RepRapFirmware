@@ -264,7 +264,7 @@ void RepRap::EmergencyStop()
 void RepRap::FastStop()
 {
 	platform->SetDriversIdle();
-#ifdef never
+
 	// We do this twice, to avoid an interrupt switching a drive back on. move->Exit() should prevent interrupts doing this.
 	for(int i = 0; i < 2; i++)
 	{
@@ -273,7 +273,7 @@ void RepRap::FastStop()
 			platform->DisableDrive(drive);
 		}
 	}
-#endif
+
 	for(size_t heater = 0; heater < HEATERS; heater++)
 	{
 		reprap.GetHeat()->SetActiveTemperature(heater, 0.0);

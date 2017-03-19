@@ -322,8 +322,6 @@ void Move::ClearPendingMoves()
 	}
 	cpu_irq_enable();
 #endif
-	// Find a move we can pause after.
-	// Ideally, we would adjust a move if necessary and possible so that we can pause after it, but for now we don't do that.
 	// There are a few possibilities:
 	// 1. There are no moves in the queue.
 	// 2. There is a currently-executing move, and possibly some more in the queue.
@@ -333,14 +331,16 @@ void Move::ClearPendingMoves()
 	const DDA *savedDdaRingAddPointer = ddaRingAddPointer;
 	cpu_irq_disable();
 	DDA *dda = currentDda;
-	//FilePosition fPos = noFilePosition;
 	if (dda != nullptr)
 	{
 		// A move is being executed. See if we can safely pause at the end of it.
-		if (dda->CanPauseAfter())
+//		if (dda->CanPauseAfter())
+		if ( true )
 		{
-			//fPos = dda->GetFilePosition();
 			ddaRingAddPointer = dda->GetNext();
+			(void)ddaRingAddPointer->Free();			//TODO: poly: is this a good thing to add? Bad?
+			//Platform * const platform = reprap.GetPlatform();
+			//platform->Message(GENERIC_MESSAGE, "ClearPendingMoves - was doing pausable\n");
 		}
 		else
 		{
@@ -351,12 +351,14 @@ void Move::ClearPendingMoves()
 			{
 				if (dda->CanPauseAfter())
 				{
-					//fPos = dda->GetFilePosition();
 					ddaRingAddPointer = dda->GetNext();
 					if (ddaRingAddPointer->GetState() == DDA::frozen)
 					{
 						// Change the state so that the ISR won't start executing this move
 						(void)ddaRingAddPointer->Free();
+//Platform * const platform = reprap.GetPlatform();
+//platform->Message(GENERIC_MESSAGE, "ClearPendingMoves found a pausable\n");
+
 					}
 					break;
 				}
@@ -375,42 +377,25 @@ void Move::ClearPendingMoves()
 
 	if (ddaRingAddPointer != savedDdaRingAddPointer)
 	{
-		//const size_t numAxes = reprap.GetGCodes()->GetNumAxes();
-
-		// We are going to skip some moves. dda points to the last move we are going to print.
-		//for (size_t axis = 0; axis < numAxes; ++axis)
-		//{
-		//	positions[axis] = dda->GetEndCoordinate(axis, false);
-		//}
-		//for (size_t drive = numAxes; drive < DRIVES; ++drive)
-		//{
-		//	positions[drive] = 0.0;		// clear out extruder movement
-		//}
-		//pausedFeedRate = dda->GetRequestedSpeed();
-
 		// Free the DDAs for the moves we are going to skip, and work out how much extrusion they would have performed
 		dda = ddaRingAddPointer;
 		do
 		{
-			//for (size_t drive = numAxes; drive < DRIVES; ++drive)
-			//{
-			//	positions[drive] += dda->GetEndCoordinate(drive, true);		// update the amount of extrusion we are going to skip
-			//}
 			(void)dda->Free();
 			dda = dda->GetNext();
 		}
 		while (dda != savedDdaRingAddPointer);
-	}
-	else
-	{
-		//GetCurrentUserPosition(positions, 0, xAxes);		// gets positions and clears out extrusion values
+		Platform * const platform = reprap.GetPlatform();
+		platform->Message(GENERIC_MESSAGE, "ClearPendingMoves - freed rest of moves\n");
 	}
 
+#ifdef TEST_CLEAR_MOVES_ASSUMPTIONS // TODO: this seems to always send the message - why?
 	if ( !reprap.GetMove()->AllMovesAreFinished() )
 	{
 		Platform * const platform = reprap.GetPlatform();
 		platform->Message(GENERIC_MESSAGE, "ClearPendingMoves does not end up with AllMovesAreFinished!\n");
 	}
+#endif
 
 }
 #endif
