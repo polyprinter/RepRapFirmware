@@ -168,7 +168,7 @@ void GCodes::Reset()
 	lastEndstopStates = platform->GetAllEndstopStates();
 	firmwareUpdateModuleMap = 0;
 
-	cancelWait = isWaiting = false;
+	cancelWait = isWaiting = displayNoToolWarning = displayDeltaNotHomedWarning = false;
 
 	for (size_t i = 0; i < NumResources; ++i)
 	{
@@ -665,6 +665,23 @@ void GCodes::Spin()
 		nextGcodeSource = 0;
 	}
 
+	// Check if we need to display a warning
+	const uint32_t now = millis();
+	if (now - lastWarningMillis >= MinimumWarningInterval)
+	{
+		if (displayNoToolWarning)
+		{
+			platform->Message(GENERIC_MESSAGE, "Attempting to extrude with no tool selected.\n");
+			displayNoToolWarning = false;
+			lastWarningMillis = now;
+		}
+		if (displayDeltaNotHomedWarning)
+		{
+			platform->Message(GENERIC_MESSAGE, "Attempt to move the head of a delta printer before homing the towers\n");
+			displayDeltaNotHomedWarning = false;
+			lastWarningMillis = now;
+		}
+	}
 	platform->ClassReport(longWait);
 }
 
@@ -1103,7 +1120,7 @@ bool GCodes::LoadExtrusionAndFeedrateFromGCode(GCodeBuffer& gb, int moveType)
 		Tool* const tool = reprap.GetCurrentTool();
 		if (tool == nullptr)
 		{
-			platform->Message(GENERIC_MESSAGE, "Attempting to extrude with no tool selected.\n");
+			displayNoToolWarning = true;
 			return false;
 		}
 		const size_t eMoveCount = tool->DriveCount();
@@ -1374,7 +1391,7 @@ int GCodes::SetUpMove(GCodeBuffer& gb, StringRef& reply)
 			// This may be damaging and is almost certainly a user mistake, so ignore the move. But allow extruder-only moves.
 			if (gb.Seen(axisLetters[X_AXIS]) || gb.Seen(axisLetters[Y_AXIS]) || gb.Seen(axisLetters[Z_AXIS]))
 			{
-				reply.copy("Attempt to move the head of a delta printer before homing the towers");
+				displayDeltaNotHomedWarning = true;
 				return 1;
 			}
 		}
@@ -2460,7 +2477,7 @@ bool GCodes::DefineGrid(GCodeBuffer& gb, StringRef &reply)
 		}
 		else
 		{
-			reply.copy("ERROR: Wrong number of X values in M577, need 2");
+			reply.copy("Wrong number of X values in M577, need 2");
 			return true;
 		}
 	}
@@ -2474,7 +2491,7 @@ bool GCodes::DefineGrid(GCodeBuffer& gb, StringRef &reply)
 		}
 		else
 		{
-			reply.copy("ERROR: Wrong number of Y values in M577, need 2");
+			reply.copy("Wrong number of Y values in M577, need 2");
 			return true;
 		}
 	}
@@ -2502,14 +2519,14 @@ bool GCodes::DefineGrid(GCodeBuffer& gb, StringRef &reply)
 
 	if (seenX != seenY)
 	{
-		reply.copy("ERROR: specify both or neither of X and Y in M577");
+		reply.copy("specify both or neither of X and Y in M577");
 		return true;
 	}
 
 	if (!seenX && !seenR)
 	{
 		// Must have given just the S parameter
-		reply.copy("ERROR: specify at least radius or X,Y ranges in M577");
+		reply.copy("specify at least radius or X,Y ranges in M577");
 		return true;
 
 	}
@@ -2524,7 +2541,7 @@ bool GCodes::DefineGrid(GCodeBuffer& gb, StringRef &reply)
 		}
 		else
 		{
-			reply.copy("ERROR: M577 radius must be positive unless X and Y are specified");
+			reply.copy("M577 radius must be positive unless X and Y are specified");
 			return true;
 		}
 	}
@@ -2536,8 +2553,10 @@ bool GCodes::DefineGrid(GCodeBuffer& gb, StringRef &reply)
 	}
 	else
 	{
-		reply.copy("ERROR: bad grid definition: ");
-		newGrid.PrintError(reply);
+		const float xRange = (seenX) ? xValues[1] - xValues[0] : 2 * radius;
+		const float yRange = (seenX) ? yValues[1] - yValues[0] : 2 * radius;
+		reply.copy("bad grid definition: ");
+		newGrid.PrintError(xRange, yRange, reply);
 		return true;
 	}
 }

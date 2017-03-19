@@ -2,6 +2,45 @@
 Summary of important changes in recent versions
 ===============================================
 
+Version 1.18beta3
+=================
+
+New features:
+- M997 command now checks that the start of the main firmware file looks sensible
+- The rate at which "No tool selected" and "Attempt to move before homing a delta printer" messages are generated is now limited
+- Added VSSA fault detection if the hardware supports it
+- If there are too many probe points implied by a M557 grid definition command, the firmware displays a suggested increased spacing
+
+Bug fixes:
+- Fixed CoreXY homing which was broken in 1.18beta2
+- Fixed issue with loading height map file when the number of probe points along the X axis is large
+- M290 with no parzameters now correctly reports the current babystepping offset
+
+Upgrade notes:
+- See under 1.18beta2
+
+Known issues
+- If you enable tool mixing, you should use relative extrusion only. If you use absolute extrusion, then if you pause and resume the print, the extruder is likely to extrude the wrong amount of filament in the first move after resuming.
+- If you use M586 to disable FTP or Telnet on the Duet 085 or 06 after you have previously enabled them, the firmware refuses new connections but does not terminate any existing connections.
+
+Version 1.18beta2
+=================
+
+New features:
+- On the wired Duets, M586 can be used to set which netework protocols are supported and which port numbers are used. By default, http is enabled, ftp and telnet are disabled.
+
+Bug fixes:
+- Interpolation near the edges of the bed was incorrect when mesh bed compensatoin was used (thanks ChristophPech)
+
+Other changes
+- M552 no longer includes the option to set the HTTP number. Use M586 instead.
+- M557 P parameter to set probing points is no longer supported. Use a bed.g file instead.
+- Temperatures default to 0C instead of -273C
+
+Upgrade notes
+- If you use the M552 R parameter to change the HTTP port number on a wired Duet, you will need to use M586 instead
+- If you use FTP or Telnet on a wired Duet, you will need to enable them using M586
+
 Version 1.18beta1
 =================
 
