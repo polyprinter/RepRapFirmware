@@ -297,6 +297,125 @@ void Move::Spin()
 	reprap.GetPlatform()->ClassReport(longWait);
 }
 
+#ifdef POLYPRINTER
+// Clear any pending moves, regardless of whether they are officially pausable or not
+// it should be assumed that all XY homing locations are lost since no controlled deceleration was allowed
+void Move::ClearPendingMoves()
+{
+	// First, see if there is a currently-executing move
+#ifdef oldway  // caused problems
+	cpu_irq_disable();
+	DDA *dda = currentDda;
+	if (dda != nullptr)
+	{
+		// A move is being executed.
+		ddaRingAddPointer = dda->GetNext();
+		if (ddaRingAddPointer->GetState() == DDA::frozen)
+		{
+			// Change the state to "empty" so that the ISR won't start executing this move
+			(void)ddaRingAddPointer->Free();
+		}
+	}
+	else
+	{
+		// No move being executed
+		ddaRingAddPointer = ddaRingGetPointer;
+	}
+	cpu_irq_enable();
+#endif
+	// Find a move we can pause after.
+	// Ideally, we would adjust a move if necessary and possible so that we can pause after it, but for now we don't do that.
+	// There are a few possibilities:
+	// 1. There are no moves in the queue.
+	// 2. There is a currently-executing move, and possibly some more in the queue.
+	// 3. There are moves in the queue, but we haven't started executing them yet. Unlikely, but possible.
+
+	// First, see if there is a currently-executing move, and if so, whether we can safely pause at the end of it
+	const DDA *savedDdaRingAddPointer = ddaRingAddPointer;
+	cpu_irq_disable();
+	DDA *dda = currentDda;
+	//FilePosition fPos = noFilePosition;
+	if (dda != nullptr)
+	{
+		// A move is being executed. See if we can safely pause at the end of it.
+		if (dda->CanPauseAfter())
+		{
+			//fPos = dda->GetFilePosition();
+			ddaRingAddPointer = dda->GetNext();
+		}
+		else
+		{
+			// We can't safely pause after the currently-executing move because its end speed is too high so we may miss steps.
+			// Search for the next move that we can safely stop after.
+			dda = ddaRingGetPointer;
+			while (dda != ddaRingAddPointer)
+			{
+				if (dda->CanPauseAfter())
+				{
+					//fPos = dda->GetFilePosition();
+					ddaRingAddPointer = dda->GetNext();
+					if (ddaRingAddPointer->GetState() == DDA::frozen)
+					{
+						// Change the state so that the ISR won't start executing this move
+						(void)ddaRingAddPointer->Free();
+					}
+					break;
+				}
+				dda = dda->GetNext();
+			}
+		}
+	}
+	else
+	{
+		// No move being executed
+		ddaRingAddPointer = ddaRingGetPointer;
+	}
+
+	cpu_irq_enable();
+
+
+	if (ddaRingAddPointer != savedDdaRingAddPointer)
+	{
+		//const size_t numAxes = reprap.GetGCodes()->GetNumAxes();
+
+		// We are going to skip some moves. dda points to the last move we are going to print.
+		//for (size_t axis = 0; axis < numAxes; ++axis)
+		//{
+		//	positions[axis] = dda->GetEndCoordinate(axis, false);
+		//}
+		//for (size_t drive = numAxes; drive < DRIVES; ++drive)
+		//{
+		//	positions[drive] = 0.0;		// clear out extruder movement
+		//}
+		//pausedFeedRate = dda->GetRequestedSpeed();
+
+		// Free the DDAs for the moves we are going to skip, and work out how much extrusion they would have performed
+		dda = ddaRingAddPointer;
+		do
+		{
+			//for (size_t drive = numAxes; drive < DRIVES; ++drive)
+			//{
+			//	positions[drive] += dda->GetEndCoordinate(drive, true);		// update the amount of extrusion we are going to skip
+			//}
+			(void)dda->Free();
+			dda = dda->GetNext();
+		}
+		while (dda != savedDdaRingAddPointer);
+	}
+	else
+	{
+		//GetCurrentUserPosition(positions, 0, xAxes);		// gets positions and clears out extrusion values
+	}
+
+	if ( !reprap.GetMove()->AllMovesAreFinished() )
+	{
+		Platform * const platform = reprap.GetPlatform();
+		platform->Message(GENERIC_MESSAGE, "ClearPendingMoves does not end up with AllMovesAreFinished!\n");
+	}
+
+}
+#endif
+
 // Pause the print as soon as we can.
 // Returns the file position of the first queue move we are going to skip, or noFilePosition we we are not skipping any moves.
 // We update 'positions' to the positions and feed rate expected for the next move, and the amount of extrusion in the moves we skipped.

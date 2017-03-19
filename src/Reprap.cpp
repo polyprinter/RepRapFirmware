@@ -224,13 +224,12 @@ void RepRap::Diagnostics(MessageType mtype)
 }
 
 // Turn off the heaters, disable the motors, and deactivate the Heat and Move classes. Leave everything else working.
+// Enter the Halt state. Requires a reboot.
 void RepRap::EmergencyStop()
 {
-	stopped = true;
-
 	// Do not turn off ATX power here. If the nozzles are still hot, don't risk melting any surrounding parts...
 	//platform->SetAtxPower(false);
-
+	FastStop();
 	Tool* tool = toolList;
 	while (tool != nullptr)
 	{
@@ -238,22 +237,46 @@ void RepRap::EmergencyStop()
 		tool = tool->Next();
 	}
 
-	heat->Exit();
 	for(size_t heater = 0; heater < HEATERS; heater++)
 	{
 		platform->SetHeater(heater, 0.0);
 	}
 
+	heat->Exit();
+	// also set motor current to zero? Doesn't seem necessary. But perhaps safer.
 	// We do this twice, to avoid an interrupt switching a drive back on. move->Exit() should prevent interrupts doing this.
 	for(int i = 0; i < 2; i++)
 	{
-		move->Exit();
 		for(size_t drive = 0; drive < DRIVES; drive++)
 		{
+			move->Exit();
 			platform->SetMotorCurrent(drive, 0.0, false);
+		}
+	}
+
+	stopped = true;
+}
+
+// Turn off the heaters, disable the motors. Leave everything else working.
+void RepRap::FastStop()
+{
+	platform->SetDriversIdle();
+#ifdef never
+	// We do this twice, to avoid an interrupt switching a drive back on. move->Exit() should prevent interrupts doing this.
+	for(int i = 0; i < 2; i++)
+	{
+		for(size_t drive = 0; drive < DRIVES; drive++)
+		{
 			platform->DisableDrive(drive);
 		}
 	}
+#endif
+	for(size_t heater = 0; heater < HEATERS; heater++)
+	{
+		reprap.GetHeat()->SetActiveTemperature(heater, 0.0);
+		platform->SetHeater(heater, 0.0);
+	}
+	//TODO turn off M106/M107 fan
 }
 
 void RepRap::SetDebug(Module m, bool enable)
@@ -773,8 +796,8 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 		uint16_t endstops = 0;
 		for(size_t drive = 0; drive < DRIVES; drive++)
 		{
-			EndStopHit stopped = platform->Stopped(drive);
-			if (stopped == EndStopHit::highHit || stopped == EndStopHit::lowHit)
+			EndStopHit driveStopped = platform->Stopped(drive);
+			if (driveStopped == EndStopHit::highHit || driveStopped == EndStopHit::lowHit)
 			{
 				endstops |= (1 << drive);
 			}

@@ -107,7 +107,9 @@ public:
     void Simulate(uint8_t simMode);													// Enter or leave simulation mode
     float GetSimulationTime() const { return simulationTime; }						// Get the accumulated simulation time
     void PrintCurrentDda() const;													// For debugging
-
+#ifdef POLYPRINTER
+    void ClearPendingMoves();
+#endif
     FilePosition PausePrint(float positions[DRIVES], float& pausedFeedRate, uint32_t xAxes); // Pause the print as soon as we can
     bool NoLiveMovement() const;													// Is a move running, or are there any queued?
 

@@ -32,6 +32,8 @@ Licence: GPL
 #include "Pins.h"
 #include "Libraries/General/StringRef.h"
 
+#define POLYPRINTER
+
 // Module numbers and names, used for diagnostics and debug
 enum Module : uint8_t
 {

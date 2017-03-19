@@ -74,7 +74,7 @@ public:
 		EndstopChecks endStopsToCheck;									// endstops to check
 		uint8_t moveType;												// the S parameter from the G0 or G1 command, 0 for a normal move
 		bool isFirmwareRetraction;										// true if this is a firmware retraction/un-retraction move
-		bool usePressureAdvance;										// true if we want to us extruder pressure advance, if there is any extrusion
+		bool usePressureAdvance;										// true if we want to use extruder pressure advance, if there is any extrusion
 		bool canPauseAfter;												// true if we can pause just after this move and successfully restart
 	};
   
@@ -138,6 +138,12 @@ private:
     bool DoSingleProbeOfBedAtProbePoint(int probePointIndex, float heightAdjust);
     bool DoEstablishContactAtPoint(int probePointIndex, float heightAdjust);
 #endif
+
+    // predefined Trigger slots
+    const unsigned int EMERGENCY_STOP_TRIGGER_NUM = 0;
+    const unsigned int PRINT_ABORT_TRIGGER_NUM    = 1;		// We need it to have a very low (high priority) trigger number
+    const unsigned int PAUSE_TRIGGER_NUM          = 2;		// NOTE: this is now one more than stock RepRapPro
+
  	enum class CannedMoveType : uint8_t { none, relative, absolute };
 
 	struct RestorePoint
@@ -221,8 +227,9 @@ private:
 	bool ChangeMicrostepping(size_t drive, int microsteps, int mode) const;	// Change microstepping on the specified drive
 	void ListTriggers(StringRef reply, TriggerMask mask);				// Append a list of trigger endstops to a message
 	void CheckTriggers();												// Check for and execute triggers
+	bool CheckErrorConditions( TriggerMask currentEndstopStates, TriggerMask risenStates, TriggerMask fallenStates ); // Check for and handle error conditions
 	void DoEmergencyStop();												// Execute an emergency stop
-
+	void DoPrintAbort();												// Stop all motion and cancel printing
 	void DoPause(GCodeBuffer& gb)										// Pause the print
 	pre(resourceOwners[movementResource] = &gb);
 
@@ -238,6 +245,17 @@ private:
 	void CopyConfigFinalValues(GCodeBuffer& gb);						// Copy the feed rate etc. from the daemon to the input channels
 
 	void ClearBabyStepping();
+#ifdef POLYPRINTER
+	bool IsIgnoringZdownandXYMoves() const;
+	void SetIgnoringZdownAndXYMoves( bool value );
+	void ClearMoveExtrusions() // zeroes out all E values from this move
+	{
+		for (size_t drive = numAxes; drive < DRIVES; ++drive)
+		{
+			moveBuffer.coords[drive] = 0.0;
+		}
+	}
+#endif
 
 	static uint32_t LongArrayToBitMap(const long *arr, size_t numEntries);	// Convert an array of longs to a bit map
 
@@ -260,6 +278,10 @@ private:
 	bool isPaused;								// true if the print has been paused
 	bool runningConfigFile;						// We are running config.g during the startup process
 	bool doingToolChange;						// We are running tool change macros
+#ifdef POLYPRINTER
+		// PolyPrinter special sub-state condition
+	bool ignoringZdownAndXYMoves;				// true when head contact or when nut switch condition exists. Inputs like that will be "eaten".
+#endif
 
 	// The following contain the details of moves that the Move module fetches
 	RawMove moveBuffer;							// Move details to pass to Move class

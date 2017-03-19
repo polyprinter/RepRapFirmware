@@ -49,6 +49,10 @@ public:
 	bool PushState();									// Push state returning true if successful (i.e. stack not overflowed)
 	bool PopState();									// Pop state returning true if successful (i.e. no stack underrun)
 	bool IsDoingFileMacro() const;						// Return true if this source is executing a file macro
+#ifdef POLYPRINTER
+	bool IsIgnoringZdownandXYMoves() const;
+	void SetIgnoringZdownAndXYMoves( bool value );
+#endif
 	GCodeState GetState() const;
 	void SetState(GCodeState newState);
 	void AdvanceState();

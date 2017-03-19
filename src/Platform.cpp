@@ -1897,6 +1897,25 @@ bool Platform::WriteZProbeParameters(FileStore *f) const
 	return ok;
 }
 
+#ifdef POLYPRINTER
+// Return the Bed Contact existence result.
+// We assume that if bed contact exists, it acts as a low stop.
+EndStopHit Platform::GetBedContactExists() const
+{
+	// TODO: set up constants for the correct pin, or identify the endstop input that we are using
+	// for now, predefine the endstop
+	const TriggerMask currentEndstopStates = GetAllEndstopStates(); // TODO: just use direct pin numbering if this is too slow
+	if ( ( currentEndstopStates & ( 1 << BED_CONTACT_ENDSTOP_NUM ) ) == BED_CONTACT_ACTIVE_CONDITION )
+	{
+		// there is bed contact
+		return EndStopHit::lowHit;
+	}
+
+	return EndStopHit::noStop;
+}
+#endif
+
+
 // This is called from the step ISR as well as other places, so keep it fast
 void Platform::SetDirection(size_t drive, bool direction)
 {

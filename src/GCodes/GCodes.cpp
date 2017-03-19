@@ -59,7 +59,11 @@ void GCodes::RestorePoint::Init()
 }
 
 GCodes::GCodes(Platform* p, Webserver* w) :
-	platform(p), webserver(w), active(false), isFlashing(false),
+	platform(p), webserver(w), active(false),
+#ifdef POLYPRINTER
+	ignoringZdownAndXYMoves( false ),
+#endif
+	isFlashing(false),
 	fileBeingHashed(nullptr)
 {
 	httpGCode = new GCodeBuffer("http", HTTP_MESSAGE);
@@ -223,6 +227,8 @@ void GCodes::Spin()
 	// Get the GCodeBuffer that we want to work from
 	GCodeBuffer& gb = *(gcodeSources[nextGcodeSource]);
 
+	// this seems like a lot of wasted work every time through.
+	// It seems like each gcodeSource needs its own reply buffer, cleared when a new code is received from that source.
 	// Set up a buffer for the reply
 	char replyBuffer[gcodeReplyLength];
 	StringRef reply(replyBuffer, ARRAY_SIZE(replyBuffer));
@@ -823,6 +829,28 @@ void GCodes::DoFilePrint(GCodeBuffer& gb, StringRef& reply)
 	}
 }
 
+
+// Check for any problems that need attention
+// Typically, bed contact, nut switch activation, other meaningful events
+// that are not well-served by Triggers need to be handled here
+// returns true if we had to handle something such that no other triggers should be checked e.g. we are taking action, or a script might have been run
+bool GCodes::CheckErrorConditions( TriggerMask currentEndstopStates, TriggerMask risenStates, TriggerMask fallenStates )
+{
+	if ( platform->GetBedContactExists() != EndStopHit::noStop )
+	{
+		// there is bed contact
+		if ( ! IsIgnoringZdownandXYMoves() )
+		{
+			SetIgnoringZdownAndXYMoves( true );
+			platform->Message(GENERIC_MESSAGE, "Bed Contact detected! Ignoring moves until Z-home done.\n");
+			DoPrintAbort();  // stops printing from files? TODO: clean this up - too big a hammer?
+		}
+		return true;
+	}
+	return false;
+}
+
+
 // Check for and execute triggers
 void GCodes::CheckTriggers()
 {
@@ -848,31 +876,40 @@ void GCodes::CheckTriggers()
 	}
 
 	// If any triggers are pending, activate the one with the lowest number
-	if (lowestTriggerPending == 0)
+	if (lowestTriggerPending == EMERGENCY_STOP_TRIGGER_NUM)
 	{
 		triggersPending &= ~(1u << lowestTriggerPending);			// clear the trigger
 		DoEmergencyStop();
 	}
+	else if ( CheckErrorConditions( lastEndstopStates, risen, fallen ) )
+	{
+		// should already be handled, but we avoid any further trigger checking
+	}
+	//else if (lowestTriggerPending == PRINT_ABORT_TRIGGER_NUM)
+	//{
+	//	triggersPending &= ~(1u << lowestTriggerPending);			// clear the trigger
+	//	DoPrintAbort();
+	//}
 	else if (lowestTriggerPending < MaxTriggers						// if a trigger is pending
 			 && !IsDaemonBusy()
 			 && daemonGCode->GetState() == GCodeState::normal		// and we are not already executing a trigger or config.g
 			)
 	{
-		if (lowestTriggerPending == 1)
+		triggersPending &= ~(1u << lowestTriggerPending);	        // clear the trigger
+
+		if (lowestTriggerPending == PAUSE_TRIGGER_NUM)
 		{
 			if (isPaused || !reprap.GetPrintMonitor()->IsPrinting())
 			{
-				triggersPending &= ~(1u << lowestTriggerPending);	// ignore a pause trigger if we are already paused
+				; // ignore a pause trigger if we are already paused
 			}
 			else if (LockMovement(*daemonGCode))					// need to lock movement before executing the pause macro
 			{
-				triggersPending &= ~(1u << lowestTriggerPending);	// clear the trigger
 				DoPause(*daemonGCode);
 			}
 		}
 		else
 		{
-			triggersPending &= ~(1u << lowestTriggerPending);		// clear the trigger
 			char buffer[25];
 			StringRef filename(buffer, ARRAY_SIZE(buffer));
 			filename.printf(SYS_DIR "trigger%u.g", lowestTriggerPending);
@@ -887,6 +924,36 @@ void GCodes::DoEmergencyStop()
 	reprap.EmergencyStop();
 	Reset();
 	platform->Message(GENERIC_MESSAGE, "Emergency Stop! Reset the controller to continue.");
+}
+
+// Abort any printing, and don't allow movement unless it's Z-up
+// TODO: consider moving Z-up immediately. That would change things, because we'd have to add a move to the buffer right after this.
+void GCodes::DoPrintAbort()
+{
+	// make sure we don't read any more lines from a file
+	CancelPrint(); // even just doing this prevents it from being able to print again.
+#ifdef never
+	// Problems: can't seem to print anything else from SD after bed contact when printing SD. But does work from SD after stopping USB print from contact.
+	reprap.FastStop();		// stop everything but does not officially Halt or completely disable things, so doesn't need a reboot to be active again
+
+	// make sure we don't read any more lines from a file
+	CancelPrint();
+
+	// with these two commented out, works fine and restarts a print OK but moves a little after the detection - not ideal
+	// PROBLEM the extruder wiggles just a bit when ignoring the rest of the print.
+	// However, EITHER one of these lines kills the acceptance of new gcode coming in
+	reprap.GetMove()->ClearPendingMoves();
+	//ClearMove();// PROBLEM: after FastStop, it seems to lock up and won't respond.
+
+
+	SetAllAxesNotHomed(); 	// safest to assume nothing is valid after such an instant stop
+#endif
+	platform->Message(GENERIC_MESSAGE, "Printing Aborted. Clear errors before restarting.\n");
+// it would be nice to do this:	gb.SetState(GCodeState::sleeping);
+	//isPaused = true;
+	//GCodeBuffer& gb = *(gcodeSources[nextGcodeSource]);
+	//gb.SetState( GCodeState::normal );
+	//gb.MachineState().previous = nullptr;  // don't return to what it may have been doing before a macro. TODO: This may leave a file open?
 }
 
 // Pause the print. Before calling this, check that we are doing a file print that isn't already paused and get the movement lock.
@@ -1265,6 +1332,7 @@ int GCodes::SetUpMove(GCodeBuffer& gb, StringRef& reply)
 	moveBuffer.xAxes = reprap.GetCurrentXAxes();
 	if (gb.Seen('S'))
 	{
+		// PolyPrinter TODO: prevent XY homing moves if there had been bed contact
 		int ival = gb.GetIValue();
 		if (ival == 1 || ival == 2)
 		{
@@ -1330,6 +1398,26 @@ int GCodes::SetUpMove(GCodeBuffer& gb, StringRef& reply)
 		segmentsLeft = LoadMoveBufferFromGCode(gb, moveBuffer.moveType);
 		if (segmentsLeft != 0)
 		{
+#ifdef POLYPRINTER
+			// check for handling a bed-contact or nut switch condition, where we must reject possibly harmful moves
+			if ( moveBuffer.moveType == 0 && IsIgnoringZdownandXYMoves() )
+			{
+				// if the move could cause harm, reject it (ignore it)
+				// if the move buffer always has absolute XYZ co-ords (I think it does)
+				if (    moveBuffer.coords[X_AXIS] != moveBuffer.initialCoords[X_AXIS]
+					 ||	moveBuffer.coords[Y_AXIS] != moveBuffer.initialCoords[Y_AXIS]
+					 || moveBuffer.coords[Z_AXIS] <  moveBuffer.initialCoords[Z_AXIS]
+						 ) {
+					// we disallow such moves in this state
+					// put the initial physical positioning coords back in as the supposed target for this move. Do nothing.
+					memcpy(moveBuffer.coords, moveBuffer.initialCoords, numAxes * sizeof(moveBuffer.initialCoords[0]));
+					// also zero out any extruder movement
+					ClearMoveExtrusions();
+					return 1; // it's been handled as far as we're concerned
+				}
+			}
+#endif
+
 			// Flag whether we should use pressure advance, if there is any extrusion in this move.
 			// We assume it is a normal printing move needing pressure advance if there is forward extrusion and XYU.. movement.
 			// The movement code will only apply pressure advance if there is forward extrusion, so we only need to check for XYU.. movement here.
@@ -1794,6 +1882,7 @@ bool GCodes::DoHome(GCodeBuffer& gb, StringRef& reply, bool& error)
 	}
 #endif
 
+
 	if (reprap.GetMove()->IsDeltaMode())
 	{
 		SetAllAxesNotHomed();
@@ -1816,6 +1905,22 @@ bool GCodes::DoHome(GCodeBuffer& gb, StringRef& reply, bool& error)
 		{
 			ClearBabyStepping();
 		}
+
+#ifdef POLYPRINTER
+		// NOTE: this makes no allowance for Deltas - we'll never have a delta PolyPrinter.
+		// even though we should not move X or Y without first clearing the error condition,
+		// we will allow all homing to take place for now, as long as Z is included.
+		// The error flag will be re-asserted if that causes another fault.
+		if ( !error && ( toBeHomed == 0 || ((toBeHomed & (1u << Z_AXIS)) != 0) ) )
+		{
+			if ( IsIgnoringZdownandXYMoves() )
+			{
+				SetIgnoringZdownAndXYMoves( false );
+				platform->Message(GENERIC_MESSAGE, "Resuming normal motion.\n");
+			}
+		}
+#endif
+
 		if (toBeHomed == 0 || toBeHomed == ((1u << numAxes) - 1))
 		{
 			// Homing everything
@@ -1835,6 +1940,9 @@ bool GCodes::DoHome(GCodeBuffer& gb, StringRef& reply, bool& error)
 		{
 			gb.SetState(GCodeState::homing);
 		}
+
+
+
 	}
 	return true;
 }
@@ -3505,12 +3613,14 @@ void GCodes::CancelPrint()
 	segmentsLeft = 0;
 	isPaused = false;
 
-	fileGCode->Init();
 	FileData& fileBeingPrinted = fileGCode->OriginalMachineState().fileState;
 	if (fileBeingPrinted.IsLive())
 	{
 		fileBeingPrinted.Close();
+
 	}
+
+	fileGCode->Init();
 
 	reprap.GetPrintMonitor()->StoppedPrint();
 }
@@ -3820,4 +3930,17 @@ void GCodes::UnlockAll(const GCodeBuffer& gb)
 	return res;
 }
 
+#ifdef POLYPRINTER
+// Return true if this source is executing a file macro
+bool GCodes::IsIgnoringZdownandXYMoves() const
+{
+	return ignoringZdownAndXYMoves;
+}
+
+void GCodes::SetIgnoringZdownAndXYMoves( bool value )
+{
+	ignoringZdownAndXYMoves = value;
+}
+
+#endif
 // End

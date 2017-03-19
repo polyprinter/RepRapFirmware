@@ -134,7 +134,7 @@ bool GCodeBuffer::Put(char c)
 		gcodeBuffer[gcodePointer++] = c;
 		if (gcodePointer >= (int)GCODE_LENGTH)
 		{
-			reprap.GetPlatform()->MessageF(GENERIC_MESSAGE, "Error: G-Code buffer '$s' length overflow\n", identity);
+			reprap.GetPlatform()->MessageF(GENERIC_MESSAGE, "Error: G-Code buffer '%s' length overflow\n", identity);
 			gcodePointer = 0;
 			gcodeBuffer[0] = 0;
 		}
@@ -443,5 +443,8 @@ bool GCodeBuffer::IsDoingFileMacro() const
 {
 	return machineState->doingFileMacro;
 }
+
+
+
 
 // End

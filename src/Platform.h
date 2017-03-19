@@ -195,6 +195,21 @@ enum class PinAccess : int
 
 /***************************************************************************************************************/
 
+
+#ifdef POLYPRINTER
+// the Trigger functionality gets close to what we want.
+// We can use some of it and add our own behaviors.
+#define USE_POLYPRINTER_BED_CONTACT_BEHAVIOR
+//#define USE_POLYPRINTER_NUT_SWITCH_BEHAVIOR
+//#ifdef USE_POLYPRINTER_NUT_SWITCH_BEHAVIOR
+//#define NUT_SWITCH_INPUT_NUMBER (0)			// on E0
+//#define NUT_SWITCH_TRIGGER_NUMBER (1)		// will trigger this
+//#endif
+const unsigned int BED_CONTACT_ENDSTOP_NUM = 4;			// hard-wired, can't be configured (though could be at some point, same as Triggers)
+const unsigned int NUT_SWITCH_ENDSTOP_NUM = 0;			// hard-wired, can't be configured (though could be at some point, same as Triggers)
+const bool BED_CONTACT_ACTIVE_CONDITION = 0; 			// low is Active bed contact
+#endif
+
 // Struct for holding Z probe parameters
 
 struct ZProbeParameters
@@ -485,6 +500,11 @@ public:
 	bool MustHomeXYBeforeZ() const;
 	bool WriteZProbeParameters(FileStore *f) const;
 	void SetProbing(bool isProbing);
+
+#ifdef POLYPRINTER
+	EndStopHit GetBedContactExists() const;		// returns lowHit condition, if there is contact
+#endif
+
 
 	// Ancilliary PWM
 

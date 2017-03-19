@@ -496,6 +496,9 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 
 		if (code == 32 && !LockMovementAndWaitForStandstill(gb))
 		{
+#ifdef POLYPRINTER
+			reply.copy(".");
+#endif
 			return false;
 		}
 		{

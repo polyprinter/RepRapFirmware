@@ -37,6 +37,7 @@ public:
       
     RepRap();
     void EmergencyStop();
+    void FastStop();
     void Init();
     void Spin();
     void Exit();
