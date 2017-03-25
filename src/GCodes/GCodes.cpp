@@ -946,32 +946,23 @@ void GCodes::DoEmergencyStop()
 
 // Abort any printing, and don't allow movement unless it's Z-up
 // TODO: consider moving Z-up immediately. That would change things, because we'd have to add a move to the buffer right after this.
+// PROBLEM the extruder wiggles just a bit when ignoring the rest of the print. COuld be advance? Test with Advance disabled.
 void GCodes::DoPrintAbort()
 {
-	// make sure we don't read any more lines from a file
-//	CancelPrint(); // this leaves it able to print again, when tested by itself
-
-	// Problems: can't seem to print anything else from SD after bed contact when printing SD. But does work from SD after stopping USB print from contact.
-	// this doesn't do much
 	reprap.FastStop();		// stop everything but does not officially Halt or completely disable things, so doesn't need a reboot to be active again
 
 	// make sure we don't read any more lines from a file
-	CancelPrint();
+	CancelPrint();  // this leaves it able to print again, when tested by itself
 
-	// with these two commented out, works fine and restarts a print OK but moves a little after the detection - not ideal
-	// PROBLEM the extruder wiggles just a bit when ignoring the rest of the print.
-	//
+
 	reprap.GetMove()->ClearPendingMoves();
 	ClearMove();// PROBLEM: after FastStop, it seems to lock up and won't respond.
 
+	// minor cleanup
+	platform->SetFanValue(0, 0.0);		// only applies to fan0
 
 	SetAllAxesNotHomed(); 	// safest to assume nothing is valid after such an instant stop
 	platform->Message(GENERIC_MESSAGE, "Printing Aborted. Clear errors before restarting.\n");
-// it would be nice to do this:	gb.SetState(GCodeState::sleeping);
-	//isPaused = true;
-	//GCodeBuffer& gb = *(gcodeSources[nextGcodeSource]);
-	//gb.SetState( GCodeState::normal );
-	//gb.MachineState().previous = nullptr;  // don't return to what it may have been doing before a macro. TODO: This may leave a file open?
 }
 
 // Pause the print. Before calling this, check that we are doing a file print that isn't already paused and get the movement lock.
@@ -1791,8 +1782,24 @@ bool GCodes::SetPositions(GCodeBuffer& gb)
 		return false;
 	}
 
+#ifdef POLYPRINTER
+	if ( gb.Seen(extrudeLetter) && gb.GetFValue() == 0 )
+	{
+		// if it's doing G92 E0 then the gcode file is probably an old Marlin one, for absolute-E.
+		// - a real Duet gcode file will NOT have G92 E0 in it at all.
+		// so, set Relative extrusion as well.
+		if ( gb.MachineState().drivesRelative )
+		{
+			gb.MachineState().drivesRelative = false;
+			platform->MessageF(GENERIC_MESSAGE, "(Switched to Absolute Extrude for older file compatibility)\n" );
+		}
+	}
+#endif
+
 	// Handle any E parameter in the G92 command. If we get an error, ignore it and do the axes anyway.
 	(void)LoadExtrusionAndFeedrateFromGCode(gb, -1);
+
+
 
 	if (includingAxes)
 	{

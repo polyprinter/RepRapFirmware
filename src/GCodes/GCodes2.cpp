@@ -293,14 +293,22 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 	{
 		return true;			// we don't yet simulate most M codes
 	}
-	if (gb.MachineState().runningM502 && code != 301 && code != 307 && code != 558 && code != 665 && code != 666)
+	if (gb.MachineState().runningM502 && code != 301 && code != 307 && code != 558 && code != 665 && code != 666
+#ifdef POLYPRINTER
+										&& code != 82 && code != 83		// it's important for the config.g to reset as much of the state as possible without messing things up
+#endif
+			)
 	{
 		return true;			// when running M502 the only mcodes we execute are 301, 307, 558, 665 and 666
 	}
 
 	switch (code)
 	{
+#ifdef POLYPRINTER
+	// we do a Pause on M0 - see M226 for the code
+#else
 	case 0: // Stop
+#endif
 	case 1: // Sleep
 		if (!LockMovementAndWaitForStandstill(gb))
 		{
@@ -556,6 +564,9 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 		}
 		break;
 
+#ifdef POLYPRINTER
+	case 0:		// moved from the top
+#endif
 	case 226: // Gcode Initiated Pause
 		if (&gb == fileGCode)			// ignore M226 if it did't come from within a file being printed
 		{
@@ -2121,14 +2132,56 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 		break;
 
 	case 501: // Load parameters from EEPROM
+#ifdef POLYPRINTER
+		// when running M502 the only mcodes we execute are 301 Heater PID Params, 307 Heating params, 558 set Z probe type, 665 Set Delta Config and 666 Set Delta Endstop config
+		// when running M502 the only gcode we execute is G31 Set Z Probe Status
+		// when running M502 we don't execute T commands
+#else
 		DoFileMacro(gb, "config-override.g", true);
 		break;
-
+#endif
 	case 502: // Revert to default "factory settings"
 		reprap.GetHeat()->ResetHeaterModels();				// in case some heaters have no M307 commands in config.g
 		reprap.GetMove()->AccessDeltaParams().Init();		// in case M665 and M666 in config.g don't define all the parameters
 		platform->SetZProbeDefaults();
+#ifdef POLYPRINTER
+		gb.MachineState().drivesRelative = true; // just force Relative Extrusion mode to begin with
+#endif
 		DoFileMacro(gb, "config.g", true, true);
+#ifdef POLYPRINTER
+		// and reset any error states
+		ignoringZdownAndXYMoves = false;
+
+		// "Start Print" - Reset all temporary settings that could interfere with correct printing. Then runs the "startPrint.g" macro.
+		// also begins an overall Print Timer for end-to-end reporting (in Postfix, presumably)
+		// it may be most-correct to run config.g first, then reinforce that with explicit resetting of all modifiers.
+		// This is meant to be in the Prefix of ALL gcode print files.
+		// An alternative might be an explicit invocation of a script.
+		// Settings we want to reset:
+
+		// Fans - all off M106 S0 equivalent
+		for ( int fanNum=0; fanNum > (int)NUM_FANS; ++fanNum )
+		{
+			platform->SetFanValue(fanNum, 0);
+		}
+
+		// Speed percentage M220
+		speedFactor = SecondsToMinutes;
+
+		// Extrude fudge percent M221
+		for ( int extruder=0; extruder < (int32_t)numExtruders; ++extruder)
+		{
+			extrusionFactors[extruder] = 1.0f;
+		}
+
+		// TODO: accelerations, speed limits?
+
+		if ( code == 501 )
+		{
+			// also apply locally-stored overrides
+			DoFileMacro(gb, "config-override.g", true);
+		}
+#endif
 		break;
 
 	case 503: // List variable settings
@@ -2488,6 +2541,9 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 		}
 		break;
 
+#ifdef POLYPRINTER
+	case 205: // same as Marlin, in case old g-code is run
+#endif
 	case 566: // Set/print maximum jerk speeds
 	{
 		bool seen = false;
@@ -2495,8 +2551,17 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 		{
 			if (gb.Seen(axisLetters[axis]))
 			{
-				platform->SetInstantDv(axis, gb.GetFValue() * distanceScale * SecondsToMinutes); // G Code feedrates are in mm/minute; we need mm/sec
+				float jerkValue = gb.GetFValue() * distanceScale * SecondsToMinutes;
+				platform->SetInstantDv(axis, jerkValue ); // G Code feedrates are in mm/minute; we need mm/sec
 				seen = true;
+#ifdef POLYPRINTER
+				if ( code == 205 && axis == X_AXIS )
+				{
+					// in Marlin mode, an X param also sets Y jerk
+					platform->SetInstantDv( Y_AXIS, jerkValue ); // G Code feedrates are in mm/minute; we need mm/sec
+
+				}
+#endif
 			}
 		}
 
