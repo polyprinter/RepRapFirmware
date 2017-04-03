@@ -602,7 +602,7 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 			ch = '[';
 			for (size_t axis = 0; axis < numAxes; axis++)
 			{
-				response->catf("%c%.2f", ch, liveCoordinates[axis]);
+				response->catf("%c%.3f", ch, liveCoordinates[axis]);
 				ch = ',';
 			}
 		}
@@ -1178,7 +1178,7 @@ OutputBuffer *RepRap::GetLegacyStatusResponse(uint8_t type, int seq)
 	ch = '[';
 	for (size_t drive = 0; drive < numAxes; drive++)
 	{
-		response->catf("%c%.2f", ch, liveCoordinates[drive]);
+		response->catf("%c%.3f", ch, liveCoordinates[drive]);
 		ch = ',';
 	}
 
@@ -1476,7 +1476,7 @@ void RepRap::SetMessage(const char *msg)
 
 	if (platform->HaveAux())
 	{
-		platform->SendMessage(msg);
+		platform->SendAuxMessage(msg);
 	}
 }
 

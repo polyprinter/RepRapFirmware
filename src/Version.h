@@ -9,13 +9,18 @@
 #define SRC_VERSION_H_
 
 #ifndef VERSION
-# define VERSION "1.18beta1Poly0002"
+# define VERSION "1.18RC1"
 #endif
 
 #ifndef DATE
-# define DATE "2017-02-24"
+# define DATE "2017-03-28"
 #endif
 
 #define AUTHORS "reprappro, dc42, chrishamm, t3p3, dnewman"
+
+#ifdef POLYPRINTER
+#undef VERSION
+# define VERSION "1.18RC1Poly0003"
+#endif
 
 #endif /* SRC_VERSION_H_ */
