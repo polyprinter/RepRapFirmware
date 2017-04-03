@@ -279,7 +279,7 @@ void RepRap::FastStop()
 		reprap.GetHeat()->SetActiveTemperature(heater, 0.0);
 		platform->SetHeater(heater, 0.0);
 	}
-	//TODO turn off M106/M107 fan
+
 }
 
 void RepRap::SetDebug(Module m, bool enable)

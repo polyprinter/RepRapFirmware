@@ -861,10 +861,29 @@ bool GCodes::CheckErrorConditions( TriggerMask currentEndstopStates, TriggerMask
 		{
 			SetIgnoringZdownAndXYMoves( true );
 			platform->Message(GENERIC_MESSAGE, "Bed Contact detected! Ignoring moves until Z-home done.\n");
-			DoPrintAbort();  // stops printing from files? TODO: clean this up - too big a hammer?
+			DoPrintAbort();
 		}
 		return true;
 	}
+
+	if ( platform->GetNutSwitchActive() != EndStopHit::noStop )
+	{
+		// there is an active Nut Switch on the loose
+		if ( ! IsIgnoringZdownandXYMoves() )
+		{
+			SetIgnoringZdownAndXYMoves( true );
+			platform->Message(GENERIC_MESSAGE, "Nut Switch Activation detected! Ignoring moves until Z-home done.\n");
+			DoPrintAbort();
+			if (!LockMovement(*fileGCode))					// lock movement before calling DoPause
+			{
+				return false;
+			}
+			DoPause(*fileGCode);
+
+		}
+		return true;
+	}
+
 	return false;
 }
 

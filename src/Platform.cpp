@@ -1944,10 +1944,8 @@ bool Platform::WriteZProbeParameters(FileStore *f) const
 // We assume that if bed contact exists, it acts as a low stop.
 EndStopHit Platform::GetBedContactExists() const
 {
-	// TODO: set up constants for the correct pin, or identify the endstop input that we are using
-	// for now, predefine the endstop
 	const TriggerMask currentEndstopStates = GetAllEndstopStates(); // TODO: just use direct pin numbering if this is too slow
-	if ( ( currentEndstopStates & ( 1 << BED_CONTACT_ENDSTOP_NUM ) ) == BED_CONTACT_ACTIVE_CONDITION )
+	if ( (bool)( currentEndstopStates & ( 1 << BED_CONTACT_ENDSTOP_NUM ) ) == BED_CONTACT_ACTIVE_CONDITION )
 	{
 		// there is bed contact
 		return EndStopHit::lowHit;
@@ -1955,6 +1953,21 @@ EndStopHit Platform::GetBedContactExists() const
 
 	return EndStopHit::noStop;
 }
+
+// Return the Nut Switch Error existence result.
+// We assume that if a Nut Switch Error exists, it acts as a high stop.
+EndStopHit Platform::GetNutSwitchActive() const
+{
+	const TriggerMask currentEndstopStates = GetAllEndstopStates(); // TODO: just use direct pin numbering if this is too slow
+	if ( (bool)( currentEndstopStates & ( 1 << NUT_SWITCH_ENDSTOP_NUM ) ) == NUT_SWITCH_ACTIVE_CONDITION )
+	{
+		// there is a Nut Switch activation
+		return EndStopHit::highHit;
+	}
+
+	return EndStopHit::noStop;
+}
+
 #endif
 
 
