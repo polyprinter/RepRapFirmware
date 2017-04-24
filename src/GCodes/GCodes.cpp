@@ -306,7 +306,13 @@ void GCodes::Spin()
 			gb.AdvanceState();
 			{
 				const Tool * const oldTool = reprap.GetCurrentTool();
-				if (oldTool != nullptr && AllAxesAreHomed())
+				if (oldTool != nullptr
+#ifdef POLYPRINTER
+						// TODO: possibly make it an option whether to insist on homing?
+#else
+						&& AllAxesAreHomed()
+#endif
+										)
 				{
 					scratchString.printf("tfree%d.g", oldTool->Number());
 					DoFileMacro(gb, scratchString.Pointer(), false);
@@ -324,7 +330,12 @@ void GCodes::Spin()
 				}
 			}
 			gb.AdvanceState();
-			if (reprap.GetTool(newToolNumber) != nullptr && AllAxesAreHomed())
+			if (reprap.GetTool(newToolNumber) != nullptr
+#ifdef POLYPRINTER
+#else
+						&& AllAxesAreHomed()
+#endif
+										)
 			{
 				scratchString.printf("tpre%d.g", newToolNumber);
 				DoFileMacro(gb, scratchString.Pointer(), false);
