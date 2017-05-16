@@ -623,11 +623,11 @@ void DDA::RecalculateMove()
 		// If V is the peak speed, then (V^2 - u^2)/2a + (V^2 - v^2)/2a = distance.
 		// So (2V^2 - u^2 - v^2)/2a = distance
 		// So V^2 = a * distance + 0.5(u^2 + v^2)
-		float vsquared = (acceleration * totalDistance) + 0.5 * (fsquare(startSpeed) + fsquare(endSpeed));
+		float vsquared = (acceleration * totalDistance) + 0.5f * (fsquare(startSpeed) + fsquare(endSpeed));
 		// Calculate accelerate distance from: V^2 = u^2 + 2as
 		if (vsquared >= 0.0)
 		{
-			accelDistance = max<float>((vsquared - fsquare(startSpeed))/(2.0 * acceleration), 0.0);
+			accelDistance = max<float>((vsquared - fsquare(startSpeed))/(2.0f * acceleration), 0.0);
 			decelDistance = totalDistance - accelDistance;
 			topSpeed = sqrtf(vsquared);
 		}
@@ -641,14 +641,14 @@ void DDA::RecalculateMove()
 				accelDistance = totalDistance;
 				decelDistance = 0.0;
 				topSpeed = endSpeed;
-				acceleration = (fsquare(endSpeed) - fsquare(startSpeed))/(2.0 * totalDistance);
+				acceleration = (fsquare(endSpeed) - fsquare(startSpeed))/(2.0f * totalDistance);
 			}
 			else
 			{
 				accelDistance = 0.0;
 				decelDistance = totalDistance;
 				topSpeed = startSpeed;
-				acceleration = (fsquare(startSpeed) - fsquare(endSpeed))/(2.0 * totalDistance);
+				acceleration = (fsquare(startSpeed) - fsquare(endSpeed))/(2.0f * totalDistance);
 			}
 		}
 	}
@@ -1232,7 +1232,7 @@ pre(state == frozen)
 	return true;	// schedule another interrupt immediately
 }
 
-extern uint32_t maxReps;
+extern uint32_t maxReps;	// diagnostic
 
 // This is called by the interrupt service routine to execute steps.
 // It returns true if it needs to be called again on the DDA of the new current move, otherwise false.
@@ -1271,10 +1271,12 @@ bool DDA::Step()
 //if (t3 > maxCalcTime) maxCalcTime = t3;
 //if (t3 < minCalcTime) minCalcTime = t3;
 		}
+		// dm should now be nullptr, or else point to the first driver that doesn't need to be stepped at this time
 
 		// 3. Step the drivers
 		if ((driversStepping & platform->GetSlowDrivers()) != 0)
 		{
+			// we have one or more very slow drivers that we need a delay for, to hold the Low state a bit longer before we raise it now.
 			while (Platform::GetInterruptClocks() - lastStepPulseTime < platform->GetSlowDriverClocks()) {}
 			Platform::StepDriversHigh(driversStepping);					// generate the steps
 			lastStepPulseTime = Platform::GetInterruptClocks();
@@ -1288,7 +1290,7 @@ bool DDA::Step()
 		//    and re-insert them so as to keep the list in step-time order. We assume that meeting the direction pin hold time
 		//    is not a problem for any driver type. This is not necessarily true.
 		DriveMovement *dmToInsert = firstDM;							// head of the chain we need to re-insert
-		firstDM = dm;													// remove the chain from the list
+		firstDM = dm;													// remove the chain we just stepped, from the list
 		while (dmToInsert != dm)										// note that both of these may be nullptr
 		{
 			const bool hasMoreSteps = (isDeltaMovement && dmToInsert->drive < DELTA_AXES)
@@ -1301,10 +1303,12 @@ bool DDA::Step()
 			}
 			dmToInsert = nextToInsert;
 		}
+		// now the list has been reconstructed in order of timer firing
 
 		// 5. Reset all step pins low
 		if ((driversStepping & platform->GetSlowDrivers()) != 0)
 		{
+			// we have one or more very slow drivers that we need a delay for, to hold the High state a bit longer before we lower it now.
 			while (Platform::GetInterruptClocks() - lastStepPulseTime < platform->GetSlowDriverClocks()) {}
 			Platform::StepDriversLow();									// set all step pins low
 			lastStepPulseTime = Platform::GetInterruptClocks();
@@ -1325,10 +1329,12 @@ bool DDA::Step()
 		repeat = platform->ScheduleInterrupt(firstDM->nextStepTime + moveStartTime);
 	} while (repeat);
 
+	// Diagnostic - track high water
 	if (numReps > maxReps)
 	{
 		maxReps = numReps;
 	}
+	// end Diagnostic
 
 	if (state == completed)
 	{

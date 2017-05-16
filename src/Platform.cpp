@@ -1943,7 +1943,7 @@ bool Platform::WriteZProbeParameters(FileStore *f) const
 EndStopHit Platform::GetBedContactExists() const
 {
 	const TriggerMask currentEndstopStates = GetAllEndstopStates(); // TODO: just use direct pin numbering if this is too slow
-	if ( (bool)( currentEndstopStates & ( 1 << BED_CONTACT_ENDSTOP_NUM ) ) == BED_CONTACT_ACTIVE_CONDITION )
+	if ( ( currentEndstopStates & ( 1 << BED_CONTACT_ENDSTOP_NUM ) ? true : false ) == BED_CONTACT_ACTIVE_CONDITION )
 	{
 		// there is bed contact
 		return EndStopHit::lowHit;
@@ -1957,7 +1957,8 @@ EndStopHit Platform::GetBedContactExists() const
 EndStopHit Platform::GetNutSwitchActive() const
 {
 	const TriggerMask currentEndstopStates = GetAllEndstopStates(); // TODO: just use direct pin numbering if this is too slow
-	if ( (bool)( currentEndstopStates & ( 1 << NUT_SWITCH_ENDSTOP_NUM ) ) == NUT_SWITCH_ACTIVE_CONDITION )
+	// the states are the same as the voltage level so 1 = high (unclosed if pulling down to ground)
+	if ( ( currentEndstopStates & ( 1 << NUT_SWITCH_ENDSTOP_NUM ) ? true : false ) == NUT_SWITCH_ACTIVE_CONDITION )
 	{
 		// there is a Nut Switch activation
 		return EndStopHit::highHit;

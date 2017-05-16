@@ -68,6 +68,12 @@ public:
 	uint32_t nextStepTime;								// how many clocks after the start of this move the next step is due
 	uint32_t stepInterval;								// how many clocks between steps
 	DriveMovement *nextDM;								// link to next DM that needs a step
+#ifdef POLYPRINTER
+	// Velocity Advance
+	// During acceleration, each lapse of time results in some added advance.
+	int32_t velocityAdvance_ST{0};							// the number of steps of advance that is our current target
+	int32_t appliedAdvance_ST{0};							// the current actual applied steps of advance
+#endif
 
 	// Parameters unique to a style of move (Cartesian, delta or extruder). Currently, extruders and Cartesian moves use the same parameters.
 	union MoveParams

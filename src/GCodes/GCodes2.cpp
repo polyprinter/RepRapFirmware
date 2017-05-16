@@ -304,6 +304,7 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 	if (gb.MachineState().runningM502 && code != 301 && code != 307 && code != 558 && code != 665 && code != 666
 #ifdef POLYPRINTER
 										&& code != 82 && code != 83		// it's important for the config.g to reset as much of the state as possible without messing things up
+										&& code != 572					// pressure advance setup
 #endif
 			)
 	{
@@ -2182,6 +2183,7 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 		}
 
 		// TODO: accelerations, speed limits?
+		// Advance
 
 		if ( code == 501 )
 		{

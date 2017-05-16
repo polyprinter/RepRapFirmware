@@ -825,25 +825,28 @@ bool GCodes::CheckErrorConditions( TriggerMask currentEndstopStates, TriggerMask
 		return true;
 	}
 
+
 	if ( platform->GetNutSwitchActive() != EndStopHit::noStop )
 	{
 		// there is an active Nut Switch on the loose
 		if ( ! IsIgnoringZdownandXYMoves() )
 		{
 			SetIgnoringZdownAndXYMoves( true );
-			platform->Message(GENERIC_MESSAGE, "Nut Switch Activation detected! Ignoring moves until Z-home done.\n");
-			DoPrintAbort();
+			// we want to be able to resume if the operator considers it OK: so do not call DoPrintAbort();
 			if (!LockMovement(*fileGCode))					// lock movement before calling DoPause
 			{
 				return false;
 			}
 			DoPause(*fileGCode);
 
+			platform->Message(GENERIC_MESSAGE, "Nut Switch Activation detected! Ignoring moves until Z-home done.\n");
+
 		}
+
 		return true;
 	}
 
-	return false;
+	return false; // no error detected
 }
 
 
