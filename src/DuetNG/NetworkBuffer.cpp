@@ -37,17 +37,6 @@ bool NetworkBuffer::ReadChar(char& b)
 	return false;
 }
 
-const uint8_t* NetworkBuffer::TakeData(size_t &len)
-{
-	const uint8_t* ret = Data() + readPointer;
-	if (len > dataLength - readPointer)
-	{
-		len = dataLength - readPointer;
-	}
-	readPointer += len;
-	return ret;
-}
-
 // Return the amount of data available, including continuation buffers
 size_t NetworkBuffer::TotalRemaining() const
 {
@@ -121,6 +110,17 @@ void NetworkBuffer::Empty()
 		freelist = new NetworkBuffer(freelist);
 		--number;
 	}
+}
+
+// Count how many buffers there are in a chain
+/*static*/ unsigned int NetworkBuffer::Count(NetworkBuffer*& ptr)
+{
+	unsigned int ret = 0;
+	for (NetworkBuffer *n = ptr; n != nullptr; n = n->next)
+	{
+		++ret;
+	}
+	return ret;
 }
 
 // End

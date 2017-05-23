@@ -17,7 +17,6 @@ enum class GCodeState : uint8_t
 	normal,												// not doing anything and ready to process a new GCode
 	waitingForMoveToComplete,							// doing a homing move, so we must wait for it to finish before processing another GCode
 	homing,
-	setBed,
 
 	// These next 4 must be contiguous
 	toolChange0,
@@ -45,6 +44,9 @@ enum class GCodeState : uint8_t
 	gridProbing2a,
 	gridProbing3,
 	gridProbing4,
+
+	doingFirmwareRetraction,
+	doingFirmwareUnRetraction
 };
 
 // Class to hold the state of gcode execution for some input source

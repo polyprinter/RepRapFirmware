@@ -59,6 +59,12 @@ struct Trigger
 	}
 };
 
+// Bits for T-code P-parameter to specify which macros are supposted to be run
+const int TFreeBit = 1 << 0;
+const int TPreBit = 1 << 1;
+const int TPostBit = 1 << 2;
+const int DefaultToolChangeParam = TFreeBit | TPreBit | TPostBit;
+
 //****************************************************************************************************
 
 // The GCode interpreter
@@ -79,9 +85,10 @@ public:
 		bool isFirmwareRetraction;										// true if this is a firmware retraction/un-retraction move
 		bool usePressureAdvance;										// true if we want to use extruder pressure advance, if there is any extrusion
 		bool canPauseAfter;												// true if we can pause just after this move and successfully restart
+		bool hasExtrusion;												// true if the move includes extrusion - only valid if the move was set up by SetupMove
 	};
   
-	GCodes(Platform* p, Webserver* w);
+	GCodes(Platform& p);
 	void Spin();														// Called in a tight loop to make this class work
 	void Init();														// Set it up
 	void Exit();														// Shut it down
@@ -138,7 +145,6 @@ public:
 	static const char axisLetters[MAX_AXES]; 							// 'X', 'Y', 'Z'
 
 private:
-
 //#define USE_BED_CONTACT_PROBING
 #ifdef USE_BED_CONTACT_PROBING
     bool DeactivateAllDrives();
@@ -153,7 +159,9 @@ private:
     const unsigned int PRINT_ABORT_TRIGGER_NUM    = 1;		// We need it to have a very low (high priority) trigger number
     const unsigned int PAUSE_TRIGGER_NUM          = 2;		// NOTE: this is now one more than stock RepRapPro
 
- 	enum class CannedMoveType : uint8_t { none, relative, absolute };
+    GCodes(const GCodes&);												// private copy constructor to prevent copying
+
+	enum class CannedMoveType : uint8_t { none, relative, absolute };
 
 	struct RestorePoint
 	{
@@ -213,7 +221,6 @@ private:
 	bool Push(GCodeBuffer& gb);											// Push feedrate etc on the stack
 	void Pop(GCodeBuffer& gb);											// Pop feedrate etc
 	void DisableDrives();												// Turn the motors off
-	void SetEthernetAddress(GCodeBuffer& gb, int mCode);				// Does what it says
 	void SetMACAddress(GCodeBuffer& gb);								// Deals with an M540
 	void HandleReply(GCodeBuffer& gb, bool error, const char *reply);	// Handle G-Code replies
 	void HandleReply(GCodeBuffer& gb, bool error, OutputBuffer *reply);
@@ -243,6 +250,7 @@ private:
 	pre(resourceOwners[movementResource] = &gb);
 
 	void SetMappedFanSpeed();											// Set the speeds of fans mapped for the current tool
+	void SaveFanSpeeds();												// Save the speeds of all fans
 
 	bool DefineGrid(GCodeBuffer& gb, StringRef &reply);					// Define the probing grid, returning true if error
 	bool ProbeGrid(GCodeBuffer& gb, StringRef& reply);					// Start probing the grid, returning true if we didn't because of an error
@@ -267,8 +275,7 @@ private:
 
 	static uint32_t LongArrayToBitMap(const long *arr, size_t numEntries);	// Convert an array of longs to a bit map
 
-	Platform* const platform;											// The RepRap machine
-	Webserver* const webserver;											// The web server class
+	Platform& platform;													// The RepRap machine
 
 	RegularGCodeInput* httpInput;										// These cache incoming G-codes...
 	RegularGCodeInput* telnetInput;										// ...
@@ -288,15 +295,15 @@ private:
 	size_t nextGcodeSource;												// The one to check next
 
 	const GCodeBuffer* resourceOwners[NumResources];					// Which gcode buffer owns each resource
-
-	bool active;								// Live and running?
-	bool isPaused;								// true if the print has been paused
-	bool runningConfigFile;						// We are running config.g during the startup process
-	bool doingToolChange;						// We are running tool change macros
 #ifdef POLYPRINTER
 		// PolyPrinter special sub-state condition
 	bool ignoringZdownAndXYMoves;				// true when head contact or when nut switch condition exists. Inputs like that will be "eaten".
 #endif
+	bool active;								// Live and running?
+	bool isPaused;								// true if the print has been paused
+	bool runningConfigFile;						// We are running config.g during the startup process
+	bool doingToolChange;						// We are running tool change macros
+
 
 	// The following contain the details of moves that the Move module fetches
 	RawMove moveBuffer;							// Move details to pass to Move class
@@ -328,6 +335,8 @@ private:
 	FileStore* fileBeingWritten;				// A file to write G Codes (or sometimes HTML) to
 	uint16_t toBeHomed;							// Bitmap of axes still to be homed
 	int oldToolNumber, newToolNumber;			// Tools being changed
+	int toolChangeParam;						// Bitmap of all the macros to be run during a tool change
+
 	const char* eofString;						// What's at the end of an HTML file?
 	uint8_t eofStringCounter;					// Check the...
 	uint8_t eofStringLength;					// ... EoF string as we read.
@@ -336,8 +345,9 @@ private:
 	bool cannedCycleMoveQueued;					// True if a canned cycle move has been set
 	bool limitAxes;								// Don't think outside the box.
 	uint32_t axesHomed;							// Bitmap of which axes have been homed
-	float pausedFanValues[NUM_FANS];			// Fan speeds when the print was paused
+	float pausedFanSpeeds[NUM_FANS];			// Fan speeds when the print was paused or a tool change started
 	float lastDefaultFanSpeed;					// Last speed given in a M106 command with on fan number
+	float pausedDefaultFanSpeed;				// The speed of the default print cooling fan when the print was paused or a tool change started
 	float speedFactor;							// speed factor, including the conversion from mm/min to mm/sec, normally 1/60
 	float extrusionFactors[MaxExtruders];		// extrusion factors (normally 1.0)
 	float currentBabyStepZOffset;				// The accumulated Z offset due to baby stepping requests

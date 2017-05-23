@@ -151,7 +151,7 @@ static void ethernet_rx_callback(uint32_t ul_status)
 	else
 	{
 		ethernet_set_rx_callback(nullptr);
-		reprap.GetNetwork()->ResetCallback();
+		reprap.GetNetwork().ResetCallback();
 	}
 }
 
@@ -160,14 +160,14 @@ static void ethernet_rx_callback(uint32_t ul_status)
 static void conn_err(void *arg, err_t err)
 {
 	// Report the error to the monitor
-	reprap.GetPlatform()->MessageF(HOST_MESSAGE, "Network: Connection error, code %d\n", err);
+	reprap.GetPlatform().MessageF(HOST_MESSAGE, "Network: Connection error, code %d\n", err);
 
 	// Tell the higher levels about the error
 	ConnectionState *cs = (ConnectionState*)arg;
 	if (cs != nullptr)
 	{
 		cs->isTerminated = true;
-		reprap.GetNetwork()->ConnectionClosed(cs, false);
+		reprap.GetNetwork().ConnectionClosed(cs, false);
 	}
 }
 
@@ -178,7 +178,7 @@ static err_t conn_recv(void *arg, tcp_pcb *pcb, pbuf *p, err_t err)
 	{
 		if (cs->pcb != pcb)
 		{
-			reprap.GetPlatform()->Message(HOST_MESSAGE, "Network: Mismatched pcb in conn_recv!\n");
+			reprap.GetPlatform().Message(HOST_MESSAGE, "Network: Mismatched pcb in conn_recv!\n");
 			tcp_abort(pcb);
 			return ERR_ABRT;
 		}
@@ -187,12 +187,12 @@ static err_t conn_recv(void *arg, tcp_pcb *pcb, pbuf *p, err_t err)
 		if (p != nullptr)
 		{
 			// Tell higher levels that we are receiving data
-			processingOk = reprap.GetNetwork()->ReceiveInput(p, cs);
+			processingOk = reprap.GetNetwork().ReceiveInput(p, cs);
 		}
 		else
 		{
 			// Tell higher levels that a connection has been closed
-			processingOk = reprap.GetNetwork()->ConnectionClosedGracefully(cs);
+			processingOk = reprap.GetNetwork().ConnectionClosedGracefully(cs);
 		}
 
 		if (!processingOk)
@@ -235,7 +235,7 @@ static err_t conn_accept(void *arg, tcp_pcb *pcb, err_t err)
 	if (targetPcb != nullptr)
 	{
 		// Allocate a new ConnectionState for this connection
-		ConnectionState * const cs = reprap.GetNetwork()->ConnectionAccepted(pcb);
+		ConnectionState * const cs = reprap.GetNetwork().ConnectionAccepted(pcb);
 		if (cs != nullptr)
 		{
 			tcp_accepted(targetPcb);	// keep the listening PCB running
@@ -256,8 +256,8 @@ static err_t conn_accept(void *arg, tcp_pcb *pcb, err_t err)
 
 // Network/Ethernet class
 
-Network::Network(Platform* p) :
-	platform(p), freeTransactions(nullptr), readyTransactions(nullptr), writingTransactions(nullptr),
+Network::Network(Platform& p) :
+	platform(p), webserver(nullptr), freeTransactions(nullptr), readyTransactions(nullptr), writingTransactions(nullptr),
 	state(NotStarted), isEnabled(true), activated(false), resetCallback(false),
 	dataCs(nullptr), ftpCs(nullptr), telnetCs(nullptr), freeConnections(nullptr)
 {
@@ -278,7 +278,15 @@ void Network::Init()
 	}
 
 	strcpy(hostname, HOSTNAME);
-	longWait = platform->Time();
+
+	webserver = new Webserver(&platform, this);
+	webserver->Init();
+	longWait = platform.Time();
+}
+
+void Network::Exit()
+{
+	webserver->Exit();
 }
 
 void Network::EnableProtocol(int protocol, int port, int secure, StringRef& reply)
@@ -407,8 +415,8 @@ void Network::Spin(bool full)
 					state = NetworkEstablishingLink;
 					UnlockLWIP();
 
-					reprap.GetPlatform()->Message(HOST_MESSAGE, "Network down\n");
-					platform->ClassReport(longWait);
+					platform.Message(HOST_MESSAGE, "Network down\n");
+					platform.ClassReport(longWait);
 					return;
 				}
 
@@ -442,8 +450,8 @@ void Network::Spin(bool full)
 						DoMdnsAnnounce();
 
 						UnlockLWIP();
-						reprap.GetPlatform()->MessageF(HOST_MESSAGE, "Network up, IP=%d.%d.%d.%d\n", ip[0], ip[1], ip[2], ip[3]);
-						platform->ClassReport(longWait);
+						platform.MessageF(HOST_MESSAGE, "Network up, IP=%d.%d.%d.%d\n", ip[0], ip[1], ip[2], ip[3]);
+						platform.ClassReport(longWait);
 						return;
 					}
 				}
@@ -480,12 +488,12 @@ void Network::Spin(bool full)
 			{
 				if (!ethernetStarted)
 				{
-					start_ethernet(platform->GetIPAddress(), platform->NetMask(), platform->GateWay(), NULL);
+					start_ethernet(platform.GetIPAddress(), platform.NetMask(), platform.GateWay(), NULL);
 					ethernetStarted = true;
 				}
 				else
 				{
-					ethernet_set_configuration(platform->GetIPAddress(), platform->NetMask(), platform->GateWay());
+					ethernet_set_configuration(platform.GetIPAddress(), platform.NetMask(), platform.GateWay());
 				}
 				state = NetworkObtainingIP;
 			}
@@ -498,7 +506,8 @@ void Network::Spin(bool full)
 
 		UnlockLWIP();
 	}
-	platform->ClassReport(longWait);
+	platform.ClassReport(longWait);
+	webserver->Spin();
 }
 
 void Network::Interrupt()
@@ -512,7 +521,7 @@ void Network::Interrupt()
 
 void Network::Diagnostics(MessageType mtype)
 {
-	platform->Message(mtype, "=== Network ===\n");
+	platform.Message(mtype, "=== Network ===\n");
 
 	size_t numFreeConnections = 0;
 	ConnectionState *freeConn = freeConnections;
@@ -521,7 +530,7 @@ void Network::Diagnostics(MessageType mtype)
 		numFreeConnections++;
 		freeConn = freeConn->next;
 	}
-	platform->MessageF(mtype, "Free connections: %d of %d\n", numFreeConnections, MEMP_NUM_TCP_PCB);
+	platform.MessageF(mtype, "Free connections: %d of %d\n", numFreeConnections, MEMP_NUM_TCP_PCB);
 
 	size_t numFreeTransactions = 0;
 	NetworkTransaction *freeTrans = freeTransactions;
@@ -530,10 +539,10 @@ void Network::Diagnostics(MessageType mtype)
 		numFreeTransactions++;
 		freeTrans = freeTrans->next;
 	}
-	platform->MessageF(mtype, "Free transactions: %d of %d\n", numFreeTransactions, NETWORK_TRANSACTION_COUNT);
+	platform.MessageF(mtype, "Free transactions: %d of %d\n", numFreeTransactions, NETWORK_TRANSACTION_COUNT);
 
 	// Extra debug to help track down the problems a few people are having
-	platform->MessageF(mtype, "Locked: %d, state: %d, listening: %p, %p, %p\n", (int)lwipLocked, (int)state, pcbs[0], pcbs[1], pcbs[2]);
+	platform.MessageF(mtype, "Locked: %d, state: %d, listening: %p, %p, %p\n", (int)lwipLocked, (int)state, pcbs[0], pcbs[1], pcbs[2]);
 
 #if LWIP_STATS
 	// Normally we should NOT try to display LWIP stats here, because it uses debugPrintf(), which will hang the system if no USB cable is connected.
@@ -555,7 +564,7 @@ bool Network::ReceiveInput(pbuf *pb, ConnectionState* cs)
 	NetworkTransaction* r = freeTransactions;
 	if (r == nullptr)
 	{
-		platform->Message(HOST_MESSAGE, "Network::ReceiveInput() - no free transactions!\n");
+		platform.Message(HOST_MESSAGE, "Network::ReceiveInput() - no free transactions!\n");
 		return false;
 	}
 
@@ -574,14 +583,14 @@ ConnectionState *Network::ConnectionAccepted(tcp_pcb *pcb)
 	ConnectionState *cs = freeConnections;
 	if (cs == nullptr)
 	{
-		platform->Message(HOST_MESSAGE, "Network::ConnectionAccepted() - no free ConnectionStates!\n");
+		platform.Message(HOST_MESSAGE, "Network::ConnectionAccepted() - no free ConnectionStates!\n");
 		return nullptr;
 	}
 
 	NetworkTransaction* transaction = freeTransactions;
 	if (transaction == nullptr)
 	{
-		platform->Message(HOST_MESSAGE, "Network::ConnectionAccepted() - no free transactions!\n");
+		platform.Message(HOST_MESSAGE, "Network::ConnectionAccepted() - no free transactions!\n");
 		return nullptr;
 	}
 
@@ -645,7 +654,7 @@ void Network::ConnectionClosed(ConnectionState* cs, bool closeConnection)
 	}
 
 	// Inform the Webserver that we are about to remove an existing connection
-	reprap.GetWebserver()->ConnectionLost(cs);
+	webserver->ConnectionLost(cs);
 
 	// Remove all transactions that point to cs from the list of ready transactions
 	NetworkTransaction *previous = nullptr, *item = readyTransactions;
@@ -714,7 +723,7 @@ bool Network::ConnectionClosedGracefully(ConnectionState *cs)
 	NetworkTransaction *transaction = freeTransactions;
 	if (transaction == nullptr)
 	{
-		platform->Message(HOST_MESSAGE, "Network::ConnectionClosedGracefully() - no free transactions!\n");
+		platform.Message(HOST_MESSAGE, "Network::ConnectionClosedGracefully() - no free transactions!\n");
 		return false;
 	}
 
@@ -803,22 +812,35 @@ void Network::SetHostname(const char *name)
 	}
 }
 
-void Network::Enable()
+void Network::Enable(int mode, StringRef& reply)
 {
-	isEnabled = true;
-	if (activated)
+	if (mode != 0)
 	{
-		Start();
+		isEnabled = true;
+		if (activated)
+		{
+			Start();
+		}
+	}
+	else
+	{
+		isEnabled = false;
+		if (activated)
+		{
+			Stop();
+		}
 	}
 }
 
-void Network::Disable()
+// Get the network state into the reply buffer, returning true if there is some sort of error
+bool Network::GetNetworkState(StringRef& reply)
 {
-	isEnabled = false;
-	if (activated)
-	{
-		Stop();
-	}
+	const uint8_t * const config_ip = platform.GetIPAddress();
+	const uint8_t * const ipAddress = ethernet_get_ipaddress();
+	reply.printf("Network is %s, configured IP address: %u.%u.%u.%u, actual IP address: %u.%u.%u.%u",
+		(isEnabled) ? "enabled" : "disabled",
+					config_ip[0], config_ip[1], config_ip[2], config_ip[3], ipAddress[0], ipAddress[1], ipAddress[2], ipAddress[3]);
+	return false;
 }
 
 void Network::Activate()
@@ -835,7 +857,7 @@ void Network::Start()
 	if (state == NotStarted)
 	{
 		// Allow the MAC address to be set only before LwIP is started...
-		ethernet_configure_interface(platform->MACAddress(), hostname);
+		ethernet_configure_interface(platform.MACAddress(), hostname);
 		init_ethernet();
 		netbios_init();
 		state = NetworkInactive;
@@ -1034,7 +1056,7 @@ bool Network::AcquireTransaction(ConnectionState *cs)
 	NetworkTransaction *acquiredTransaction = freeTransactions;
 	if (acquiredTransaction == nullptr)
 	{
-		platform->Message(HOST_MESSAGE, "Network: Could not acquire free transaction!\n");
+		platform.Message(HOST_MESSAGE, "Network: Could not acquire free transaction!\n");
 		return false;
 	}
 	freeTransactions = acquiredTransaction->next;
@@ -1042,6 +1064,31 @@ bool Network::AcquireTransaction(ConnectionState *cs)
 	PrependTransaction(&readyTransactions, acquiredTransaction);
 
 	return true;
+}
+
+void Network::HandleHttpGCodeReply(const char *msg)
+{
+	webserver->HandleGCodeReply(WebSource::HTTP, msg);
+}
+
+void Network::HandleTelnetGCodeReply(const char *msg)
+{
+	webserver->HandleGCodeReply(WebSource::Telnet, msg);
+}
+
+void Network::HandleHttpGCodeReply(OutputBuffer *buf)
+{
+	webserver->HandleGCodeReply(WebSource::HTTP, buf);
+}
+
+void Network::HandleTelnetGCodeReply(OutputBuffer *buf)
+{
+	webserver->HandleGCodeReply(WebSource::Telnet, buf);
+}
+
+uint32_t Network::GetHttpReplySeq()
+{
+	return webserver->GetReplySeq();
 }
 
 /*static*/ Port Network::GetLocalPort(Connection conn) { return conn->GetLocalPort(); }

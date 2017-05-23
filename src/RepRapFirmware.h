@@ -45,9 +45,10 @@ enum Module : uint8_t
 	moduleHeat = 5,
 	moduleDda = 6,
 	moduleRoland = 7,
-	modulePrintMonitor = 8,
-	moduleStorage = 9,
-	numModules = 10,				// make this one greater than the last module number
+	moduleScanner = 8,
+	modulePrintMonitor = 9,
+	moduleStorage = 10,
+	numModules = 11,				// make this one greater than the last module number
 	noModule = 15
 };
 
@@ -56,13 +57,13 @@ extern const char *moduleName[];
 // Warn of what's to come, so we can use pointers to classes without including the entire header files
 class Network;
 class Platform;
-class Webserver;
 class GCodes;
 class Move;
 class DDA;
 class Heat;
 class Tool;
 class Roland;
+class Scanner;
 class PrintMonitor;
 class RepRap;
 class FileStore;
@@ -79,6 +80,8 @@ bool StringEndsWith(const char* string, const char* ending);
 bool StringStartsWith(const char* string, const char* starting);
 bool StringEquals(const char* s1, const char* s2);
 int StringContains(const char* string, const char* match);
+void SafeStrncpy(char *dst, const char *src, size_t length) pre(length != 0);
+void SafeStrncat(char *dst, const char *src, size_t length) pre(length != 0);
 
 // Macro to assign an array from an initialiser list
 #define ARRAY_INIT(_dest, _init) static_assert(sizeof(_dest) == sizeof(_init), "Incompatible array types"); memcpy(_dest, _init, sizeof(_init));
@@ -98,6 +101,8 @@ const float MillisToSeconds = 0.001;
 const float InchToMm = 25.4;
 const float DegreesToRadians = PI/180.0;
 const float RadiansToDegrees = 180.0/PI;
+
+#define DEGREE_SYMBOL	"\xC2\xB0"								// degree-symbol encoding in UTF8
 
 // Type of an offset in a file
 typedef uint32_t FilePosition;

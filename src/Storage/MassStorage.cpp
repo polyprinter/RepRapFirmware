@@ -123,20 +123,11 @@ bool MassStorage::FindFirst(const char *directory, FileInfo &file_info)
 	TCHAR loc[FILENAME_LENGTH + 1];
 
 	// Remove the trailing '/' from the directory name
-	size_t len = strnlen(directory, ARRAY_UPB(loc));
-	if (len == 0)
+	SafeStrncpy(loc, directory, ARRAY_SIZE(loc));
+	const size_t len = strlen(loc);
+	if (len != 0 && loc[len - 1] == '/')
 	{
-		loc[0] = 0;
-	}
-	else if (directory[len - 1] == '/')
-	{
-		strncpy(loc, directory, len - 1);
 		loc[len - 1] = 0;
-	}
-	else
-	{
-		strncpy(loc, directory, len);
-		loc[len] = 0;
 	}
 
 	findDir.lfn = nullptr;
@@ -157,7 +148,7 @@ bool MassStorage::FindFirst(const char *directory, FileInfo &file_info)
 
 			if (file_info.fileName[0] == 0)
 			{
-				strncpy(file_info.fileName, entry.fname, ARRAY_SIZE(file_info.fileName));
+				SafeStrncpy(file_info.fileName, entry.fname, ARRAY_SIZE(file_info.fileName));
 			}
 
 			file_info.size = entry.fsize;
@@ -189,7 +180,7 @@ bool MassStorage::FindNext(FileInfo &file_info)
 
 	if (file_info.fileName[0] == 0)
 	{
-		strncpy(file_info.fileName, entry.fname, ARRAY_SIZE(file_info.fileName));
+		SafeStrncpy(file_info.fileName, entry.fname, ARRAY_SIZE(file_info.fileName));
 	}
 
 	file_info.lastModified = ConvertTimeStamp(entry.fdate, entry.ftime);
@@ -315,7 +306,7 @@ bool MassStorage::SetLastModifiedTime(const char* directory, const char *fileNam
     const bool ok = (f_utime(location, &fno) == FR_OK);
     if (!ok)
 	{
-		reprap.GetPlatform()->MessageF(HTTP_MESSAGE, "SetLastModifiedTime didn't work for file '%s'\n", location);
+		reprap.GetPlatform().MessageF(HTTP_MESSAGE, "SetLastModifiedTime didn't work for file '%s'\n", location);
 	}
     return ok;
 }
@@ -343,6 +334,7 @@ bool MassStorage::Mount(size_t card, StringRef& reply, bool reportSuccess)
 
 	if (!mounting)
 	{
+		f_mount(card, NULL);			// un-mount it from FATFS
 		sd_mmc_unmount(card);			// this forces it to re-initialise the card
 		isMounted[card] = false;
 		startTime = millis();
@@ -360,12 +352,12 @@ bool MassStorage::Mount(size_t card, StringRef& reply, bool reportSuccess)
 	mounting = false;
 	if (err != SD_MMC_OK)
 	{
-		f_mount(card, NULL);
 		reply.printf("Cannot initialise SD card %u: %s", card, TranslateCardError(err));
 	}
 	else
 	{
 		// Mount the file systems
+		memset(&fileSystems[card], 0, sizeof(FATFS));					// f_mount doesn't initialise the file structure, we must do it ourselves
 		FRESULT mounted = f_mount(card, &fileSystems[card]);
 		if (mounted != FR_OK)
 		{

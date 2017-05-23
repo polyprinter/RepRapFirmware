@@ -39,7 +39,7 @@ Naming conventions:
 
 Structure:
 
-There are nine main classes:
+There are ten main classes:
 
   * RepRap
   * GCodes
@@ -48,7 +48,8 @@ There are nine main classes:
   * Platform
   * Network
   * Webserver
-  * Roland, and
+  * Roland
+  * Scanner, and
   * PrintMonitor
 
 RepRap:
@@ -89,6 +90,9 @@ Roland:
 
 This class can interface with a Roland mill (e.g. Roland MDX-20/15) and allows the underlying hardware
 to act as a G-Code proxy, which translates G-Codes to internal Roland commands.
+
+Scanner:
+This is an extension meant for 3D scanner boards. Refer to M750 ff. for the exact usage of this module.
 
 PrintMonitor:
 
@@ -176,9 +180,10 @@ const char *moduleName[] =
 	"Heat",
 	"DDA",
 	"Roland",
+	"Scanner",
 	"PrintMonitor",
 	"Storage",
-	"?","?","?","?","?",
+	"?","?","?","?",
 	"none"
 };
 
@@ -194,7 +199,7 @@ void debugPrintf(const char* fmt, ...)
 {
 	va_list vargs;
 	va_start(vargs, fmt);
-	reprap.GetPlatform()->MessageF(DEBUG_MESSAGE, fmt, vargs);
+	reprap.GetPlatform().MessageF(DEBUG_MESSAGE, fmt, vargs);
 	va_end(vargs);
 }
 
@@ -264,6 +269,22 @@ int StringContains(const char* string, const char* match)
 	}
 
 	return -1;
+}
+
+// Version of strncpy that ensures the result is null terminated
+void SafeStrncpy(char *dst, const char *src, size_t length)
+{
+	strncpy(dst, src, length);
+	dst[length - 1] = 0;
+}
+
+// Version of strcat that takes the original buffer size as the limit and ensures the result is null terminated
+void SafeStrncat(char *dst, const char *src, size_t length)
+{
+	dst[length - 1] = 0;
+	const size_t index = strlen(dst);
+	strncat(dst + index, src, length - index);
+	dst[length - 1] = 0;
 }
 
 // End

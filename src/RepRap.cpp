@@ -5,9 +5,9 @@
 #include "GCodes/GCodes.h"
 #include "Heating/Heat.h"
 #include "Platform.h"
+#include "Scanner.h"
 #include "PrintMonitor.h"
 #include "Tool.h"
-#include "Webserver.h"
 #include "Version.h"
 
 #ifndef __RADDS__
@@ -17,9 +17,9 @@
 // Callback function from the hsmci driver, called while it is waiting for an SD card operation to complete
 extern "C" void hsmciIdle()
 {
-	if (reprap.GetSpinningModule() != moduleNetwork)	// I don't think this should ever be false because the Network module doesn't do file access, but just in case...
+	if (reprap.GetSpinningModule() != moduleNetwork)
 	{
-		reprap.GetNetwork()->Spin(false);
+		reprap.GetNetwork().Spin(false);
 	}
 }
 
@@ -33,17 +33,19 @@ RepRap::RepRap() : toolList(nullptr), currentTool(nullptr), lastWarningMillis(0)
 {
 	OutputBuffer::Init();
 	platform = new Platform();
-	network = new Network(platform);
-	webserver = new Webserver(platform, network);
-	gCodes = new GCodes(platform, webserver);
-	move = new Move(platform, gCodes);
-	heat = new Heat(platform);
+	network = new Network(*platform);
+	gCodes = new GCodes(*platform);
+	move = new Move();
+	heat = new Heat(*platform);
 
 #if SUPPORT_ROLAND
-	roland = new Roland(platform);
+	roland = new Roland(*platform);
+#endif
+#if SUPPORT_SCANNER
+	scanner = new Scanner(*platform);
 #endif
 
-	printMonitor = new PrintMonitor(platform, gCodes);
+	printMonitor = new PrintMonitor(*platform, *gCodes);
 
 	SetPassword(DEFAULT_PASSWORD);
 	SetName(DEFAULT_NAME);
@@ -56,11 +58,13 @@ void RepRap::Init()
 	platform->Init();
 	gCodes->Init();
 	network->Init();
-	webserver->Init();
 	move->Init();
 	heat->Init();
 #if SUPPORT_ROLAND
 	roland->Init();
+#endif
+#if SUPPORT_SCANNER
+	scanner->Init();
 #endif
 	printMonitor->Init();
 	Platform::EnableWatchdog();		// do this after all init calls are made
@@ -98,10 +102,6 @@ void RepRap::Init()
 
 	// Enable network (unless it's disabled)
 	network->Activate();			// Need to do this here, as the configuration GCodes may set IP address etc.
-	if (!network->IsEnabled())
-	{
-		platform->Message(HOST_MESSAGE, "Network disabled.\n");
-	}
 
 #ifndef __RADDS__
 	hsmci_set_idle_func(hsmciIdle);
@@ -118,7 +118,9 @@ void RepRap::Exit()
 	heat->Exit();
 	move->Exit();
 	gCodes->Exit();
-	webserver->Exit();
+#if SUPPORT_SCANNER
+	scanner->Exit();
+#endif
 	network->Exit();
 	platform->Message(GENERIC_MESSAGE, "RepRap class exited.\n");
 	platform->Exit();
@@ -139,7 +141,6 @@ void RepRap::Spin()
 
 	spinningModule = moduleWebserver;
 	ticksInSpinState = 0;
-	webserver->Spin();
 
 	spinningModule = moduleGcodes;
 	ticksInSpinState = 0;
@@ -157,6 +158,12 @@ void RepRap::Spin()
 	spinningModule = moduleRoland;
 	ticksInSpinState = 0;
 	roland->Spin();
+#endif
+
+#if SUPPORT_SCANNER
+	spinningModule = moduleScanner;
+	ticksInSpinState = 0;
+	scanner->Spin();
 #endif
 
 	spinningModule = modulePrintMonitor;
@@ -210,7 +217,6 @@ void RepRap::Diagnostics(MessageType mtype)
 	heat->Diagnostics(mtype);
 	gCodes->Diagnostics(mtype);
 	network->Diagnostics(mtype);
-	webserver->Diagnostics(mtype);
 }
 
 // Turn off the heaters, disable the motors, and deactivate the Heat and Move classes. Leave everything else working.
@@ -263,7 +269,7 @@ void RepRap::FastStop()
 
 	for(size_t heater = 0; heater < HEATERS; heater++)
 	{
-		reprap.GetHeat()->SetActiveTemperature(heater, 0.0);
+		reprap.GetHeat().SetActiveTemperature(heater, 0.0);
 		platform->SetHeater(heater, 0.0);
 	}
 
@@ -348,7 +354,7 @@ void RepRap::DeleteTool(Tool* tool)
 	// Switch off any associated heater
 	for (size_t i = 0; i < tool->HeaterCount(); i++)
 	{
-		reprap.GetHeat()->SwitchOff(tool->Heater(i));
+		reprap.GetHeat().SwitchOff(tool->Heater(i));
 	}
 
 	// Purge any references to this tool
@@ -531,7 +537,7 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 	response->printf("{\"status\":\"%c\",\"coords\":{", ch);
 
 	// Coordinates
-	const size_t numAxes = reprap.GetGCodes()->GetNumAxes();
+	const size_t numAxes = reprap.GetGCodes().GetNumAxes();
 	{
 		float liveCoordinates[DRIVES + 1];
 #if SUPPORT_ROLAND
@@ -578,20 +584,19 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 
 		// XYZ positions
 		response->cat("],\"xyz\":");
-		if (!gCodes->AllAxesAreHomed() && move->IsDeltaMode())
+		if (gCodes->AllAxesAreHomed() || move->GetKinematics().ShowCoordinatesWhenNotHomed())
 		{
-			// If in Delta mode, skip these coordinates if some axes are not homed
-			response->cat("[0.00,0.00,0.00");
-		}
-		else
-		{
-			// On Cartesian printers, the live coordinates are (usually) valid
 			ch = '[';
 			for (size_t axis = 0; axis < numAxes; axis++)
 			{
 				response->catf("%c%.3f", ch, liveCoordinates[axis]);
 				ch = ',';
 			}
+		}
+		else
+		{
+			// If in Delta mode, skip these coordinates if some axes are not homed
+			response->cat("[0.00,0.00,0.00");
 		}
 	}
 
@@ -655,13 +660,10 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 		response->catf(",\"babystep\":%.03f}", gCodes->GetBabyStepOffset());
 	}
 
-	// G-code reply sequence for webserver (seqence number for AUX is handled later)
+	// G-code reply sequence for webserver (sequence number for AUX is handled later)
 	if (source == ResponseSource::HTTP)
 	{
-		response->catf(",\"seq\":%d", webserver->GetReplySeq());
-
-		// There currently appears to be no need for this one, so skip it
-		//response->catf(",\"buff\":%u", webserver->GetGCodeBufferSpace(WebSource::HTTP));
+		response->catf(",\"seq\":%d", network->GetHttpReplySeq());
 	}
 
 	/* Sensors */
@@ -758,6 +760,15 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 
 	// Time since last reset
 	response->catf(",\"time\":%.1f", platform->Time());
+
+#if SUPPORT_SCANNER
+	// Scanner
+	if (scanner->IsEnabled())
+	{
+		response->catf(",\"scanner\":{\"status\":\"%c\"", scanner->GetStatusCharacter());
+		response->catf(",\"progress\":%.1f}", scanner->GetProgress());
+	}
+#endif
 
 	/* Extended Status Response */
 	if (type == 2)
@@ -966,7 +977,7 @@ OutputBuffer *RepRap::GetConfigResponse()
 		return nullptr;
 	}
 
-	const size_t numAxes = reprap.GetGCodes()->GetNumAxes();
+	const size_t numAxes = reprap.GetGCodes().GetNumAxes();
 
 	// Axis minima
 	response->copy("{\"axisMins\":");
@@ -1149,9 +1160,9 @@ OutputBuffer *RepRap::GetLegacyStatusResponse(uint8_t type, int seq)
 	response->cat((ch == '[') ? "[]" : "]");
 
 	// Send XYZ positions
-	const size_t numAxes = reprap.GetGCodes()->GetNumAxes();
+	const size_t numAxes = reprap.GetGCodes().GetNumAxes();
 	float liveCoordinates[DRIVES];
-	reprap.GetMove()->LiveCoordinates(liveCoordinates, GetCurrentXAxes());
+	reprap.GetMove().LiveCoordinates(liveCoordinates, GetCurrentXAxes());
 	const Tool* const currentTool = reprap.GetCurrentTool();
 	if (currentTool != nullptr)
 	{
@@ -1334,8 +1345,7 @@ OutputBuffer *RepRap::GetFilesResponse(const char *dir, bool flagsDirs)
 				// Get the long filename if possible
 				if (flagsDirs && fileInfo.isDirectory)
 				{
-					strncpy(filename + sizeof(char), fileInfo.fileName, FILENAME_LENGTH - 1);
-					filename[FILENAME_LENGTH - 1] = 0;
+					SafeStrncpy(filename + 1, fileInfo.fileName, ARRAY_SIZE(fileInfo.fileName) - 1);
 					fname = filename;
 				}
 				else
@@ -1458,8 +1468,7 @@ void RepRap::Beep(int freq, int ms)
 // Send a short message. We send it to both PanelDue and the web interface.
 void RepRap::SetMessage(const char *msg)
 {
-	strncpy(message, msg, MESSAGE_LENGTH);
-	message[MESSAGE_LENGTH] = 0;
+	SafeStrncpy(message, msg, ARRAY_SIZE(message));
 
 	if (platform->HaveAux())
 	{
@@ -1475,7 +1484,7 @@ char RepRap::GetStatusCharacter() const
 			: (IsStopped()) 											? 'H'	// Halted
 			: (gCodes->IsPausing()) 									? 'D'	// Pausing / Decelerating
 			: (gCodes->IsResuming()) 									? 'R'	// Resuming
-			: (gCodes->IsDoingToolChange())								? 'T'	// Running tool change macros
+			: (gCodes->IsDoingToolChange())								? 'T'	// Changing tool
 			: (gCodes->IsPaused()) 										? 'S'	// Paused / Stopped
 			: (printMonitor->IsPrinting())								? 'P'	// Printing
 			: (gCodes->DoingFileMacro() || !move->NoLiveMovement()) 	? 'B'	// Busy
@@ -1517,7 +1526,7 @@ void RepRap::SetName(const char* nm)
 // This may be called by an ISR!
 unsigned int RepRap::GetProhibitedExtruderMovements(unsigned int extrusions, unsigned int retractions)
 {
-	if (GetHeat()->ColdExtrude())
+	if (GetHeat().ColdExtrude())
 	{
 		return 0;
 	}
@@ -1563,7 +1572,7 @@ void RepRap::FlagTemperatureFault(int8_t dudHeater)
 
 void RepRap::ClearTemperatureFault(int8_t wasDudHeater)
 {
-	reprap.GetHeat()->ResetFault(wasDudHeater);
+	reprap.GetHeat().ResetFault(wasDudHeater);
 	if (toolList != nullptr)
 	{
 		toolList->ClearTemperatureFault(wasDudHeater);

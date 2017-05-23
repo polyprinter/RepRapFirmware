@@ -1,6 +1,47 @@
 Summary of important changes in recent versions
 ===============================================
 
+Version 1.19alpha3
+==================
+
+CAUTION: CoreXY and CoreXZ kinematics have not been tested in this version!
+
+New features:
+- Major refactoring of movement and bed probing code to better support additional kinematics
+- Initial implementation of SCARA kinematics, configured using M669 command. Homing not implemented yet.
+- CoreYZ kinematics on longer suported
+- M122 on Duet WiFi and Duet Ethernet now reports status of each HTTP responder
+- M122 on Duet WiFi no longer reports underrun/overrun counts
+
+Version 1.19alpha2
+==================
+
+Bug fixes:
+- The M21 command did not re-initialise the file system completely. As a result, errors could occur if you removed the SD card, modified it on another device, re-inserted it and used M21 to re-mount it.
+
+Version 1.19alpha1
+==================
+
+New features:
+- On the Duet WiFi the network code has been rewritten. The web server now runs on the Duet instead of on the wifi module. FTP and Telnet are supported if enabled using M586. New commands M587, M588 and M589 are supported. The meaning of the M552 S parameter has changed: S-1 holds the WiFi module in the reset state, S0 holds it in the Idle state allowing it to process M587/M588/M589 commands, S1 starts it in client mode and S2 starts it in access point mode. The M122 diagnostic report includes WiFi module parameters unless the WiFi module is being held in the reset state.
+- On the Duet WiFi, when you download a file it on longer opens it in the browser but gives you a "Save file as" prompt instead.
+- On the Duet Ethernet the HTTP server code has been rewritten. This should make the web interface more responsive when multiple clients access the web interface simultaneously. The same HTTP server code is used on the Duet WiFi.
+- The F feed rate parameter in G1 commands is now taken to be the feed rate for the combined XYZ movement, ignoring any additional axes unless the X axis is mapped to them in the M563 command for the current tool. Caution: this may have unexpected side-effects on IDEX machines, let me know of you find any.
+- The pause.g, resume.g amnd cancel.g files are not run unless all axes have been homed.
+- The default maximum hot end temperature has been increased to 288C
+- String parameters in gcode commands, such as filenames, can now be enclosed in double quotation marks to avoid ambiguity
+
+Bug fixes:
+- M42 commands are now sychronised with the movement queue
+- On the Duet Ethernet, FTP is now working.
+
+Known issues:
+- FTP is not fully working on the Duet WiFi.
+
+Upgrade notes:
+- The compatible companion software and firmware are DuetWebControl 1.15c and DuetWiFiServer 1.19alpha1.
+- If you are installing this on a Duet WiFi then you must install the Duet Web Control 1.15c files in /www on the SD card, do a simultaneous update of the main firmware and the wifi firmware, and use a macro to set up access to your network. See https://duet3d.com/wiki/DuetWiFiFirmware_1.19_alpha.
+
 Version 1.18
 ============
 

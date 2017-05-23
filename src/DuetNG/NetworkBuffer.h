@@ -23,8 +23,7 @@ public:
 	// Read 1 character, returning true of successful, false if no data left
 	bool ReadChar(char& b);
 
-	// Read some data
-	const uint8_t* TakeData(size_t &len);
+	const uint8_t* UnreadData() const { return Data() + readPointer; }
 
 	// Return the amount of data available, not including continuation buffers
 	size_t Remaining() const { return dataLength - readPointer; }
@@ -34,6 +33,9 @@ public:
 
 	// Return true if there no data left to read
 	bool IsEmpty() const { return readPointer == dataLength; }
+
+	// Mark some data as taken
+	void Taken(size_t amount) { readPointer += amount; }
 
 	// Return the length available for writing
 	size_t SpaceLeft() const { return bufferSize - dataLength; }
@@ -47,9 +49,6 @@ public:
 	// Clear this buffer and release any successors
 	void Empty();
 
-	// Reset the data pointer to the start of the buffer
-	void ResetPointer() { readPointer = 0; }
-
 	// Append a buffer to a list
 	static void AppendToList(NetworkBuffer **list, NetworkBuffer *b);
 
@@ -58,6 +57,9 @@ public:
 
 	// Alocate buffers and put them in the freelist
 	static void AllocateBuffers(unsigned int number);
+
+	// Count how many buffers there are in a chain
+	static unsigned int Count(NetworkBuffer*& ptr);
 
 	static const size_t bufferSize =
 #ifdef USE_3K_BUFFERS
@@ -69,12 +71,17 @@ public:
 private:
 	NetworkBuffer(NetworkBuffer *n);
 	uint8_t *Data() { return reinterpret_cast<uint8_t*>(data32); }
+	const uint8_t *Data() const { return reinterpret_cast<const uint8_t*>(data32); }
 
 	NetworkBuffer *next;
 	size_t dataLength;
 	size_t readPointer;
+#ifdef DUET_WIFI
+	// When doing unaligned transfers on the WiFi interface, up to 3 extra bytes may be returned
+	uint32_t data32[bufferSize/sizeof(uint32_t) + 1];		// 32-bit aligned buffer so we can do direct DMA
+#else
 	uint32_t data32[bufferSize/sizeof(uint32_t)];			// 32-bit aligned buffer so we can do direct DMA
-
+#endif
 	static NetworkBuffer *freelist;
 };
 

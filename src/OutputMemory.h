@@ -29,12 +29,14 @@ class OutputBuffer
 		void IncreaseReferences(size_t refs);
 
 		const char *Data() const { return data; }
+		const char *UnreadData() const { return data + bytesRead; }
 		size_t DataLength() const { return dataLength; }	// How many bytes have been written to this instance?
 		size_t Length() const;								// How many bytes have been written to the whole chain?
 
 		char& operator[](size_t index);
 		char operator[](size_t index) const;
 		const char *Read(size_t len);
+		void Taken(size_t len) { bytesRead += len; }
 		size_t BytesLeft() const { return dataLength - bytesRead; }	// How many bytes have not been sent yet?
 
 		size_t printf(const char *fmt, ...);
