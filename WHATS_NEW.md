@@ -1,6 +1,29 @@
 Summary of important changes in recent versions
 ===============================================
 
+Version 1.19beta2
+=================
+
+New features:
+- SCARA kinematics is believed to be mostly working, except for homing
+- Thermostatic fans can now depend on heater numbers 100 (CPU temperature), 101 (TMC2660 drivers on Duet WiFi/Ethernet) and 102 (TMC2660 drivers on DueXn expansion board)
+- MCU temperature measurement now includes an averaging filter to reduce noise
+- Thermostatic fans now have a 1C hysteresis to reduce the effects of noise
+- M204 S parameter is supported for backwards compatibility e.g. with Cura
+- Some other exceptions now record a stack trace, as Hard Fault exceptions already did
+- M122 now displays additional information: firmware name and version, hardware type, last software reset reason, and unique board ID if available
+- On the Duet Ethernet, the default MAC address is generated from the board ID
+
+Bug fixes:
+- Improved reliability of the new Duet WiFi network interface
+- Additional axes on a delta printer are handled (they are assumed to behave linearly)
+- Additional axes on Cartesian printers are belived to be working again
+
+Upgrade notes:
+- The compatible companion software and firmware are DuetWebControl 1.16 and DuetWiFiServer 1.19beta1. DuetWebControl 1.15 should work with this release too.
+- If you are installing this on a Duet WiFi and you have not already installed 1.19beta1 then you must install the Duet Web Control 1.15c files in /www on the SD card, do a simultaneous update of the main firmware and the wifi firmware, and use a macro to set up access to your network. See https://duet3d.com/wiki/DuetWiFiFirmware_1.19_alpha.
+- Duet Ethernet users please note that the default MAC address has changed, so if you are using DHCP then your router will assign it a different IP address.
+
 Version 1.19beta1
 ==================
 
@@ -29,7 +52,7 @@ Known issues:
 - FTP is not fully working on the Duet WiFi.
 
 Upgrade notes:
-- The compatible companion software and firmware are DuetWebControl 1.15c and DuetWiFiServer 1.19alpha1.
+- The compatible companion software and firmware are DuetWebControl 1.15c and DuetWiFiServer 1.19beta1.
 - If you are installing this on a Duet WiFi then you must install the Duet Web Control 1.15c files in /www on the SD card, do a simultaneous update of the main firmware and the wifi firmware, and use a macro to set up access to your network. See https://duet3d.com/wiki/DuetWiFiFirmware_1.19_alpha.
 
 Version 1.18

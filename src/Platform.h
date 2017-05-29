@@ -52,6 +52,10 @@ Licence: GPL
 
 #if defined(DUET_NG)
 # include "DueXn.h"
+#elif defined(__ALLIGATOR__)
+# include "DAC/DAC084S085.h"       // SPI DAC for motor current vref
+# include "EUI48/EUI48EEPROM.h"    // SPI EUI48 mac address EEPROM
+# include "Microstepping.h"
 #elif !defined(__RADDS__)
 # include "MCP4461/MCP4461.h"
 #endif
@@ -127,6 +131,8 @@ enum class BoardType : uint8_t
 	DuetEthernet_10 = 1
 #elif defined(__RADDS__)
 	RADDS_15 = 1
+#elif defined(__ALLIGATOR__)
+	Alligator_2 = 1
 #else
 	Duet_06 = 1,
 	Duet_07 = 2,
@@ -159,7 +165,7 @@ enum class SoftwareResetReason : uint16_t
 	user = 0,						// M999 command
 	erase = 0x10,					// special M999 command to erase firmware and reset
 	NMI = 0x20,
-	hardFault = 0x30,
+	hardFault = 0x30,				// most exceptions get escalated to a hard fault
 	otherFault = 0x70,
 	inAuxOutput = 0x0800,			// this bit is or'ed in if we were in aux output at the time
 	stuckInSpin = 0x1000,			// we got stuck in a Spin() function for too long
@@ -181,7 +187,7 @@ enum class DiagnosticTestType : int
 #ifdef DUET_NG
 	PrintExpanderStatus = 101,		// print DueXn expander status
 #endif
-	TimeSquareRoot = 102			// do a timing test on the square roor function
+	TimeSquareRoot = 102			// do a timing test on the square root function
 };
 
 // Enumeration to describe what we want to do with a logical pin
@@ -323,9 +329,6 @@ public:
 	void Spin();									// This gets called in the main loop and should do any housekeeping needed
 	void Exit();									// Shut down tidily. Calling Init after calling this should reset to the beginning
 
-	static void EnableWatchdog();
-	static void KickWatchdog();						// kick the watchdog
-
 	Compatibility Emulating() const;
 	void SetEmulating(Compatibility c);
 	void Diagnostics(MessageType mtype);
@@ -377,6 +380,11 @@ public:
 	uint32_t GetBaudRate(size_t chan) const;
 	void SetCommsProperties(size_t chan, uint32_t cp);
 	uint32_t GetCommsProperties(size_t chan) const;
+
+#if defined(__ALLIGATOR__)
+	// Mac address from EUI48 EEPROM
+	EUI48EEPROM eui48MacAddress;
+#endif
 
 	friend class FileStore;
 
@@ -611,10 +619,11 @@ private:
 	Platform(const Platform&);						// private copy constructor to make sure we don't try to copy a Platform
 
 	void ResetChannel(size_t chan);					// re-initialise a serial channel
-	float AdcReadingToCpuTemperature(uint16_t reading) const;
+	float AdcReadingToCpuTemperature(uint32_t reading) const;
 
 #ifdef DUET_NG
 	static float AdcReadingToPowerVoltage(uint16_t reading);
+	void ReportDrivers(uint16_t whichDrivers, const char* text, bool& reported);
 #endif
 
 	// These are the structures used to hold our non-volatile data.
@@ -725,6 +734,10 @@ private:
 
 #if defined(DUET_NG)
 	size_t numTMC2660Drivers;						// the number of TMC2660 drivers we have, the remaining are simple enable/step/dir drivers
+#elif defined(__ALLIGATOR__)
+	Pin spiDacCS[MaxSpiDac];
+	DAC084S085 dacAlligator;
+	DAC084S085 dacPiggy;
 #elif !defined(__RADDS__)
 	// Digipots
 	MCP4461 mcpDuet;
@@ -742,6 +755,9 @@ private:
 	volatile ZProbeAveragingFilter zProbeOnFilter;					// Z probe readings we took with the IR turned on
 	volatile ZProbeAveragingFilter zProbeOffFilter;					// Z probe readings we took with the IR turned off
 	volatile ThermistorAveragingFilter thermistorFilters[HEATERS];	// bed and extruder thermistor readings
+#ifndef __RADDS__
+	volatile ThermistorAveragingFilter cpuTemperatureFilter;		// MCU temperature readings
+#endif
 
 	float extrusionAncilliaryPwmValue;
 	float extrusionAncilliaryPwmFrequency;
@@ -844,8 +860,7 @@ private:
 	// Temperature and power monitoring
 #ifndef __RADDS__		// reading temperature on the RADDS messes up one of the heater pins, so don't do it
 	AnalogChannelNumber temperatureAdcChannel;
-	uint16_t currentMcuTemperature, highestMcuTemperature, lowestMcuTemperature;
-	uint16_t mcuAlarmTemperature;
+	uint32_t highestMcuTemperature, lowestMcuTemperature;
 #endif
 	float mcuTemperatureAdjust;
 
@@ -854,7 +869,9 @@ private:
 	volatile uint16_t currentVin, highestVin, lowestVin;
 	uint32_t numUnderVoltageEvents;
 	volatile uint32_t numOverVoltageEvents;
-	uint32_t lastWarningMillis;					// When we last sent a warning message for things that can happen very often
+	uint32_t lastWarningMillis;						// When we last sent a warning message about a Vssa short
+	uint16_t temperatureShutdownDrivers, temperatureWarningDrivers, shortToGroundDrivers, openLoadDrivers;
+	uint8_t nextDriveToPoll;
 	bool driversPowered;
 	bool vssaSenseWorking;
 #endif
@@ -1256,26 +1273,6 @@ inline OutputBuffer *Platform::GetAuxGCodeReply()
 	return temp;
 }
 
-/*static*/ inline void Platform::EnableWatchdog()
-{
-	watchdogEnable(1000);
-}
-
-/*static*/ inline void Platform::KickWatchdog()
-{
-	watchdogReset();
-}
-
-inline float Platform::AdcReadingToCpuTemperature(uint16_t adcVal) const
-{
-	float voltage = (float)adcVal * (3.3/4096.0);
-#ifdef DUET_NG
-	return (voltage - 1.44) * (1000.0/4.7) + 27.0 + mcuTemperatureAdjust;			// accuracy at 27C is +/-13C
-#else
-	return (voltage - 0.8) * (1000.0/2.65) + 27.0 + mcuTemperatureAdjust;			// accuracy at 27C is +/-45C
-#endif
-}
-
 #ifdef DUET_NG
 inline float Platform::AdcReadingToPowerVoltage(uint16_t adcVal)
 {
@@ -1302,6 +1299,8 @@ inline float Platform::AdcReadingToPowerVoltage(uint16_t adcVal)
 	return pinDesc.ulPin;
 #elif defined(__RADDS__)
 	return (pinDesc.pPort == PIOC) ? pinDesc.ulPin << 1 : pinDesc.ulPin;
+#elif defined(__ALLIGATOR__)
+	return pinDesc.ulPin;
 #else
 	return (pinDesc.pPort == PIOA) ? pinDesc.ulPin << 1 : pinDesc.ulPin;
 #endif
@@ -1319,6 +1318,10 @@ inline float Platform::AdcReadingToPowerVoltage(uint16_t adcVal)
 	PIOB->PIO_ODSR = driverMap;
 	PIOD->PIO_ODSR = driverMap;
 	PIOC->PIO_ODSR = driverMap >> 1;		// do this last, it means the processor doesn't need to preserve the register containing driverMap
+#elif defined(__ALLIGATOR__)
+	PIOB->PIO_ODSR = driverMap;
+	PIOD->PIO_ODSR = driverMap;
+	PIOC->PIO_ODSR = driverMap;
 #else	// Duet
 	PIOD->PIO_ODSR = driverMap;
 	PIOC->PIO_ODSR = driverMap;
@@ -1338,6 +1341,10 @@ inline float Platform::AdcReadingToPowerVoltage(uint16_t adcVal)
 	PIOC->PIO_ODSR = 0;
 	PIOB->PIO_ODSR = 0;
 	PIOA->PIO_ODSR = 0;
+#elif defined(__ALLIGATOR__)
+	PIOD->PIO_ODSR = 0;
+	PIOC->PIO_ODSR = 0;
+	PIOB->PIO_ODSR = 0;
 #else	// Duet
 	PIOD->PIO_ODSR = 0;
 	PIOC->PIO_ODSR = 0;
