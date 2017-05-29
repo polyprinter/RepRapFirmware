@@ -13,14 +13,14 @@
 #endif
 
 #ifndef DATE
-# define DATE "2017-05-21"
+# define DATE "2017-05-29"
 #endif
 
 #define AUTHORS "reprappro, dc42, chrishamm, t3p3, dnewman"
 
 #ifdef POLYPRINTER
 #undef VERSION
-# define VERSION "1.18RC1Poly0003"
+# define VERSION "1.19beta1Poly0004"
 #endif
 
 #endif /* SRC_VERSION_H_ */
