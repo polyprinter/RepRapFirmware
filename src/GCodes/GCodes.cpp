@@ -3466,6 +3466,7 @@ void GCodes::SetHeaterParameters(GCodeBuffer& gb, StringRef& reply)
 				if (   (0 <= thermistor && thermistor < HEATERS)
 					|| ((int)FirstThermocoupleChannel <= thermistor && thermistor < (int)(FirstThermocoupleChannel + MaxSpiTempSensors))
 					|| ((int)FirstRtdChannel <= thermistor && thermistor < (int)(FirstRtdChannel + MaxSpiTempSensors))
+					|| ((int)FirstLinearAdcChannel <= thermistor && thermistor < (int)(FirstLinearAdcChannel + MaxSpiTempSensors))
 				   )
 				{
 					platform.SetThermistorNumber(heater, thermistor);
