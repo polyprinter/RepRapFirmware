@@ -38,6 +38,9 @@ public:
 	void PrepareCartesianAxis(const DDA& dda, const PrepParams& params);
 	void PrepareDeltaAxis(const DDA& dda, const PrepParams& params);
 	void PrepareExtruder(const DDA& dda, const PrepParams& params, bool doCompensation);
+#ifdef POLYPRINTER
+	void PrepareExtruderWithLinearAdvance(const DDA& dda, const PrepParams& params, bool doCompensation);
+#endif
 	void ReduceSpeed(const DDA& dda, float inverseSpeedFactor);
 	void DebugPrint(char c, bool withDelta) const;
 	int32_t GetNetStepsLeft() const;
@@ -71,8 +74,8 @@ public:
 #ifdef POLYPRINTER
 	// Velocity Advance
 	// During acceleration, each lapse of time results in some added advance.
-	int32_t velocityAdvance_ST{0};							// the number of steps of advance that is our current target
-	int32_t appliedAdvance_ST{0};							// the current actual applied steps of advance
+	//int32_t velocityAdvance_ST{0};							// the number of steps of advance that is our current target
+	//int32_t appliedAdvance_ST{0};							// the current actual applied steps of advance
 #endif
 
 	// Parameters unique to a style of move (Cartesian, delta or extruder). Currently, extruders and Cartesian moves use the same parameters.

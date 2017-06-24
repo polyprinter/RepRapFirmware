@@ -1042,6 +1042,11 @@ inline float Platform::ConfiguredInstantDv(size_t drive) const
 
 inline void Platform::SetInstantDv(size_t drive, float value)
 {
+#ifdef POLYPRINTER
+	if ( drive > 2 ) {
+		debugPrintf("Setting drive %d InstantDv to %f mm/sec\n", drive, value );
+	}
+#endif
 	instantDvs[drive] = value;
 }
 

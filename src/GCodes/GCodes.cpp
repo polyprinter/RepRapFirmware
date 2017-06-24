@@ -48,7 +48,6 @@ const char* const DefaultHeightMapFile = "heightmap.csv";
 
 const size_t gcodeReplyLength = 2048;			// long enough to pass back a reasonable number of files in response to M20
 
-
 void GCodes::RestorePoint::Init()
 {
 	for (size_t i = 0; i < DRIVES; ++i)

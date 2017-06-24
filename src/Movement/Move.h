@@ -42,7 +42,7 @@ public:
 	void Interrupt();												// The hardware's (i.e. platform's)  interrupt should call this.
 	void InterruptTime();											// Test function - not used
 	bool AllMovesAreFinished();										// Is the look-ahead ring empty?  Stops more moves being added as well.
-	void DoLookAhead();												// Run the look-ahead procedure
+	//void DoLookAhead();												// Run the look-ahead procedure
 	void HitLowStop(size_t axis, DDA* hitDDA);						// What to do when a low endstop is hit
 	void HitHighStop(size_t axis, DDA* hitDDA);						// What to do when a high endstop is hit
 	void ZProbeTriggered(DDA* hitDDA);								// What to do when a the Z probe is triggered
@@ -91,6 +91,8 @@ public:
 	void PrintCurrentDda() const;													// For debugging
 #ifdef POLYPRINTER
     void ClearPendingMoves();
+    // returns the index location in the DDA ring, for the given DDA
+    static int DDARingIndex( const DDA* dda );
 #endif
 	FilePosition PausePrint(float positions[DRIVES], float& pausedFeedRate, uint32_t xAxes); // Pause the print as soon as we can
 	bool NoLiveMovement() const;													// Is a move running, or are there any queued?

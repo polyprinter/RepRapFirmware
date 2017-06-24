@@ -85,24 +85,35 @@ void DriveMovement::PrepareExtruder(const DDA& dda, const PrepParams& params, bo
 	mp.cart.twoCsquaredTimesMmPerStepDivA = (uint64_t)(((float)DDA::stepClockRate * (float)DDA::stepClockRate)/(stepsPerMm * dda.acceleration)) * 2;
 
 	// Calculate the pressure advance parameter
-	const float compensationTime = (doCompensation && dv > 0.0) ? reprap.GetPlatform().GetPressureAdvance(drive - reprap.GetGCodes().GetNumAxes()) : 0.0;
-	const uint32_t compensationClocks = (uint32_t)(compensationTime * DDA::stepClockRate);
+	const float compensationTime_SEC_or_MMpMMpSEC = (doCompensation && dv > 0.0) ? reprap.GetPlatform().GetPressureAdvance(drive - reprap.GetGCodes().GetNumAxes()) : 0.0;
+	const uint32_t compensationClocks = (uint32_t)(compensationTime_SEC_or_MMpMMpSEC * DDA::stepClockRate);
 
 	// Calculate the net total step count to allow for compensation. It may be negative.
 	// Note that we add totalSteps in floating point mode, to round the number of steps down consistently
-	const float compensationDistance = (dda.endSpeed - dda.startSpeed) * compensationTime;
-	const int32_t netSteps = (int32_t)(compensationDistance * stepsPerMm) + (int32_t)totalSteps;
+	// for the vectorial speed change across the whole move, determine the net additional distance from Advance (could be negative)
+	const float compensationDistanceForEntireMoveSpeedChange_vect_mm = (dda.endSpeed - dda.startSpeed) * compensationTime_SEC_or_MMpMMpSEC;
+	// and convert it into steps for this axis and correct the number of steps in the whole move
+	const int32_t netSteps = (int32_t)(compensationDistanceForEntireMoveSpeedChange_vect_mm * stepsPerMm) + (int32_t)totalSteps;
 
 	// Calculate the acceleration phase parameters
-	const float accelCompensationDistance = compensationTime * (dda.topSpeed - dda.startSpeed);
+	// for the vectorial speed change in acceleration, determine the net additional distance from Advance
+	const float accelCompensationDistance_vect_MM = compensationTime_SEC_or_MMpMMpSEC * (dda.topSpeed - dda.startSpeed); // distance = speed * time
 
 	// Acceleration phase parameters
-	mp.cart.accelStopStep = (uint32_t)((dda.accelDistance + accelCompensationDistance) * stepsPerMm) + 1;
-	startSpeedTimesCdivA = params.startSpeedTimesCdivA + compensationClocks;
+	mp.cart.accelStopStep = (uint32_t)((dda.accelDistance + accelCompensationDistance_vect_MM) * stepsPerMm) + 1;
+	startSpeedTimesCdivA = params.startSpeedTimesCdivA + compensationClocks;  // effective time taken to get to start speed with compensation speed added to it
 
 	// Constant speed phase parameters
 	mp.cart.mmPerStepTimesCdivtopSpeed = (uint32_t)(((float)DDA::stepClockRate * K1)/(stepsPerMm * dda.topSpeed));
+
 	accelClocksMinusAccelDistanceTimesCdivTopSpeed = (int32_t)params.accelClocksMinusAccelDistanceTimesCdivTopSpeed - (int32_t)(compensationClocks * params.compFactor);
+
+	// modify the clock count for cruise speed zero intercept by the time taken at cruise to travel the compensation distance added
+	// - we are adding accelCompensationDistance_MM which takes accelCompensationDistance_MM/dda.topSpeed seconds
+	const float compensationDistanceTimeAtTopSpeed_SEC = accelCompensationDistance_vect_MM / dda.topSpeed;  // vectorially
+	int32_t compensationClocksDeltaToCruiseInterceptClocks = compensationDistanceTimeAtTopSpeed_SEC * DDA::stepClockRate;
+	// since more advance means more steps, the intercept number becomes smaller when there is advance
+	accelClocksMinusAccelDistanceTimesCdivTopSpeed = (int32_t)params.accelClocksMinusAccelDistanceTimesCdivTopSpeed - compensationClocksDeltaToCruiseInterceptClocks;
 
 	// Calculate the deceleration and reverse phase parameters
 	// First check whether there is any deceleration at all, otherwise we may get strange results because of rounding errors
@@ -116,20 +127,22 @@ void DriveMovement::PrepareExtruder(const DDA& dda, const PrepParams& params, bo
 	}
 	else
 	{
-		mp.cart.decelStartStep = (uint32_t)((params.decelStartDistance + accelCompensationDistance) * stepsPerMm) + 1;
+		// during cruise, we have kept a constant amount of advance
+		mp.cart.decelStartStep = (uint32_t)((params.decelStartDistance + accelCompensationDistance_vect_MM) * stepsPerMm) + 1;
 		const int32_t initialDecelSpeedTimesCdivA = (int32_t)params.topSpeedTimesCdivA - (int32_t)compensationClocks;	// signed because it may be negative and we square it
 		const uint64_t initialDecelSpeedTimesCdivASquared = isquare64(initialDecelSpeedTimesCdivA);
 		topSpeedTimesCdivAPlusDecelStartClocks = params.topSpeedTimesCdivAPlusDecelStartClocks - compensationClocks;
 		twoDistanceToStopTimesCsquaredDivA =
-			initialDecelSpeedTimesCdivASquared + (uint64_t)(((params.decelStartDistance + accelCompensationDistance) * (DDA::stepClockRateSquared * 2))/dda.acceleration);
+			initialDecelSpeedTimesCdivASquared + (uint64_t)(((params.decelStartDistance + accelCompensationDistance_vect_MM) * (DDA::stepClockRateSquared * 2))/dda.acceleration);
 
-		const float initialDecelSpeed = dda.topSpeed - dda.acceleration * compensationTime;
+		// the "speed" at the beginning of deceleration is actually instantaneously lower than it was at cruise.
+		const float initialDecelSpeed = dda.topSpeed - dda.acceleration * compensationTime_SEC_or_MMpMMpSEC;
 		const float reverseStartDistance = (initialDecelSpeed > 0.0)
 												? fsquare(initialDecelSpeed)/(2 * dda.acceleration) + params.decelStartDistance
 												: params.decelStartDistance;
 
 		// Reverse phase parameters
-		if (reverseStartDistance >= dda.totalDistance + compensationDistance)
+		if (reverseStartDistance >= dda.totalDistance + accelCompensationDistance_vect_MM)
 		{
 			// No reverse phase
 			totalSteps = (uint)max<int32_t>(netSteps, 0);
@@ -159,6 +172,124 @@ void DriveMovement::PrepareExtruder(const DDA& dda, const PrepParams& params, bo
 		}
 	}
 }
+
+#ifdef POLYPRINTER
+// Prepare this DM for an extruder move with linear Advance
+void DriveMovement::PrepareExtruderWithLinearAdvance(const DDA& dda, const PrepParams& params, bool doCompensation)
+{
+	const float dv = dda.directionVector[drive];
+	const float stepsPerMm = reprap.GetPlatform().DriveStepsPerUnit(drive) * fabsf(dv);  // steps of this axis per mm of overall move distance
+	mp.cart.twoCsquaredTimesMmPerStepDivA = (uint64_t)(((float)DDA::stepClockRate * (float)DDA::stepClockRate)/(stepsPerMm * dda.acceleration)) * 2;
+
+	// Calculate the pressure advance parameter
+	const float compensationTime_SEC_or_MMpMMpSEC = (doCompensation && dv > 0.0) ? reprap.GetPlatform().GetPressureAdvance(drive - reprap.GetGCodes().GetNumAxes()) : 0.0;
+	const uint32_t compensationClocks = (uint32_t)(compensationTime_SEC_or_MMpMMpSEC * DDA::stepClockRate);
+
+	// Calculate the net total step count to allow for compensation. It may be negative.
+	// Note that we add totalSteps in floating point mode, to round the number of steps down consistently
+	// for the vectorial speed change across the whole move, determine the net additional distance from Advance (could be negative)
+	const float compensationDistanceForEntireMoveSpeedChange_vect_mm = (dda.endSpeed - dda.startSpeed) * compensationTime_SEC_or_MMpMMpSEC;
+	// and convert it into steps for this axis and correct the number of steps in the whole move
+	const int32_t netSteps = (int32_t)(compensationDistanceForEntireMoveSpeedChange_vect_mm * stepsPerMm) + (int32_t)totalSteps;
+
+	// Calculate the acceleration phase parameters
+	// for the vectorial speed change in acceleration, determine the net additional distance from Advance
+	const float accelCompensationDistance_vect_MM = compensationTime_SEC_or_MMpMMpSEC * (dda.topSpeed - dda.startSpeed); // distance = speed * time
+	// alternatively: const float accelTime_SEC = (dda.topSpeed - dda.startSpeed) / dda.acceleration;
+	//                const float compensationSpeed_vect_MMpSEC = compensationTime_SEC_or_MMpMMpSEC * dda.acceleration;	// work in vectorial terms even though the vectorial speed is unaffected
+	//                const float accelCompensationDistance_vect_MM = compensationSpeed_vect_MMpSEC * accelTime_SEC; // still in vectorial terms
+
+	// Acceleration phase parameters
+	mp.cart.accelStopStep = (uint32_t)((dda.accelDistance + accelCompensationDistance_vect_MM) * stepsPerMm) + 1;
+	// a bit trickier making sure all the derived elements are actually working together
+	// since K is an amount of time, we know how much sooner acceleration would have needed to start to get to the initial velocity
+	// - that is a constant amount of time, regardless of acceleration. (Low accel means little advance in that same time.)
+	// - let's do everything necessary to fake it into simply executing the equivalent (modified) trapezoid
+	startSpeedTimesCdivA = params.startSpeedTimesCdivA + compensationClocks;  // effective time taken to get to start speed with compensation speed added to it
+
+	// Constant speed phase parameters
+	mp.cart.mmPerStepTimesCdivtopSpeed = (uint32_t)(((float)DDA::stepClockRate * K1)/(stepsPerMm * dda.topSpeed));
+	// compfactor represents the fraction of the advance needed at a top speed that is actually going to be added, given an initial speed having reduced the need for it.
+	// accelClocksMinusAccelDistanceTimesCdivTopSpeed is used to convert a step count in cruise into a time count for that step
+	// by working back from the intercept at top speed. Take the time into the move that top speed would have taken, off the top.
+	// so accelClocksMinusAccelDistanceTimesCdivTopSpeed is the difference in time between actual move start and the start if  it was all at top speed
+
+	// modify the clock count for cruise speed zero intercept by the time taken at cruise to travel the compensation distance added
+	// - we are adding accelCompensationDistance_MM which takes accelCompensationDistance_MM/dda.topSpeed seconds
+	const float compensationDistanceTimeAtTopSpeed_SEC = accelCompensationDistance_vect_MM / dda.topSpeed;  // vectorially
+	int32_t compensationClocksDeltaToCruiseInterceptClocks = compensationDistanceTimeAtTopSpeed_SEC * DDA::stepClockRate;
+	// since more advance means more steps, the intercept number becomes smaller when there is advance
+	accelClocksMinusAccelDistanceTimesCdivTopSpeed = (int32_t)params.accelClocksMinusAccelDistanceTimesCdivTopSpeed - compensationClocksDeltaToCruiseInterceptClocks;
+
+	//accelClocksMinusAccelDistanceTimesCdivTopSpeed = (int32_t)params.accelClocksMinusAccelDistanceTimesCdivTopSpeed - (int32_t)(compensationClocks * params.compFactor);
+
+	// Calculate the deceleration and reverse phase parameters
+	// First check whether there is any deceleration at all, otherwise we may get strange results because of rounding errors
+	if (dda.decelDistance * stepsPerMm < 0.5)		// if less than 1 deceleration step
+	{
+		totalSteps = (uint)max<int32_t>(netSteps, 0);
+		mp.cart.decelStartStep = reverseStartStep = netSteps + 1;
+		topSpeedTimesCdivAPlusDecelStartClocks = 0;
+		mp.cart.fourMaxStepDistanceMinusTwoDistanceToStopTimesCsquaredDivA = 0;
+		twoDistanceToStopTimesCsquaredDivA = 0;
+	}
+	else
+	{
+		mp.cart.decelStartStep = (uint32_t)((params.decelStartDistance + accelCompensationDistance_vect_MM) * stepsPerMm) + 1;
+		const int32_t initialDecelSpeedTimesCdivA = (int32_t)params.topSpeedTimesCdivA - (int32_t)compensationClocks;	// signed because it may be negative and we square it
+		const uint64_t initialDecelSpeedTimesCdivASquared = isquare64(initialDecelSpeedTimesCdivA);
+		topSpeedTimesCdivAPlusDecelStartClocks = params.topSpeedTimesCdivAPlusDecelStartClocks - compensationClocks;
+		twoDistanceToStopTimesCsquaredDivA =
+			initialDecelSpeedTimesCdivASquared + (uint64_t)(((params.decelStartDistance + accelCompensationDistance_vect_MM) * (DDA::stepClockRateSquared * 2))/dda.acceleration);
+
+		// the "speed" at the beginning of deceleration is actually instantaneously lower than it was at cruise.
+		const float initialDecelSpeed = dda.topSpeed - dda.acceleration * compensationTime_SEC_or_MMpMMpSEC;
+		const float reverseStartDistance = (initialDecelSpeed > 0.0)
+												? fsquare(initialDecelSpeed)/(2 * dda.acceleration) + params.decelStartDistance
+												: params.decelStartDistance;
+
+		// Reverse phase parameters
+		if (reverseStartDistance >= dda.totalDistance + accelCompensationDistance_vect_MM)
+		{
+			// No reverse phase
+			totalSteps = (uint)max<int32_t>(netSteps, 0);
+			reverseStartStep = netSteps + 1;
+			mp.cart.fourMaxStepDistanceMinusTwoDistanceToStopTimesCsquaredDivA = 0;
+		}
+		else
+		{
+			reverseStartStep = (initialDecelSpeed < 0.0)
+								? mp.cart.decelStartStep
+								: (twoDistanceToStopTimesCsquaredDivA/mp.cart.twoCsquaredTimesMmPerStepDivA) + 1;
+			// Because the step numbers are rounded down, we may sometimes get a situation in which netSteps = 1 and reverseStartStep = 1.
+			// This would lead to totalSteps = -1, which must be avoided.
+			const int32_t overallSteps = (int32_t)(2 * (reverseStartStep - 1)) - netSteps;
+			if (overallSteps > 0)
+			{
+				totalSteps = overallSteps;
+				mp.cart.fourMaxStepDistanceMinusTwoDistanceToStopTimesCsquaredDivA =
+						(int64_t)((2 * (reverseStartStep - 1)) * mp.cart.twoCsquaredTimesMmPerStepDivA) - (int64_t)twoDistanceToStopTimesCsquaredDivA;
+#ifdef POLYPRINTER
+				// make sure there's not going to be a problem using this
+				int64_t rootvalue = (int64_t)(mp.cart.twoCsquaredTimesMmPerStepDivA * reverseStartStep) - mp.cart.fourMaxStepDistanceMinusTwoDistanceToStopTimesCsquaredDivA;
+				if ( rootvalue < 0 )
+				{
+					// it going to barf!!!
+					debugPrintf("Error in Extruder deceleration - root val %ld\n", rootvalue );
+					DebugPrint('E', false );
+				}
+#endif
+			}
+			else
+			{
+				totalSteps = (uint)max<int32_t>(netSteps, 0);
+				reverseStartStep = totalSteps + 1;
+				mp.cart.fourMaxStepDistanceMinusTwoDistanceToStopTimesCsquaredDivA = 0;
+			}
+		}
+	}
+}
+#endif
 
 void DriveMovement::DebugPrint(char c, bool isDeltaMovement) const
 {
@@ -254,6 +385,7 @@ pre(nextStep < totalSteps; stepsTillRecalc == 0)
 				reprap.GetPlatform().SetDirection(drive, direction);
 			}
 		}
+
 		nextStepTime = topSpeedTimesCdivAPlusDecelStartClocks
 							+ isqrt64((int64_t)(mp.cart.twoCsquaredTimesMmPerStepDivA * nextCalcStep) - mp.cart.fourMaxStepDistanceMinusTwoDistanceToStopTimesCsquaredDivA);
 	}

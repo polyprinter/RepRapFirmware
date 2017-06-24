@@ -16,14 +16,24 @@ Move::Move() : currentDda(NULL), scheduledMoves(0), completedMoves(0)
 	kinematics = Kinematics::Create(KinematicsType::cartesian);			// default to Cartesian
 
 	// Build the DDA ring
+
+
 	DDA *dda = new DDA(NULL);
 	ddaRingGetPointer = ddaRingAddPointer = dda;
 	for (size_t i = 1; i < DdaRingLength; i++)
 	{
 		DDA *oldDda = dda;
 		dda = new DDA(dda);
+#ifdef POLYPRINTER
+		// we would like to be able to give diagnostics referencing the index of the DDA being messaged about
+		// to make debugging the planner easier.
+		dda->setRingIndex( (DdaRingLength-1) - i );	// since we allocate from the end back, let's change the numbering to make more human sense
+#endif
 		oldDda->SetPrevious(dda);
 	}
+
+
+
 	ddaRingAddPointer->SetNext(dda);
 	dda->SetPrevious(ddaRingAddPointer);
 }

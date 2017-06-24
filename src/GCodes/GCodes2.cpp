@@ -35,6 +35,8 @@ const char* const RETRACTPROBE_G = "retractprobe.g";
 
 const float MinServoPulseWidth = 544.0, MaxServoPulseWidth = 2400.0;
 const uint16_t ServoRefreshFrequency = 50;
+const float MIN_ALLOWED_XY_JERK_SETTING = 3;		// we need to have at least a little allowable Jerk
+
 
 // If the code to act on is completed, this returns true,
 // otherwise false.  It is called repeatedly for a given
@@ -288,6 +290,12 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 #ifdef POLYPRINTER
 										&& code != 82 && code != 83		// it's important for the config.g to reset as much of the state as possible without messing things up
 										&& code != 572					// pressure advance setup
+										&& code != 201					// max printing acceleration
+										&& code != 202					// max travel acceleration
+										&& code != 203					// max feedrate
+										&& code != 204					// default acceleration
+										&& code != 205					// jerk and other settings (M566 preferred)
+										&& code != 566					// jerk and other settings
 #endif
 			)
 	{
@@ -2563,26 +2571,30 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 		break;
 
 #ifdef POLYPRINTER
-	case 205: // same as Marlin, in case old g-code is run
+	case 205: // same as Marlin, in case old g-code is run. Set in mm/sec
 #endif
-	case 566: // Set/print maximum jerk speeds
+	case 566: // Set/print maximum jerk speeds in mm/min
 	{
 		bool seen = false;
 		for (size_t axis = 0; axis < numAxes; axis++)
 		{
 			if (gb.Seen(axisLetters[axis]))
 			{
-				float jerkValue = gb.GetFValue() * distanceScale * SecondsToMinutes;
-				platform.SetInstantDv(axis, jerkValue); // G Code feedrates are in mm/minute; we need mm/sec
+				float jerkValue_MMpSEC = gb.GetFValue() * distanceScale * ( code == 205 ? 1 : SecondsToMinutes ); // G Code M566 feedrates are in mm/minute; we need mm/sec, (M205 is in mm/sec)
+
+				if ( axis <= Y_AXIS )
+				{
+					jerkValue_MMpSEC = max( jerkValue_MMpSEC, MIN_ALLOWED_XY_JERK_SETTING );
+				}
+
+				platform.SetInstantDv(axis, jerkValue_MMpSEC);
 #ifdef POLYPRINTER
 				if ( code == 205 && axis == X_AXIS )
 				{
 					// in Marlin mode, an X param also sets Y jerk
-					platform.SetInstantDv( Y_AXIS, jerkValue ); // G Code feedrates are in mm/minute; we need mm/sec
+					platform.SetInstantDv( Y_AXIS, jerkValue_MMpSEC  );
 
 				}
-#else
-				platform.SetInstantDv(axis, gb.GetFValue() * distanceScale * SecondsToMinute); // G Code feedrates are in mm/minute; we need mm/sec
 #endif
 				seen = true;
 

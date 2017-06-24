@@ -25,6 +25,8 @@ Licence: GPL
 
 #include <cstddef>			// for size_t
 
+#define POLYPRINTER
+
 // Other firmware that we might switch to be compatible with.
 
 enum Compatibility
@@ -108,7 +110,11 @@ const unsigned int FirstRtdChannel = 200;			// Temperature sensor channels 200..
 const unsigned int FirstLinearAdcChannel = 300;		// Temperature sensor channels 300... use an ADC that provides a linear output over a temperature range
 
 // PWM frequencies
+#ifdef POLYPRINTER
+const unsigned int SlowHeaterPwmFreq = 250;			// normal PWM frequency for bed and chamber heaters,
+#else
 const unsigned int SlowHeaterPwmFreq = 10;			// slow PWM frequency for bed and chamber heaters, compatible with DC/AC SSRs
+#endif
 const unsigned int NormalHeaterPwmFreq = 250;		// normal PWM frequency used for hot ends
 const unsigned int DefaultFanPwmFreq = 250;			// increase to 25kHz using M106 command to meet Intel 4-wire PWM fan specification
 const unsigned int DefaultPinWritePwmFreq = 500;	// default PWM frequency for M42 pin writes and extrusion ancillary PWM

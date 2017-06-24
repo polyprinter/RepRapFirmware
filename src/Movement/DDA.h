@@ -36,6 +36,18 @@ public:
 		completed			// move has been completed or aborted
 	};
 
+
+	// junctions between different classes of motion do not follow the simple zero-vectorial-jerk rules.
+	enum MotionClass : unsigned char {
+		MOTION_CLASS_UNKNOWN,
+		MOTION_CLASS_XYZ_MOVE,	// positioning involving some definite XY motion, and possibly Z, but not drawing - probably safe to treat as a G0 move
+		MOTION_CLASS_XYZ_DRAW,  // extruding plastic while moving in XY, or possibly Z (up only if only Z motion), forming part of the output part. (Moving while undoing a retraction doesn't count).
+		MOTION_CLASS_XYZ_RETRACT,  // retracting plastic while moving in XY, or possibly Z (up only if only Z motion), NOT forming part of the output part
+		MOTION_CLASS_Z_MOVE,		// Moving in only Z, not extruding
+		MOTION_CLASS_E_ONLY,		// any retraction/extrusion not involving positioning
+		};
+
+
 	DDA(DDA* n);
 
 	bool Init(const GCodes::RawMove &nextMove, bool doMotorMapping); // Set up a new move, returning true if it represents real movement
@@ -66,6 +78,9 @@ public:
     float GetRequestedSpeed() const { return requestedSpeed; }
 
 	void DebugPrint() const;
+#ifdef POLYPRINTER
+    void setRingIndex( int i ) { ringIndex = i; }
+#endif
 
 	static const uint32_t stepClockRate = VARIANT_MCK/128;			// the frequency of the clock used for stepper pulse timing (see Platform::InitialiseInterrupts)
 	static const uint64_t stepClockRateSquared = (uint64_t)stepClockRate * stepClockRate;
@@ -107,14 +122,47 @@ private:
 	void CheckEndstops(Platform& platform);
 	void AdvanceBabyStepping(float amount);							// Try to push babystepping earlier in the move queue
 	float NormaliseXYZ();											// Make the direction vector unit-normal in XYZ
+#ifdef POLYPRINTER
+    static float BlockAccelerationDistance( const DDA* block, float otherSpeed );
+    static float SpeedAchieved( float initialVel, float accel, float distance );
+    static float AverageSpeed( float initialVel, float accel, float distance );
+    static float BlockMaxAllowableDecelerationEntrySpeed( DDA* block, float exitSpeed );
+    static void SetBlockMaxAllowableDecelerationEntrySpeed( DDA* block, float exitSpeed );
+    static void SetBlockMaxAllowableJerkEntrySpeed( const DDA* prevblock, DDA* currentblock );
+    //static void SetBlockMaxAllowableJerkEntrySpeed( float prevNominalSpeed, float previousAxisSpeeds[], DDA* currentblock, float curAxisSpeeds[], float prevBlockLength_MM, MotionClass prevBlockMotionClass, float filteredPreviousVelocityXY[] );
 
+	static bool MaximizeJunctionSpeed( DDA* p, DDA* q );
+	static DDA* RippleChangesBack( DDA* newestBlock );
+	static void MaximizeForwardSpeeds( DDA* firstChangedBlock, DDA* newestBlock );
+	static void DoPlannerLookahead( DDA* newestMove );
+#else
 	static void DoLookahead(DDA *laDDA);							// Try to smooth out moves in the queue
+#endif
     static float Normalise(float v[], size_t dim1, size_t dim2);  	// Normalise a vector of dim1 dimensions to unit length in the first dim1 dimensions
     static void Absolute(float v[], size_t dimensions);				// Put a vector in the positive hyperquadrant
     static float Magnitude(const float v[], size_t dimensions);  	// Return the length of a vector
     static void Scale(float v[], float scale, size_t dimensions);	// Multiply a vector by a scalar
     static float VectorBoxIntersection(const float v[], 			// Compute the length that a vector would have to have to...
     		const float box[], size_t dimensions);					// ...just touch the surface of a hyperbox.
+
+#define CHECK_REPLAN
+#ifdef POLYPRINTER
+
+#ifdef CHECK_REPLAN
+    float EffectiveAxisJerkLimit( size_t axis );
+	// we must always (in development) check for Jerk violations whenever we are messing with planning code.
+	// returns false if there's a problem
+	bool TestTrapezoidJerk( const DDA* prev, const DDA* following );
+	void TraceAxisJunctionPlan( const DDA* firstBlock, const DDA* secondBlock, int axis );
+	float JerkVel( const DDA* firstBlock, const DDA* secondBlock, size_t axis );
+	float SingleBlockJerkVel( const DDA* firstBlock, size_t axis );
+	float TracedJerkVel( const DDA* firstBlock, const DDA* secondBlock, size_t axis );
+	float JerkFactor( const DDA* firstBlock, const DDA* secondBlock, size_t axis );
+	float JerkFactor( const DDA* firstBlock, size_t axis );
+	bool CheckForJerkError( const DDA* firstBlock, const DDA* secondBlock, float errorFactorThreshold, size_t toAxis = (DRIVES-1) );
+	bool CheckForZeroVectorJerkError( const DDA* firstBlock, const DDA* secondBlock );
+#endif
+#endif
 
     DDA* next;								// The next one in the ring
 	DDA *prev;								// The previous one in the ring
@@ -140,6 +188,19 @@ private:
     float totalDistance;					// How long is the move in hypercuboid space
 	float acceleration;						// The acceleration to use
     float requestedSpeed;					// The speed that the user asked for
+
+#ifdef POLYPRINTER
+	float relativeExtrusionDebt[DRIVES];	// The unused extrusion amount from previous moves rounding off to steps. Carried forward.
+    // flags for indicating the class of motion. Important for correct junction planning.
+    MotionClass motionClass;
+
+    float decelLimitedEntrySpeed_MMpSEC;	// the fastest speed we can enter at and still get stopped by the end. Needs axis accels limit identified first.
+    float maxStartSpeed_MMpSEC;				// the maximum speed we can enter at and still abide by Jerk limits
+    bool recalculate_flag;					// if true needs to be recalculated before execution
+
+    // for debugging
+    int ringIndex{0};						// just the position in the ring, to relate debug info to other DDAs
+#endif
 
     // These are used only in delta calculations
     float a2plusb2;							// Sum of the squares of the X and Y movement fractions
