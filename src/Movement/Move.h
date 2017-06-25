@@ -8,17 +8,18 @@
 #ifndef MOVE_H_
 #define MOVE_H_
 
-#include <Movement/Kinematics/LinearDeltaKinematics.h>			// temporary
 #include "RepRapFirmware.h"
 #include "MessageType.h"
 #include "DDA.h"								// needed because of our inline functions
 #include "BedProbing/RandomProbePointSet.h"
 #include "BedProbing/Grid.h"
 #include "Kinematics/Kinematics.h"
-#include "DeltaProbe.h"
+
 #ifdef POLYPRINTER
 #include "PolyProbe.h"
 #endif
+
+#include "GCodes/RestorePoint.h"
 
 #ifdef DUET_NG
 const unsigned int DdaRingLength = 30;
@@ -49,7 +50,7 @@ public:
 	void HitLowStop(size_t axis, DDA* hitDDA);						// What to do when a low endstop is hit
 	void HitHighStop(size_t axis, DDA* hitDDA);						// What to do when a high endstop is hit
 	void ZProbeTriggered(DDA* hitDDA);								// What to do when a the Z probe is triggered
-	void SetPositions(const float move[DRIVES]);					// Force the coordinates to be these
+	void SetNewPosition(const float positionNow[DRIVES], bool doBedCompensation); // Set the current position to be this
 	void SetLiveCoordinates(const float coords[DRIVES]);			// Force the live coordinates (see above) to be these
 	void ResetExtruderPositions();									// Resets the extrusion amounts of the live coordinates
 	void SetXYBedProbePoint(size_t index, float x, float y);		// Record the X and Y coordinates of a probe point
@@ -64,15 +65,17 @@ public:
 	float GetTaperHeight() const { return (useTaper) ? taperHeight : 0.0; }
 	void SetTaperHeight(float h);
 	bool UseMesh(bool b);											// Try to enable mesh bed compensation and report the final state
+	bool IsUsingMesh() const { return usingMesh; }					// Return true if we are using mesh compensation
+	float PushBabyStepping(float amount);							// Try to push some babystepping through the lookahead queue
 
 	void Diagnostics(MessageType mtype);							// Report useful stuff
 
 	// Kinematics and related functions
 	Kinematics& GetKinematics() const { return *kinematics; }
 	bool SetKinematics(KinematicsType k);											// Set kinematics, return true if successful
-	bool CartesianToMotorSteps(const float machinePos[MAX_AXES], int32_t motorPos[MAX_AXES]) const;
+	bool CartesianToMotorSteps(const float machinePos[MaxAxes], int32_t motorPos[MaxAxes]) const;
 																					// Convert Cartesian coordinates to delta motor coordinates, return true if successful
-	void MotorStepsToCartesian(const int32_t motorPos[], size_t numDrives, float machinePos[]) const;
+	void MotorStepsToCartesian(const int32_t motorPos[], size_t numVisibleAxes, size_t numTotalAxes, float machinePos[]) const;
 																					// Convert motor coordinates to machine coordinates
 	void EndPointToMachine(const float coords[], int32_t ep[], size_t numDrives) const;
 	void AdjustMotorPositions(const float_t adjustment[], size_t numMotors);		// Perform motor endpoint adjustment
@@ -81,7 +84,6 @@ public:
 
 	// Temporary kinematics functions
 	bool IsDeltaMode() const { return kinematics->GetKinematicsType() == KinematicsType::linearDelta; }
-	bool IsCoreXYAxis(size_t axis) const;											// Return true if the specified axis shares its motors with another
 	// End temporary functions
 
 	void CurrentMoveCompleted();													// Signal that the current move has just been completed
@@ -92,6 +94,7 @@ public:
 	void Simulate(uint8_t simMode);													// Enter or leave simulation mode
 	float GetSimulationTime() const { return simulationTime; }						// Get the accumulated simulation time
 	void PrintCurrentDda() const;													// For debugging
+
 #ifdef POLYPRINTER
     void ClearPendingMoves();
     // returns the index location in the DDA ring, for the given DDA
@@ -99,11 +102,9 @@ public:
 	// Do a Z probe returning -1 if still probing, 0 if failed, 1 if success
 	int DoPolyProbe(float frequency, float amplitude, float rate, float distance);
 #endif
-	FilePosition PausePrint(float positions[DRIVES], float& pausedFeedRate, uint32_t xAxes); // Pause the print as soon as we can
+
+	FilePosition PausePrint(RestorePoint& rp, uint32_t xAxes);						// Pause the print as soon as we can
 	bool NoLiveMovement() const;													// Is a move running, or are there any queued?
-
-	int DoDeltaProbe(float frequency, float amplitude, float rate, float distance);
-
 
 	bool IsExtruding() const;														// Is filament being extruded?
 
@@ -113,6 +114,8 @@ public:
 
 	HeightMap& AccessBedProbeGrid() { return grid; }								// Access the bed probing grid
 
+	const DDA *GetCurrentDDA() const { return currentDda; }							// Return the DDA of the currently-executing move
+
 	static int32_t MotorEndPointToMachine(size_t drive, float coord);				// Convert a single motor position to number of steps
 	static float MotorEndpointToPosition(int32_t endpoint, size_t drive);			// Convert number of motor steps to motor position
 
@@ -120,17 +123,19 @@ private:
 	enum class IdleState : uint8_t { idle, busy, timing };
 
 	bool StartNextMove(uint32_t startTime);											// start the next move, returning true if Step() needs to be called immediately
-	void BedTransform(float move[MAX_AXES], uint32_t xAxes) const;					// Take a position and apply the bed compensations
-	void InverseBedTransform(float move[MAX_AXES], uint32_t xAxes) const;			// Go from a bed-transformed point back to user coordinates
-	void AxisTransform(float move[MAX_AXES]) const;									// Take a position and apply the axis-angle compensations
-	void InverseAxisTransform(float move[MAX_AXES]) const;							// Go from an axis transformed point back to user coordinates
+	void BedTransform(float move[MaxAxes], uint32_t xAxes) const;					// Take a position and apply the bed compensations
+	void InverseBedTransform(float move[MaxAxes], uint32_t xAxes) const;			// Go from a bed-transformed point back to user coordinates
+	void AxisTransform(float move[MaxAxes]) const;									// Take a position and apply the axis-angle compensations
+	void InverseAxisTransform(float move[MaxAxes]) const;							// Go from an axis transformed point back to user coordinates
 	void JustHomed(size_t axis, float hitPoint, DDA* hitDDA);						// Deal with setting positions after a drive has been homed
-	void DeltaProbeInterrupt();														// Step ISR when using the experimental delta probe
+													// Step ISR when using the experimental delta probe
 #ifdef POLYPRINTER
 	// This is the function that is called by the timer interrupt to step the motors when we are using the experimental delta probe.
 	// The movements are quite slow so it is not time-critical.
 	void PolyProbeInterrupt();
 #endif
+
+	void SetPositions(const float move[DRIVES]);									// Force the machine coordinates to be these
 
 	bool DDARingAdd();									// Add a processed look-ahead entry to the DDA ring
 	DDA* DDARingGet();									// Get the next DDA ring entry to be run
@@ -173,11 +178,6 @@ private:
 	unsigned int stepErrors;							// count of step errors, for diagnostics
 	uint32_t scheduledMoves;							// Move counters for the code queue
 	volatile uint32_t completedMoves;					// This one is modified by an ISR, hence volatile
-
-	// Parameters for the experimental accoustic delta probe
-	DeltaProbe deltaProbe;								// Delta probing state
-	uint32_t deltaProbingStartTime;
-	bool deltaProbing;
 #ifdef POLYPRINTER
 	// Parameters for the experimental acoustic probe
 	PolyProbe polyProbe;								// Delta probing state
@@ -222,10 +222,6 @@ inline void Move::Interrupt()
 		do
 		{
 		} while (currentDda->Step());
-	}
-	else if (deltaProbing)
-	{
-		DeltaProbeInterrupt();
 	}
 #ifdef POLYPRINTER
 	else if (polyProbing)

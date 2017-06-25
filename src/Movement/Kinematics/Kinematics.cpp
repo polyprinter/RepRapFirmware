@@ -11,6 +11,7 @@
 #include "CoreXYKinematics.h"
 #include "CoreXZKinematics.h"
 #include "ScaraKinematics.h"
+#include "CoreXYUKinematics.h"
 #include "RepRap.h"
 #include "Platform.h"
 
@@ -28,7 +29,7 @@ Kinematics::Kinematics(KinematicsType t, float segsPerSecond, float minSegLength
 
 // Set or report the parameters from a M665, M666 or M669 command
 // This is the fallback function for when the derived class doesn't use the specified M-code
-bool Kinematics::SetOrReportParameters(unsigned int mCode, GCodeBuffer& gb, StringRef& reply, bool& error)
+bool Kinematics::Configure(unsigned int mCode, GCodeBuffer& gb, StringRef& reply, bool& error)
 {
 	reply.printf("M%u parameters do not apply to %s kinematics", mCode, GetName());
 	error = true;
@@ -45,10 +46,11 @@ bool Kinematics::IsReachable(float x, float y) const
 
 // Limit the Cartesian position that the user wants to move to
 // This default implementation just applies the rectangular limits set up by M208 to those axes that have been homed.
-void Kinematics::LimitPosition(float coords[], size_t numAxes, uint16_t axesHomed) const
+bool Kinematics::LimitPosition(float coords[], size_t numVisibleAxes, uint16_t axesHomed) const
 {
 	const Platform& platform = reprap.GetPlatform();
-	for (size_t axis = 0; axis < numAxes; axis++)
+	bool limited = false;
+	for (size_t axis = 0; axis < numVisibleAxes; axis++)
 	{
 		if ((axesHomed & (1 << axis)) != 0)
 		{
@@ -56,13 +58,16 @@ void Kinematics::LimitPosition(float coords[], size_t numAxes, uint16_t axesHome
 			if (f < platform.AxisMinimum(axis))
 			{
 				f = platform.AxisMinimum(axis);
+				limited = true;
 			}
 			else if (f > platform.AxisMaximum(axis))
 			{
 				f = platform.AxisMaximum(axis);
+				limited = true;
 			}
 		}
 	}
+	return limited;
 }
 
 // Return the initial Cartesian coordinates we assume after switching to this kinematics
@@ -91,6 +96,8 @@ void Kinematics::GetAssumedInitialPosition(size_t numAxes, float positions[]) co
 		return new CoreXZKinematics();
 	case KinematicsType::scara:
 		return new ScaraKinematics();
+	case KinematicsType::coreXYU:
+		return new CoreXYUKinematics();
 	}
 }
 

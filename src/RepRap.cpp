@@ -10,6 +10,10 @@
 #include "Tool.h"
 #include "Version.h"
 
+#if SUPPORT_IOBITS
+# include "PortControl.h"
+#endif
+
 #if !defined(__RADDS__) && !defined(__ALLIGATOR__)
 # include "sam/drivers/hsmci/hsmci.h"
 #endif
@@ -21,6 +25,13 @@ extern "C" void hsmciIdle()
 	{
 		reprap.GetNetwork().Spin(false);
 	}
+
+#if SUPPORT_IOBITS
+	if (reprap.GetSpinningModule() != modulePortControl)
+	{
+		reprap.GetPortControl().Spin(false);
+	}
+#endif
 }
 
 // RepRap member functions.
@@ -44,6 +55,9 @@ RepRap::RepRap() : toolList(nullptr), currentTool(nullptr), lastWarningMillis(0)
 #if SUPPORT_SCANNER
 	scanner = new Scanner(*platform);
 #endif
+#if SUPPORT_IOBITS
+	portControl = new PortControl();
+#endif
 
 	printMonitor = new PrintMonitor(*platform, *gCodes);
 
@@ -65,6 +79,9 @@ void RepRap::Init()
 #endif
 #if SUPPORT_SCANNER
 	scanner->Init();
+#endif
+#if SUPPORT_IOBITS
+	portControl->Init();
 #endif
 	printMonitor->Init();
 	active = true;					// must do this before we start the network, else the watchdog may time out
@@ -120,6 +137,9 @@ void RepRap::Exit()
 #if SUPPORT_SCANNER
 	scanner->Exit();
 #endif
+#if SUPPORT_IOBITS
+	portControl->Exit();
+#endif
 	network->Exit();
 	platform->Message(GENERIC_MESSAGE, "RepRap class exited.\n");
 	platform->Exit();
@@ -163,6 +183,12 @@ void RepRap::Spin()
 	spinningModule = moduleScanner;
 	ticksInSpinState = 0;
 	scanner->Spin();
+#endif
+
+#if SUPPORT_IOBITS
+	spinningModule = modulePortControl;
+	ticksInSpinState = 0;
+	portControl->Spin(true);
 #endif
 
 	spinningModule = modulePrintMonitor;
@@ -232,7 +258,8 @@ void RepRap::EmergencyStop()
 		tool = tool->Next();
 	}
 
-	for(size_t heater = 0; heater < HEATERS; heater++)
+	heat->Exit();
+	for(size_t heater = 0; heater < Heaters; heater++)
 	{
 		platform->SetHeater(heater, 0.0);
 	}
@@ -266,7 +293,7 @@ void RepRap::FastStop()
 		}
 	}
 
-	for(size_t heater = 0; heater < HEATERS; heater++)
+	for(size_t heater = 0; heater < Heaters; heater++)
 	{
 		reprap.GetHeat().SetActiveTemperature(heater, 0.0);
 		platform->SetHeater(heater, 0.0);
@@ -502,7 +529,7 @@ void RepRap::Tick()
 		if (ticksInSpinState >= 20000)	// if we stall for 20 seconds, save diagnostic data and reset
 		{
 			resetting = true;
-			for(size_t i = 0; i < HEATERS; i++)
+			for(size_t i = 0; i < Heaters; i++)
 			{
 				platform->SetHeater(i, 0.0);
 			}
@@ -538,7 +565,7 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 	response->printf("{\"status\":\"%c\",\"coords\":{", ch);
 
 	// Coordinates
-	const size_t numAxes = reprap.GetGCodes().GetNumAxes();
+	const size_t numAxes = reprap.GetGCodes().GetVisibleAxes();
 	{
 		float liveCoordinates[DRIVES + 1];
 #if SUPPORT_ROLAND
@@ -707,49 +734,104 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 		}
 
 		/* Heads */
+		response->cat("\"heads\":{\"current\":");
+
+		// Current temperatures
+		ch = '[';
+		for (size_t heater = DefaultE0Heater; heater < GetToolHeatersInUse(); heater++)
 		{
-			response->cat("\"heads\":{\"current\":");
-
-			// Current temperatures
-			ch = '[';
-			for (size_t heater = DefaultE0Heater; heater < GetToolHeatersInUse(); heater++)
-			{
-				response->catf("%c%.1f", ch, heat->GetTemperature(heater));
-				ch = ',';
-			}
-			response->cat((ch == '[') ? "[]" : "]");
-
-			// Active temperatures
-			response->catf(",\"active\":");
-			ch = '[';
-			for (size_t heater = DefaultE0Heater; heater < GetToolHeatersInUse(); heater++)
-			{
-				response->catf("%c%.1f", ch, heat->GetActiveTemperature(heater));
-				ch = ',';
-			}
-			response->cat((ch == '[') ? "[]" : "]");
-
-			// Standby temperatures
-			response->catf(",\"standby\":");
-			ch = '[';
-			for (size_t heater = DefaultE0Heater; heater < GetToolHeatersInUse(); heater++)
-			{
-				response->catf("%c%.1f", ch, heat->GetStandbyTemperature(heater));
-				ch = ',';
-			}
-			response->cat((ch == '[') ? "[]" : "]");
-
-			// Heater statuses (0=off, 1=standby, 2=active, 3=fault)
-			response->cat(",\"state\":");
-			ch = '[';
-			for (size_t heater = DefaultE0Heater; heater < GetToolHeatersInUse(); heater++)
-			{
-				response->catf("%c%d", ch, static_cast<int>(heat->GetStatus(heater)));
-				ch = ',';
-			}
-			response->cat((ch == '[') ? "[]" : "]");
+			response->catf("%c%.1f", ch, heat->GetTemperature(heater));
+			ch = ',';
 		}
-		response->cat("}}");
+		response->cat((ch == '[') ? "[]" : "]");
+
+		// Active temperatures
+		response->catf(",\"active\":");
+		ch = '[';
+		for (size_t heater = DefaultE0Heater; heater < GetToolHeatersInUse(); heater++)
+		{
+			response->catf("%c%.1f", ch, heat->GetActiveTemperature(heater));
+			ch = ',';
+		}
+		response->cat((ch == '[') ? "[]" : "]");
+
+		// Standby temperatures
+		response->catf(",\"standby\":");
+		ch = '[';
+		for (size_t heater = DefaultE0Heater; heater < GetToolHeatersInUse(); heater++)
+		{
+			response->catf("%c%.1f", ch, heat->GetStandbyTemperature(heater));
+			ch = ',';
+		}
+		response->cat((ch == '[') ? "[]" : "]");
+
+		// Heater statuses (0=off, 1=standby, 2=active, 3=fault)
+		response->cat(",\"state\":");
+		ch = '[';
+		for (size_t heater = DefaultE0Heater; heater < GetToolHeatersInUse(); heater++)
+		{
+			response->catf("%c%d", ch, static_cast<int>(heat->GetStatus(heater)));
+			ch = ',';
+		}
+		response->cat((ch == '[') ? "[]" : "]");
+
+		/* Tool temperatures */
+		response->cat("},\"tools\":{\"active\":[");
+		for (const Tool *tool = toolList; tool != nullptr; tool = tool->Next())
+		{
+			ch = '[';
+			for (size_t heater = 0; heater < tool->heaterCount; heater++)
+			{
+				response->catf("%c%.1f", ch, tool->activeTemperatures[heater]);
+				ch = ',';
+			}
+			response->cat((ch == '[') ? "[]" : "]");
+
+			if (tool->Next() != nullptr)
+			{
+				response->cat(",");
+			}
+		}
+
+		response->cat("],\"standby\":[");
+		for (const Tool *tool = toolList; tool != nullptr; tool = tool->Next())
+		{
+			ch = '[';
+			for (size_t heater = 0; heater < tool->heaterCount; heater++)
+			{
+				response->catf("%c%.1f", ch, tool->standbyTemperatures[heater]);
+				ch = ',';
+			}
+			response->cat((ch == '[') ? "[]" : "]");
+
+			if (tool->Next() != nullptr)
+			{
+				response->cat(",");
+			}
+		}
+
+		// Named extra temperature sensors
+		response->cat("]},\"extra\":[");
+		bool first = true;
+		for (size_t heater = FirstVirtualHeater; heater < FirstVirtualHeater + MaxVirtualHeaters; ++heater)
+		{
+			const char *nm = heat->GetHeaterName(heater);
+			if (nm != nullptr)
+			{
+				if (!first)
+				{
+					response->cat(',');
+				}
+				first = false;
+				response->cat("{\"name\":");
+				response->EncodeString(nm, strlen(nm), false, true);
+				TemperatureError err;
+				const float t = heat->GetTemperature(heater, err);
+				response->catf(",\"temp\":%.1f}", t);
+			}
+		}
+
+		response->cat("]}");
 	}
 
 	// Time since last reset
@@ -848,7 +930,7 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 				// Axis mapping. Currently we only map the X axis, but we return an array of arrays to allow for mapping other axes in future.
 				response->cat("],\"axisMap\":[[");
 				bool first = true;
-				for (size_t xi = 0; xi < MAX_AXES; ++xi)
+				for (size_t xi = 0; xi < MaxAxes; ++xi)
 				{
 					if ((tool->GetXAxisMap() & (1u << xi)) != 0)
 					{
@@ -971,7 +1053,7 @@ OutputBuffer *RepRap::GetConfigResponse()
 		return nullptr;
 	}
 
-	const size_t numAxes = reprap.GetGCodes().GetNumAxes();
+	const size_t numAxes = reprap.GetGCodes().GetVisibleAxes();
 
 	// Axis minima
 	response->copy("{\"axisMins\":");
@@ -1154,7 +1236,7 @@ OutputBuffer *RepRap::GetLegacyStatusResponse(uint8_t type, int seq)
 	response->cat((ch == '[') ? "[]" : "]");
 
 	// Send XYZ positions
-	const size_t numAxes = reprap.GetGCodes().GetNumAxes();
+	const size_t numAxes = reprap.GetGCodes().GetVisibleAxes();
 	float liveCoordinates[DRIVES];
 	reprap.GetMove().LiveCoordinates(liveCoordinates, GetCurrentXAxes());
 	const Tool* const currentTool = reprap.GetCurrentTool();

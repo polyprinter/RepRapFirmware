@@ -9,6 +9,7 @@
 #include "RepRap.h"
 #include "Platform.h"
 #include "Move.h"
+#include "Kinematics/LinearDeltaKinematics.h"		// for DELTA_AXES
 
 //#ifdef DUET_NG
 # define DDA_MOVE_DEBUG	(1)
@@ -66,15 +67,15 @@ static size_t savedMovePointer = 0;
 #if DDA_LOG_PROBE_CHANGES
 
 size_t DDA::numLoggedProbePositions = 0;
-int32_t DDA::loggedProbePositions[CART_AXES * MaxLoggedProbePositions];
+int32_t DDA::loggedProbePositions[XYZ_AXES * MaxLoggedProbePositions];
 bool DDA::probeTriggered = false;
 
 void DDA::LogProbePosition()
 {
 	if (numLoggedProbePositions < MaxLoggedProbePositions)
 	{
-		int32_t *p = loggedProbePositions + (numLoggedProbePositions * CART_AXES);
-		for (size_t drive = 0; drive < CART_AXES; ++drive)
+		int32_t *p = loggedProbePositions + (numLoggedProbePositions * XYZ_AXES);
+		for (size_t drive = 0; drive < XYZ_AXES; ++drive)
 		{
 			DriveMovement& dm = ddm[drive];
 			if (dm.state == DMState::moving)
@@ -324,11 +325,11 @@ void DDA::DebugPrintVector(const char *name, const float *vec, size_t len) const
 
 void DDA::DebugPrint() const
 {
-	const size_t numAxes = reprap.GetGCodes().GetNumAxes();
+	const size_t numAxes = reprap.GetGCodes().GetTotalAxes();
 	debugPrintf("DDA:");
 	if (endCoordinatesValid)
 	{
-		float startCoordinates[MAX_AXES];
+		float startCoordinates[MaxAxes];
 		for (size_t i = 0; i < numAxes; ++i)
 		{
 			startCoordinates[i] = endCoordinates[i] - (totalDistance * directionVector[i]);
@@ -376,12 +377,6 @@ void DDA::Init()
 // Set up a real move. Return true if it represents real movement, else false.
 bool DDA::Init(const GCodes::RawMove &nextMove, bool doMotorMapping)
 {
-	// 0. Try to push any new babystepping forward through the lookahead queue
-	if (nextMove.newBabyStepping != 0.0 && nextMove.moveType == 0 && nextMove.endStopsToCheck == 0)
-	{
-		AdvanceBabyStepping(nextMove.newBabyStepping);
-	}
-
 	// 1. Compute the new endpoints and the movement vector
 	const int32_t * const positionNow = prev->DriveCoordinates();
 	const Move& move = reprap.GetMove();
@@ -405,7 +400,7 @@ bool DDA::Init(const GCodes::RawMove &nextMove, bool doMotorMapping)
 	const bool isSpecialDeltaMove = (move.IsDeltaMode() && !doMotorMapping);
 	float accelerations[DRIVES];
 	const float * const normalAccelerations = reprap.GetPlatform().Accelerations();
-	const size_t numAxes = reprap.GetGCodes().GetNumAxes();
+	const size_t numAxes = reprap.GetGCodes().GetTotalAxes();
 	for (size_t drive = 0; drive < DRIVES; drive++)
 	{
 		accelerations[drive] = normalAccelerations[drive];
@@ -532,6 +527,10 @@ bool DDA::Init(const GCodes::RawMove &nextMove, bool doMotorMapping)
 	filePos = nextMove.filePos;
 	usePressureAdvance = nextMove.usePressureAdvance;
 	hadLookaheadUnderrun = false;
+
+#if SUPPORT_IOBITS
+	ioBits = nextMove.ioBits;
+#endif
 
 	// The end coordinates will be valid at the end of this move if it does not involve endstop checks and is not a special move on a delta printer
 	endCoordinatesValid = (endStopsToCheck == 0) && (doMotorMapping || !move.IsDeltaMode());
@@ -1678,8 +1677,8 @@ pre(state == provisional)
 #endif
 
 
-// Try to push babystepping earlier in the move queue
-void DDA::AdvanceBabyStepping(float amount)
+// Try to push babystepping earlier in the move queue, returning the amount we pushed
+float DDA::AdvanceBabyStepping(float amount)
 {
 	DDA *cdda = this;
 	while (cdda->prev->state == DDAState::provisional)
@@ -1775,6 +1774,8 @@ void DDA::AdvanceBabyStepping(float amount)
 		// Now do the next move
 		cdda = cdda->next;
 	}
+
+	return babySteppingDone;
 }
 
 // Recalculate the top speed, acceleration distance and deceleration distance, and whether we can pause after this move
@@ -1913,22 +1914,21 @@ void DDA::CalcNewSpeeds()
 // This is called by Move::CurrentMoveCompleted to update the live coordinates from the move that has just finished
 bool DDA::FetchEndPosition(volatile int32_t ep[DRIVES], volatile float endCoords[DRIVES])
 {
-	const size_t numAxes = reprap.GetGCodes().GetNumAxes();
-
 	for (size_t drive = 0; drive < DRIVES; ++drive)
 	{
 		ep[drive] = endPoint[drive];
 	}
 	if (endCoordinatesValid)
 	{
-		for (size_t axis = 0; axis < numAxes; ++axis)
+		const size_t visibleAxes = reprap.GetGCodes().GetVisibleAxes();
+		for (size_t axis = 0; axis < visibleAxes; ++axis)
 		{
 			endCoords[axis] = endCoordinates[axis];
 		}
 	}
 
 	// Extrusion amounts are always valid
-	for (size_t eDrive = numAxes; eDrive < DRIVES; ++eDrive)
+	for (size_t eDrive = reprap.GetGCodes().GetTotalAxes(); eDrive < DRIVES; ++eDrive)
 	{
 		endCoords[eDrive] += endCoordinates[eDrive];
 	}
@@ -1939,7 +1939,7 @@ bool DDA::FetchEndPosition(volatile int32_t ep[DRIVES], volatile float endCoords
 void DDA::SetPositions(const float move[DRIVES], size_t numDrives)
 {
 	reprap.GetMove().EndPointToMachine(move, endPoint, numDrives);
-	const size_t numAxes = reprap.GetGCodes().GetNumAxes();
+	const size_t numAxes = reprap.GetGCodes().GetVisibleAxes();
 	for (size_t axis = 0; axis < numAxes; ++axis)
 	{
 		endCoordinates[axis] = move[axis];
@@ -1949,7 +1949,7 @@ void DDA::SetPositions(const float move[DRIVES], size_t numDrives)
 
 // Get a Cartesian end coordinate from this move
 float DDA::GetEndCoordinate(size_t drive, bool disableDeltaMapping)
-pre(disableDeltaMapping || drive < MAX_AXES)
+pre(disableDeltaMapping || drive < MaxAxes)
 {
 	if (disableDeltaMapping)
 	{
@@ -1957,10 +1957,10 @@ pre(disableDeltaMapping || drive < MAX_AXES)
 	}
 	else
 	{
-		const size_t numAxes = reprap.GetGCodes().GetNumAxes();
-		if (drive < numAxes && !endCoordinatesValid)
+		const size_t visibleAxes = reprap.GetGCodes().GetVisibleAxes();
+		if (drive < visibleAxes && !endCoordinatesValid)
 		{
-			reprap.GetMove().MotorStepsToCartesian(endPoint, numAxes, endCoordinates);
+			reprap.GetMove().MotorStepsToCartesian(endPoint, visibleAxes, reprap.GetGCodes().GetTotalAxes(), endCoordinates);
 			endCoordinatesValid = true;
 		}
 		return endCoordinates[drive];
@@ -2079,7 +2079,7 @@ void DDA::Prepare()
 	goingSlow = false;
 	firstDM = nullptr;
 
-	const size_t numAxes = reprap.GetGCodes().GetNumAxes();
+	const size_t numAxes = reprap.GetGCodes().GetTotalAxes();
 	for (size_t drive = 0; drive < DRIVES; ++drive)
 	{
 		DriveMovement& dm = ddm[drive];
@@ -2146,7 +2146,7 @@ void DDA::Prepare()
 		}
 	}
 
-	if (reprap.Debug(moduleDda) && reprap.Debug(moduleMove))	// temp show the prepared DDA if debug enabled for both modules
+	if (reprap.Debug(moduleDda) && reprap.Debug(moduleMove))		// temp show the prepared DDA if debug enabled for both modules
 	{
 		DebugPrint();
 	}
@@ -2204,7 +2204,7 @@ float DDA::NormaliseXYZ()
 	// First calculate the magnitude of the vector. If there is more than one X axis, take an average of their movements (they should be equal).
 	float magSquared = 0.0;
 	unsigned int numXaxes = 0;
-	for (size_t d = 0; d < MAX_AXES; ++d)
+	for (size_t d = 0; d < MaxAxes; ++d)
 	{
 		if (((1 << d) & xAxes) != 0)
 		{
@@ -2306,7 +2306,7 @@ void DDA::CheckEndstops(Platform& platform)
 	}
 #endif
 
-	const size_t numAxes = reprap.GetGCodes().GetNumAxes();
+	const size_t numAxes = reprap.GetGCodes().GetTotalAxes();
 	for (size_t drive = 0; drive < numAxes; ++drive)
 	{
 		if ((endStopsToCheck & (1 << drive)) != 0)
@@ -2315,8 +2315,9 @@ void DDA::CheckEndstops(Platform& platform)
 			{
 			case EndStopHit::lowHit:
 				endStopsToCheck &= ~(1 << drive);					// clear this check so that we can check for more
-				if (endStopsToCheck == 0 || reprap.GetMove().IsCoreXYAxis(drive))	// if no more endstops to check, or this axis uses shared motors
+				if (endStopsToCheck == 0 || reprap.GetMove().GetKinematics().DriveIsShared(drive))
 				{
+					// No more endstops to check, or this axis uses shared motors, so stop the entire move
 					MoveAborted();
 				}
 				else
@@ -2328,8 +2329,9 @@ void DDA::CheckEndstops(Platform& platform)
 
 			case EndStopHit::highHit:
 				endStopsToCheck &= ~(1 << drive);					// clear this check so that we can check for more
-				if (endStopsToCheck == 0 || reprap.GetMove().IsCoreXYAxis(drive))	// if no more endstops to check, or this axis uses shared motors
+				if (endStopsToCheck == 0 || reprap.GetMove().GetKinematics().DriveIsShared(drive))
 				{
+					// No more endstops to check, or this axis uses shared motors, so stop the entire move
 					MoveAborted();
 				}
 				else
@@ -2377,7 +2379,7 @@ pre(state == frozen)
 	if (firstDM != nullptr)
 	{
 		unsigned int extrusions = 0, retractions = 0;		// bitmaps of extruding and retracting drives
-		const size_t numAxes = reprap.GetGCodes().GetNumAxes();
+		const size_t numAxes = reprap.GetGCodes().GetTotalAxes();
 		for (size_t i = 0; i < DRIVES; ++i)
 		{
 			DriveMovement& dm = ddm[i];
@@ -2559,7 +2561,7 @@ void DDA::StopDrive(size_t drive)
 	{
 		endPoint[drive] -= dm.GetNetStepsLeft();
 		dm.state = DMState::idle;
-		if (drive < reprap.GetGCodes().GetNumAxes())
+		if (drive < reprap.GetGCodes().GetTotalAxes())
 		{
 			endCoordinatesValid = false;			// the XYZ position is no longer valid
 		}

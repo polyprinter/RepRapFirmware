@@ -1,8 +1,69 @@
 Summary of important changes in recent versions
 ===============================================
 
-Version 1.19beta3
+Version 1.19beta7
 =================
+
+New features:
+- M291 command is provided to display a message box with options for timeout, acknowledgement and Z jog buttons. This will require additional changes to DWC and PanelDue before it is fully usable.
+- M292 command is provided to acknowledge M291 messages
+- Manual delta calibration and bed compensation is supported (use P0 in the M558 command to indicate that there is no Z probe)
+- Minimum value for S parameter (maximum heater PWM) in M307 command is reduced from 20% to 1%
+- Core XYU kinematics are now supported (thanks Lars)
+- RADDS build now supports 9 motors (thanks Tom)
+- If a homing move uses parameter S3 instead of S1 then the axis minimum or maximum value is set to the current position instead of vice versa
+- M589 with no parameters now reports the Duet's own SSID
+- M589 S"*" now deletes the Duet WiFi's own access point details
+- G1 command now take an optional P parameter which is a bitmap of output ports to turn on and off for the duration of the move. The mapping of bits to ports and the port switching advance time is configured using M670.
+- M42 command now supports F parameter to select the PWM frequency
+
+Bug fixes:
+- When the current tool offsets change because of a tool change or a G10 command, the new offsets are applied to the endpoint of the next move even if it has no movement along axes with changed offets
+- The tool change restore point coordinates now take account of X axis mapping
+- M588 P"*" command (forget all access points) now works
+- On the Duet WiFi, after using M589 to set up access point parameters, when M552 S2 was sent to start the WiFi module in AP mode it reported "WiFi reported error: invalid access point configuration". The fix also needs DuetWiFiServer version 1.19beta7.
+- On a delta printer the nozzle height is now limited to reachable values, to avoid the motors trying to move the carriages past the physical endstpos
+- M552 with no parameters now reports the current IP address as well as the status
+
+Areas of code refactored (so watch out for new bugs):
+- G30 bed probing
+- Baby stepping
+- Tool offset implementation
+
+Upgrade notes:
+- SSIDs and passwords in M587, M588 and M589 commands must now be enclosed in double quotes. If you use macro files to set up SSIDs and passwords of access point to connect to, check whether they have the quotation marks.
+- Height map filenames in G29, M374 and M375 commands must now be enclosed in double quotes
+- On a Duet WiFi you should also upgrade DuetWiFiServer.bin to version 1.19beta7. You do not need to perform a simultaneous upgrade, but M587 and M589 reporting functionality won't work correctly if your DuetWiFiFirmware and DuetWiFiServer versions are out of step.
+
+Known issues:
+- Although the WiFi module can now be put into access point mode using M589 abnd M552 S1, WiFi access does not work properly in access point mode
+
+Version 1.19beta6
+=================
+
+New features:
+- Up to 10 virtual heaters can be defined using M305 commands, numbered 100-109. Virtual heater 100 defaults to sensing the MCU temperature (sensor channel 1000), and on the Duet WiFi/Ethernet virtual heaters 101-102 default to sensing the TMC2660 temperature warning/overheat sensors on the Duet and the DueX expansion board respectively (sensor channels 1001-1002).
+- Heaters can be named by adding parameter H"name" in the M105 command. The quote-marks are compulsory. The temperatures of named virtual heaters are made available to DWC for display.
+- Fans can be thermostatically controlled based on the temperatures of any real or virtual heaters.
+- Fans can be thermostatically controlled in proportional mode by specifying a temperature range e.g. T40:50. If you specify only one temperature, or the second temperature is not greater than the first, bang-band mode will be used as before. In proportional mode the S parameter is not used but the L value is honoured.
+- Current loop temperature sensors are now supported (sensor channels 300-307). M305 parameters L and H set the temperatures corresponding to 4mA and 20mA current respectively.
+- M305 with just a P parameter now reports the sensor type along with the other parameters.
+- It is now possible to create additional axes that are not visible in the user interface. To do this, add parameter P# to yor M584 command where # is the number of axes you want to be visible (e.g. 3 = just X,Y,Z).
+
+Bug fixes:
+- G10 with no parameters (firmware retraction command) was extruding filament instead of retracting it
+- WiFi passwords that contained a semicolon character could not be used in M587 commands
+
+Internal changes:
+- Major refactoring of temperature sensing code
+- Major refactoring of fan control code
+- Removed accoustic delta probe code
+
+Upgrade notes:
+- Every heater that you use must now be configured using a M305 command with a P parameter that identifies the heater. Previously, if a heater used default thermistor parameters, you cold omit the M305 command for that heater.
+
+Version 1.19beta4 and 1.19beta5
+===============================
 
 New features:
 - SCARA kinematics is believed to be mostly working, except for homing
@@ -54,6 +115,24 @@ Known issues:
 Upgrade notes:
 - The compatible companion software and firmware are DuetWebControl 1.15c and DuetWiFiServer 1.19beta1.
 - If you are installing this on a Duet WiFi then you must install the Duet Web Control 1.15c files in /www on the SD card, do a simultaneous update of the main firmware and the wifi firmware, and use a macro to set up access to your network. See https://duet3d.com/wiki/DuetWiFiFirmware_1.19_alpha.
+
+Version 1.18.2
+==============
+
+New features:
+- On the Duet WiFi and Duet Ethernet, recognise the latest production DueX2 and DueX5 boards
+- Support fan 8 on the latest DueX5 boards
+
+Bug fixes:
+- M42 gcode commands were not synchronised with movement
+- M21 did not full reset the SD card state, which could lead to errors if the SD card was modified outside the Duet and then remounted using M21
+- The M106 command accepted a fan number (P parameter) one higher than it should
+
+Version 1.18.1
+==============
+
+Bug fixes:
+- Corrected USB VID/PID
 
 Version 1.18
 ============

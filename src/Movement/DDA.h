@@ -76,6 +76,14 @@ public:
     void SetPositions(const float move[], size_t numDrives);		// Force the endpoints to be these
     FilePosition GetFilePosition() const { return filePos; }
     float GetRequestedSpeed() const { return requestedSpeed; }
+	float AdvanceBabyStepping(float amount);						// Try to push babystepping earlier in the move queue
+	bool IsHomingAxes() const { return (endStopsToCheck & HomeAxes) != 0; }
+
+#if SUPPORT_IOBITS
+	uint32_t GetMoveStartTime() const { return moveStartTime; }
+	uint32_t GetClocksNeeded() const { return clocksNeeded; }
+	IoBits_t GetIoBits() const { return ioBits; }
+#endif
 
 	void DebugPrint() const;
 #ifdef POLYPRINTER
@@ -106,7 +114,7 @@ public:
 #if DDA_LOG_PROBE_CHANGES
 	static const size_t MaxLoggedProbePositions = 40;
 	static size_t numLoggedProbePositions;
-	static int32_t loggedProbePositions[CART_AXES * MaxLoggedProbePositions];
+	static int32_t loggedProbePositions[XYZ_AXES * MaxLoggedProbePositions];
 #endif
 
 private:
@@ -120,7 +128,6 @@ private:
 	bool IsDecelerationMove() const;								// return true if this move is or have been might have been intended to be a deceleration-only move
 	void DebugPrintVector(const char *name, const float *vec, size_t len) const;
 	void CheckEndstops(Platform& platform);
-	void AdvanceBabyStepping(float amount);							// Try to push babystepping earlier in the move queue
 	float NormaliseXYZ();											// Make the direction vector unit-normal in XYZ
 #ifdef POLYPRINTER
     static float BlockAccelerationDistance( const DDA* block, float otherSpeed );
@@ -145,6 +152,7 @@ private:
     static float VectorBoxIntersection(const float v[], 			// Compute the length that a vector would have to have to...
     		const float box[], size_t dimensions);					// ...just touch the surface of a hyperbox.
 
+
 #define CHECK_REPLAN
 #ifdef POLYPRINTER
 
@@ -164,7 +172,7 @@ private:
 #endif
 #endif
 
-    DDA* next;								// The next one in the ring
+    DDA *next;								// The next one in the ring
 	DDA *prev;								// The previous one in the ring
 
 	volatile DDAState state;				// What state this DDA is in
@@ -219,6 +227,10 @@ private:
 	// These are calculated from the above and used in the ISR, so they are set up by Prepare()
 	uint32_t clocksNeeded;					// in clocks
 	uint32_t moveStartTime;					// clock count at which the move was started
+
+#if SUPPORT_IOBITS
+	IoBits_t ioBits;						// port state required during this move
+#endif
 
 #if DDA_LOG_PROBE_CHANGES
 	static bool probeTriggered;

@@ -27,7 +27,7 @@ const char *ScaraKinematics::GetName(bool forStatusReport) const
 
 // Convert Cartesian coordinates to motor coordinates
 // In the following, theta is the proximal arm angle relative to the X axis, psi is the distal arm angle relative to the X axis
-bool ScaraKinematics::CartesianToMotorSteps(const float machinePos[], const float stepsPerMm[], size_t numAxes, int32_t motorPos[]) const
+bool ScaraKinematics::CartesianToMotorSteps(const float machinePos[], const float stepsPerMm[], size_t numVisibleAxes, size_t numTotalAxes, int32_t motorPos[]) const
 {
 	// No need to limit x,y to reachable positions here, we already did that in class GCodes
 	const float x = machinePos[X_AXIS];
@@ -85,12 +85,18 @@ bool ScaraKinematics::CartesianToMotorSteps(const float machinePos[], const floa
 	motorPos[X_AXIS] = theta * RadiansToDegrees * stepsPerMm[X_AXIS];
 	motorPos[Y_AXIS] = (psi * RadiansToDegrees * stepsPerMm[Y_AXIS]) - (crosstalk[0] * motorPos[X_AXIS]);
 	motorPos[Z_AXIS] = (int32_t)((machinePos[Z_AXIS] * stepsPerMm[Z_AXIS]) - (motorPos[X_AXIS] * crosstalk[1]) - (motorPos[Y_AXIS] * crosstalk[2]));
+
+	// Transform any additional axes linearly
+	for (size_t axis = XYZ_AXES; axis < numVisibleAxes; ++axis)
+	{
+		motorPos[axis] = (int32_t)roundf(machinePos[axis] * stepsPerMm[axis]);
+	}
 	return true;
 }
 
 // Convert motor coordinates to machine coordinates. Used after homing and after individual motor moves.
 // For Scara, the X and Y components of stepsPerMm are actually steps per degree angle.
-void ScaraKinematics::MotorStepsToCartesian(const int32_t motorPos[], const float stepsPerMm[], size_t numDrives, float machinePos[]) const
+void ScaraKinematics::MotorStepsToCartesian(const int32_t motorPos[], const float stepsPerMm[], size_t numVisibleAxes, size_t numTotalAxes, float machinePos[]) const
 {
 	const float arm1Angle = ((float)motorPos[X_AXIS]/stepsPerMm[X_AXIS]) * DegreesToRadians;
     const float arm2Angle = (((float)motorPos[Y_AXIS] + ((float)motorPos[X_AXIS] * crosstalk[0]))/stepsPerMm[Y_AXIS]) * DegreesToRadians;
@@ -100,11 +106,17 @@ void ScaraKinematics::MotorStepsToCartesian(const int32_t motorPos[], const floa
 
     // On some machines (e.g. Helios), the X and/or Y arm motors also affect the Z height
     machinePos[Z_AXIS] = ((float)motorPos[Z_AXIS] + ((float)motorPos[X_AXIS] * crosstalk[1]) + ((float)motorPos[Y_AXIS] * crosstalk[2]))/stepsPerMm[Z_AXIS];
+
+	// Convert any additional axes linearly
+	for (size_t drive = XYZ_AXES; drive < numVisibleAxes; ++drive)
+	{
+		machinePos[drive] = motorPos[drive]/stepsPerMm[drive];
+	}
 }
 
 // Set the parameters from a M665, M666 or M669 command
 // Return true if we changed any parameters. Set 'error' true if there was an error, otherwise leave it alone.
-bool ScaraKinematics::SetOrReportParameters(unsigned int mCode, GCodeBuffer& gb, StringRef& reply, bool& error) /*override*/
+bool ScaraKinematics::Configure(unsigned int mCode, GCodeBuffer& gb, StringRef& reply, bool& error) /*override*/
 {
 	if (mCode == 669)
 	{
@@ -143,7 +155,7 @@ bool ScaraKinematics::SetOrReportParameters(unsigned int mCode, GCodeBuffer& gb,
 	}
 	else
 	{
-		return Kinematics::SetOrReportParameters(mCode, gb, reply, error);
+		return Kinematics::Configure(mCode, gb, reply, error);
 	}
 }
 
@@ -158,8 +170,9 @@ bool ScaraKinematics::IsReachable(float x, float y) const
 
 // Limit the Cartesian position that the user wants to move to
 // TODO take account of arm angle limits
-void ScaraKinematics::LimitPosition(float coords[], size_t numAxes, uint16_t axesHomed) const
+bool ScaraKinematics::LimitPosition(float coords[], size_t numVisibleAxes, uint16_t axesHomed) const
 {
+	bool limited = false;
 	float& x = coords[X_AXIS];
     float& y = coords[Y_AXIS];
     const float r = sqrtf(fsquare(x) + fsquare(y));
@@ -167,12 +180,15 @@ void ScaraKinematics::LimitPosition(float coords[], size_t numAxes, uint16_t axe
     {
     	x *= minRadius/r;
     	y *= minRadius/r;
+    	limited = true;
 	}
 	else if (r > maxRadius)
 	{
 		x *= maxRadius/r;
 		y *= maxRadius/r;
+		limited = true;
 	}
+    return limited;
 }
 
 // Return the initial Cartesian coordinates we assume after switching to this kinematics
@@ -182,6 +198,22 @@ void ScaraKinematics::GetAssumedInitialPosition(size_t numAxes, float positions[
 	for (size_t i = Y_AXIS; i < numAxes; ++i)
 	{
 		positions[i] = 0.0;
+	}
+}
+
+// Return true if the specified endstop axis uses shared motors.
+// Used to determine whether to abort the whole move or just one motor when an endstop switch is triggered.
+bool ScaraKinematics::DriveIsShared(size_t drive) const
+{
+	switch (drive)
+	{
+	case X_AXIS:
+		return crosstalk[0] != 0.0 || crosstalk[1] != 0.0;
+	case Y_AXIS:
+		return crosstalk[2] != 0.0;
+	case Z_AXIS:
+	default:
+		return false;
 	}
 }
 

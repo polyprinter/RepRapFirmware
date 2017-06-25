@@ -18,7 +18,7 @@ const char *CoreXYKinematics::GetName(bool forStatusReport) const
 }
 
 // Convert motor coordinates to machine coordinates. Used after homing and after individual motor moves.
-void CoreXYKinematics::MotorStepsToCartesian(const int32_t motorPos[], const float stepsPerMm[], size_t numDrives, float machinePos[]) const
+void CoreXYKinematics::MotorStepsToCartesian(const int32_t motorPos[], const float stepsPerMm[], size_t numVisibleAxes, size_t numTotalAxes, float machinePos[]) const
 {
 	// Convert the axes
 	machinePos[X_AXIS] = ((motorPos[X_AXIS] * stepsPerMm[Y_AXIS]) - (motorPos[Y_AXIS] * stepsPerMm[X_AXIS]))
@@ -27,11 +27,18 @@ void CoreXYKinematics::MotorStepsToCartesian(const int32_t motorPos[], const flo
 								/(2 * axisFactors[Y_AXIS] * stepsPerMm[X_AXIS] * stepsPerMm[Y_AXIS]);
 	machinePos[Z_AXIS] = motorPos[Z_AXIS]/stepsPerMm[Z_AXIS];
 
-	// Convert any additional axes and the extruders
-	for (size_t drive = MIN_AXES; drive < numDrives; ++drive)
+	// Convert any additional axes
+	for (size_t drive = XYZ_AXES; drive < numVisibleAxes; ++drive)
 	{
 		machinePos[drive] = motorPos[drive]/stepsPerMm[drive];
 	}
+}
+
+// Return true if the specified endstop axis uses shared motors.
+// Used to determine whether to abort the whole move or just one motor when an endstop switch is triggered.
+bool CoreXYKinematics::DriveIsShared(size_t drive) const
+{
+	return drive == X_AXIS || drive == Y_AXIS;
 }
 
 // Calculate the movement fraction for a single axis motor
