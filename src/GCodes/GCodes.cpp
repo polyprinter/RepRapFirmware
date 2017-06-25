@@ -2330,6 +2330,13 @@ int GCodes::DoZProbe(GCodeBuffer& gb, float distance)
 		const ZProbeParameters& params = platform.GetCurrentZProbeParameters();
 		return reprap.GetMove().DoDeltaProbe(params.extraParam, 1.0, params.probeSpeed, distance);	//TODO second parameter
 	}
+#ifdef POLYPRINTER
+	else if (platform.GetZProbeType() == ZProbeTypePoly)
+	{
+		const ZProbeParameters& params = platform.GetCurrentZProbeParameters();
+		return reprap.GetMove().DoPolyProbe(params.extraParam, 1.0, params.probeSpeed, distance);	//TODO second parameter
+	}
+#endif
 	else
 	{
 		// Check for probe already triggered at start

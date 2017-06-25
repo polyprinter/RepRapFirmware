@@ -105,6 +105,10 @@ const int Z_PROBE_AD_VALUE = 400;								// Default for the Z probe - should be 
 const uint32_t Z_PROBE_AXES = (1 << X_AXIS) | (1 << Z_AXIS);	// Axes for which the Z-probe is normally used
 #endif
 
+#ifdef POLYPRINTER
+const int ZProbeTypePoly = 99;									// Z probe type for experimental probe
+#endif
+
 // HEATERS - The bed is assumed to be the at index 0
 
 // Define the number of temperature readings we average for each thermistor. This should be a power of 2 and at least 4 ** AD_OVERSAMPLE_BITS.

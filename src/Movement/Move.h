@@ -16,6 +16,9 @@
 #include "BedProbing/Grid.h"
 #include "Kinematics/Kinematics.h"
 #include "DeltaProbe.h"
+#ifdef POLYPRINTER
+#include "PolyProbe.h"
+#endif
 
 #ifdef DUET_NG
 const unsigned int DdaRingLength = 30;
@@ -93,11 +96,14 @@ public:
     void ClearPendingMoves();
     // returns the index location in the DDA ring, for the given DDA
     static int DDARingIndex( const DDA* dda );
+	// Do a Z probe returning -1 if still probing, 0 if failed, 1 if success
+	int DoPolyProbe(float frequency, float amplitude, float rate, float distance);
 #endif
 	FilePosition PausePrint(float positions[DRIVES], float& pausedFeedRate, uint32_t xAxes); // Pause the print as soon as we can
 	bool NoLiveMovement() const;													// Is a move running, or are there any queued?
 
 	int DoDeltaProbe(float frequency, float amplitude, float rate, float distance);
+
 
 	bool IsExtruding() const;														// Is filament being extruded?
 
@@ -120,6 +126,11 @@ private:
 	void InverseAxisTransform(float move[MAX_AXES]) const;							// Go from an axis transformed point back to user coordinates
 	void JustHomed(size_t axis, float hitPoint, DDA* hitDDA);						// Deal with setting positions after a drive has been homed
 	void DeltaProbeInterrupt();														// Step ISR when using the experimental delta probe
+#ifdef POLYPRINTER
+	// This is the function that is called by the timer interrupt to step the motors when we are using the experimental delta probe.
+	// The movements are quite slow so it is not time-critical.
+	void PolyProbeInterrupt();
+#endif
 
 	bool DDARingAdd();									// Add a processed look-ahead entry to the DDA ring
 	DDA* DDARingGet();									// Get the next DDA ring entry to be run
@@ -167,6 +178,12 @@ private:
 	DeltaProbe deltaProbe;								// Delta probing state
 	uint32_t deltaProbingStartTime;
 	bool deltaProbing;
+#ifdef POLYPRINTER
+	// Parameters for the experimental acoustic probe
+	PolyProbe polyProbe;								// Delta probing state
+	uint32_t polyProbingStartTime;
+	bool polyProbing;
+#endif
 };
 
 //******************************************************************************************************
@@ -210,6 +227,12 @@ inline void Move::Interrupt()
 	{
 		DeltaProbeInterrupt();
 	}
+#ifdef POLYPRINTER
+	else if (polyProbing)
+	{
+		PolyProbeInterrupt();
+	}
+#endif
 }
 
 #endif /* MOVE_H_ */

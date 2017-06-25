@@ -712,6 +712,13 @@ void Platform::InitZProbe()
 		pinMode(zProbePin, INPUT_PULLUP);
 		pinMode(zProbeModulationPin, OUTPUT_LOW);		// we now set the modulation output high during probing only when using probe types 4 and higher
 		break;	//TODO (DeltaProbe)
+#ifdef POLYPRINTER
+	case ZProbeTypePoly:
+		AnalogInEnableChannel(zProbeAdcChannel, false);
+		pinMode(zProbePin, INPUT_PULLUP);
+		pinMode(zProbeModulationPin, OUTPUT_LOW);		// we now set the modulation output high during probing only when using probe types 4 and higher
+		break;
+#endif
 	}
 }
 

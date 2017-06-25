@@ -41,7 +41,9 @@ Move::Move() : currentDda(NULL), scheduledMoves(0), completedMoves(0)
 void Move::Init()
 {
 	deltaProbing = false;
-
+#ifdef POLYPRINTER
+	polyProbing = false;
+#endif
 	// Empty the ring
 	ddaRingGetPointer = ddaRingCheckPointer = ddaRingAddPointer;
 	DDA *dda = ddaRingAddPointer;
@@ -193,7 +195,11 @@ void Move::Spin()
 		}
 	}
 
-	if (!deltaProbing)
+	if (!deltaProbing
+#ifdef POLYPRINTER
+			&& !polyProbing
+#endif
+			)
 	{
 		// See whether we need to kick off a move
 		if (currentDda == nullptr)
@@ -916,6 +922,36 @@ void Move::DeltaProbeInterrupt()
 	} while (again);
 }
 
+#ifdef POLYPRINTER
+
+// This is the function that is called by the timer interrupt to step the motors when we are using the experimental delta probe.
+// The movements are quite slow so it is not time-critical.
+void Move::PolyProbeInterrupt()
+{
+	bool again;
+	do
+	{
+		if (reprap.GetPlatform().GetZProbeResult() == EndStopHit::lowHit)
+		{
+			polyProbe.Trigger();
+		}
+
+		const bool dir = polyProbe.GetDirection();
+		Platform& platform = reprap.GetPlatform();
+		platform.SetDirection(X_AXIS, dir);
+		platform.SetDirection(Y_AXIS, dir);
+		platform.SetDirection(Z_AXIS, dir);
+		ShortDelay();
+		const uint32_t steppersMoving = platform.GetDriversBitmap(X_AXIS) | platform.GetDriversBitmap(Y_AXIS) | platform.GetDriversBitmap(Z_AXIS);
+		Platform::StepDriversHigh(steppersMoving);
+		ShortDelay();
+		Platform::StepDriversLow();
+		const uint32_t tim = polyProbe.CalcNextStepTime();
+		again = (tim != 0xFFFFFFFF && platform.ScheduleInterrupt(tim + polyProbingStartTime));
+	} while (again);
+}
+#endif
+
 // This is called from the step ISR when the current move has been completed
 void Move::CurrentMoveCompleted()
 {
@@ -1211,5 +1247,51 @@ int Move::DoDeltaProbe(float frequency, float amplitude, float rate, float dista
 	}
 	return -1;
 }
+
+#ifdef POLYPRINTER
+// Do a Z probe returning -1 if still probing, 0 if failed, 1 if success
+int Move::DoPolyProbe(float frequency, float amplitude, float rate, float distance)
+{
+	if (polyProbing)
+	{
+		if (polyProbe.Finished())
+		{
+			polyProbing = false;
+			return (polyProbe.Overran()) ? 0 : 1;
+		}
+	}
+	else
+	{
+		if (currentDda != nullptr || !DDARingEmpty())
+		{
+			return 0;
+		}
+		if (!polyProbe.Init(frequency, amplitude, rate, distance))
+		{
+			return 0;
+		}
+
+		const uint32_t firstInterruptTime = polyProbe.Start();
+		if (firstInterruptTime != 0xFFFFFFFF)
+		{
+			Platform& platform = reprap.GetPlatform();
+			platform.EnableDrive(X_AXIS);
+			platform.EnableDrive(Y_AXIS);
+			platform.EnableDrive(Z_AXIS);
+			polyProbing = true;
+			iState = IdleState::busy;
+			const irqflags_t flags = cpu_irq_save();
+			polyProbingStartTime = platform.GetInterruptClocks();
+			if (platform.ScheduleInterrupt(firstInterruptTime + polyProbingStartTime))
+			{
+				Interrupt();
+			}
+			cpu_irq_restore(flags);
+		}
+	}
+	return -1;
+}
+#endif
+
 
 // End
