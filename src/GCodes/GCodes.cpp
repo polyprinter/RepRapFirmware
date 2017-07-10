@@ -771,6 +771,29 @@ void GCodes::Spin()
 												: -1.1 * platform.AxisTotalLength(Z_AXIS);	// Z axis not homed yet, so treat this as a homing move
 					moveBuffer.feedRate = platform.GetCurrentZProbeParameters().probeSpeed;
 					moveBuffer.xAxes = DefaultXAxisMapping;
+#ifdef POLYPRINTER
+					endstopsTriggeredLastMove = 0;
+					platform.SetsuppressingSpecialErrorChecks( true );  // turn off our normal handling of bed contact or nut switch errors
+
+					if ( platform.GetZProbeType() == ZProbeTypePoly )
+					{
+						// TODO: make this optional? We'll redefine what exactly the Z ensdtop's role is later
+						// For now, we want to stop probing if it triggers
+						moveBuffer.endStopsToCheck |= 1 << Z_AXIS;
+
+						// also stop on nut switch triggering
+						moveBuffer.endStopsToCheck |= 1 << NUT_SWITCH_ENDSTOP_NUM;
+
+						moveBuffer.doZHomingVibration = true;
+						// we must ensure that we trigger a DDA on the E axis as well, so give it some motion request
+						moveBuffer.coords[E0_AXIS] = 1;		// if dual X carriage, we might need to vibrate the other one
+						// this information sets up the specifics (later, with gcode setup options)
+						// necessary to probe at the given location.
+						moveBuffer.zHomingParams.frequency_HZ = platform.GetCurrentZProbeParameters().modulationFrequency_HZ;
+						const float DEFAULT_ZHOME_AMPLITUDE_MM= .08f;
+						moveBuffer.zHomingParams.amplitude_MM = DEFAULT_ZHOME_AMPLITUDE_MM;
+					}
+#endif
 					segmentsLeft = 1;
 					gb.AdvanceState();
 				}
@@ -782,6 +805,9 @@ void GCodes::Spin()
 			if (LockMovementAndWaitForStandstill(gb))
 			{
 				doingManualBedProbe = false;
+#ifdef POLYPRINTER
+				moveBuffer.doZHomingVibration = false;
+#endif
 				bool probingError = false;
 				float heightError;
 				if (platform.GetZProbeType() == 0)
@@ -827,8 +853,55 @@ void GCodes::Spin()
 							ToolOffsetInverseTransform(moveBuffer.coords, currentUserPosition);
 							SetAxisIsHomed(Z_AXIS);
 							lastProbedZ = 0.0;
+#ifdef POLYPRINTER
+							if ( moveBuffer.coords[Z_AXIS] < 0 )
+							{
+								// we need to move up to 0
+								// Move back up to the dive height
+								moveBuffer.moveType = 0;
+								moveBuffer.endStopsToCheck = 0;
+								moveBuffer.usePressureAdvance = false;
+								moveBuffer.filePos = noFilePosition;
+								moveBuffer.coords[Z_AXIS] = 0; // now go to the zero we determine from that
+								moveBuffer.feedRate = platform.GetZProbeTravelSpeed();
+								moveBuffer.xAxes = DefaultXAxisMapping;
+								segmentsLeft = 1;
+							}
+#endif
 						}
 					}
+#ifdef POLYPRINTER
+					else { // if ( this is a start-of-print homing ) { must retry or fall back or something!
+						// Probe FAILED
+						// fall back? try again?
+						// check to see if a switch was triggered
+						//reprap.GetMove().DidHitLowStop( Z_AXIS,)
+						// DONE: if bed contact detected - move stops... but we should really deal with that here, and allow Z homing moves that make bed contact
+						// TODO: and treat them as a special case to use it for homing - it's better than a Nut Switch event.'
+						if ( endstopsTriggeredLastMove & ( 1 << Z_AXIS ) )
+						{
+							reply.printf("Falling back to Left Nut Switch correction");
+
+							// fall back to Nut Switch?
+							// - only if nozzle is hot, and X=0 and Y=0?
+							// we need to move up
+							// The probing move has completed or been abandoned
+							// Move back up to the dive height
+							moveBuffer.moveType = 0;
+							moveBuffer.endStopsToCheck = 0;
+							moveBuffer.usePressureAdvance = false;
+							moveBuffer.filePos = noFilePosition;
+							moveBuffer.coords[Z_AXIS] = 0 - platform.GetPolyPrinterParameters().nutSwitchOvertravelLeft_MM;
+							reprap.GetMove().SetNewPosition(moveBuffer.coords, false);  // let it know that's were we are
+							moveBuffer.coords[Z_AXIS] = 0; // now go to the zero we determine from that
+							moveBuffer.feedRate = platform.GetZProbeTravelSpeed();
+							moveBuffer.xAxes = DefaultXAxisMapping;
+							segmentsLeft = 1;
+						}
+					}
+#endif
+					platform.SetsuppressingSpecialErrorChecks( false );  // turn our normal handling of bed contact or nut switch errors back on
+
 					gb.SetState(GCodeState::normal);
 				}
 				else
@@ -1129,16 +1202,19 @@ void GCodes::DoFilePrint(GCodeBuffer& gb, StringRef& reply)
 // returns true if we had to handle something such that no other triggers should be checked e.g. we are taking action, or a script might have been run
 bool GCodes::CheckErrorConditions( TriggerMask currentEndstopStates, TriggerMask risenStates, TriggerMask fallenStates )
 {
-	if ( platform.GetBedContactExists() != EndStopHit::noStop )
+	if ( ! platform.SuppressingSpecialErrorChecks() )
 	{
-		// there is bed contact
-		if ( ! IsIgnoringZdownandXYMoves() )
+		if ( platform.GetBedContactExists() != EndStopHit::noStop )
 		{
-			SetIgnoringZdownAndXYMoves( true );
-			platform.Message(GENERIC_MESSAGE, "Bed Contact detected! Ignoring moves until Z-home done.\n");
-			DoPrintAbort();
+			// there is bed contact
+			if ( ! IsIgnoringZdownandXYMoves() )
+			{
+				SetIgnoringZdownAndXYMoves( true );
+				platform.Message(GENERIC_MESSAGE, "Bed Contact detected! Ignoring moves until Z-home done.\n");
+				DoPrintAbort();
+			}
+			return true;
 		}
-		return true;
 	}
 
 
@@ -2100,6 +2176,37 @@ bool GCodes::DoHome(GCodeBuffer& gb, StringRef& reply, bool& error)
 	}
 	return true;
 }
+
+#ifdef POLYPRINTER
+
+// Set or print the PolyPrinter parameters. Called by G39.
+// G39 L-2.3			; sets left nut switch to 2.3mm overtravel. When it triggers, this is the offset below true Z=0
+// G39 R-1.9
+bool GCodes::SetPolyPrinterParameters(GCodeBuffer& gb, StringRef& reply)
+{
+	PolyPrinterParameters& params = platform.GetPolyPrinterParameters();
+
+	bool seen = false;
+	gb.TryGetFValue( 'L', params.nutSwitchOvertravelLeft_MM, seen );
+	gb.TryGetFValue( 'R', params.nutSwitchOvertravelRight_MM, seen );
+
+	if (seen)
+	{
+		if (!LockMovementAndWaitForStandstill(gb))
+		{
+			return false;
+		}
+		platform.SetPolyPrinterParameters( params );
+	}
+	else
+	{
+		// TODO: don't report Right side if not present in printer?
+		reply.printf("%f %f", params.nutSwitchOvertravelLeft_MM, params.nutSwitchOvertravelRight_MM );
+	}
+	return true;
+}
+#endif
+
 
 #ifdef USE_BED_CONTACT_PROBING
 bool GCodes::DeactivateAllDrives()
@@ -3966,6 +4073,12 @@ bool GCodes::WriteConfigOverrideFile(StringRef& reply, const char *fileName) con
 	{
 		ok = platform.WriteZProbeParameters(f);
 	}
+#ifdef POLYPRINTER
+	if (ok)
+	{
+		ok = platform.WritePolyPrinterParameters(f);
+	}
+#endif
 	if (!f->Close())
 	{
 		ok = false;

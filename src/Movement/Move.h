@@ -47,6 +47,9 @@ public:
 	void InterruptTime();											// Test function - not used
 	bool AllMovesAreFinished();										// Is the look-ahead ring empty?  Stops more moves being added as well.
 	//void DoLookAhead();												// Run the look-ahead procedure
+#ifdef POLYPRINTER
+	void HitLowStop( uint32_t endtopBits );
+#endif
 	void HitLowStop(size_t axis, DDA* hitDDA);						// What to do when a low endstop is hit
 	void HitHighStop(size_t axis, DDA* hitDDA);						// What to do when a high endstop is hit
 	void ZProbeTriggered(DDA* hitDDA);								// What to do when a the Z probe is triggered
@@ -129,7 +132,7 @@ private:
 	void InverseAxisTransform(float move[MaxAxes]) const;							// Go from an axis transformed point back to user coordinates
 	void JustHomed(size_t axis, float hitPoint, DDA* hitDDA);						// Deal with setting positions after a drive has been homed
 													// Step ISR when using the experimental delta probe
-#ifdef POLYPRINTER
+#ifdef POLYPRINTER_SPECIAL_PROBE
 	// This is the function that is called by the timer interrupt to step the motors when we are using the experimental delta probe.
 	// The movements are quite slow so it is not time-critical.
 	void PolyProbeInterrupt();
@@ -178,7 +181,8 @@ private:
 	unsigned int stepErrors;							// count of step errors, for diagnostics
 	uint32_t scheduledMoves;							// Move counters for the code queue
 	volatile uint32_t completedMoves;					// This one is modified by an ISR, hence volatile
-#ifdef POLYPRINTER
+
+#ifdef POLYPRINTER_SPECIAL_PROBE
 	// Parameters for the experimental acoustic probe
 	PolyProbe polyProbe;								// Delta probing state
 	uint32_t polyProbingStartTime;
@@ -223,7 +227,7 @@ inline void Move::Interrupt()
 		{
 		} while (currentDda->Step());
 	}
-#ifdef POLYPRINTER
+#ifdef POLYPRINTER_SPECIAL_PROBE
 	else if (polyProbing)
 	{
 		PolyProbeInterrupt();

@@ -135,6 +135,7 @@ void DriveMovement::PrepareExtruder(const DDA& dda, const PrepParams& params, bo
 		twoDistanceToStopTimesCsquaredDivA =
 			initialDecelSpeedTimesCdivASquared + (uint64_t)(((params.decelStartDistance + accelCompensationDistance_vect_MM) * (DDA::stepClockRateSquared * 2))/dda.acceleration);
 
+		// Calculate the move distance to the point of zero speed, where reverse motion starts
 		// the "speed" at the beginning of deceleration is actually instantaneously lower than it was at cruise.
 		const float initialDecelSpeed = dda.topSpeed - dda.acceleration * compensationTime_SEC_or_MMpMMpSEC;
 		const float reverseStartDistance = (initialDecelSpeed > 0.0)
@@ -142,7 +143,7 @@ void DriveMovement::PrepareExtruder(const DDA& dda, const PrepParams& params, bo
 												: params.decelStartDistance;
 
 		// Reverse phase parameters
-		if (reverseStartDistance >= dda.totalDistance + accelCompensationDistance_vect_MM)
+		if (reverseStartDistance >= dda.totalDistance)
 		{
 			// No reverse phase
 			totalSteps = (uint)max<int32_t>(netSteps, 0);
@@ -242,6 +243,7 @@ void DriveMovement::PrepareExtruderWithLinearAdvance(const DDA& dda, const PrepP
 		twoDistanceToStopTimesCsquaredDivA =
 			initialDecelSpeedTimesCdivASquared + (uint64_t)(((params.decelStartDistance + accelCompensationDistance_vect_MM) * (DDA::stepClockRateSquared * 2))/dda.acceleration);
 
+		// Calculate the move distance to the point of zero speed, where reverse motion starts
 		// the "speed" at the beginning of deceleration is actually instantaneously lower than it was at cruise.
 		const float initialDecelSpeed = dda.topSpeed - dda.acceleration * compensationTime_SEC_or_MMpMMpSEC;
 		const float reverseStartDistance = (initialDecelSpeed > 0.0)
@@ -249,7 +251,7 @@ void DriveMovement::PrepareExtruderWithLinearAdvance(const DDA& dda, const PrepP
 												: params.decelStartDistance;
 
 		// Reverse phase parameters
-		if (reverseStartDistance >= dda.totalDistance + accelCompensationDistance_vect_MM)
+		if (reverseStartDistance >= dda.totalDistance)
 		{
 			// No reverse phase
 			totalSteps = (uint)max<int32_t>(netSteps, 0);
@@ -288,6 +290,24 @@ void DriveMovement::PrepareExtruderWithLinearAdvance(const DDA& dda, const PrepP
 			}
 		}
 	}
+}
+
+void DriveMovement::PrepareExtruderWithVibration(const DDA& dda, const PrepParams& params, const GCodes::PolyZHomeParams& zHomingParams )
+{
+	// calculate how many total steps we will need for the overall time the move should take
+	// we can take the amplitude, convert it to steps, multiply by the frequency and the time, to get total steps in total cycles
+	const float stepsPerMm = reprap.GetPlatform().DriveStepsPerUnit(drive);  // steps of this axis per mm of overall move distance
+	// we will underestimate the time allowed for the move by assuming nominal speed throughout. We may stop vibrating just before
+	// the move stops, when no contact is found. That is OK. All these probing moves must normally aim far below the expected
+	// stopping point.
+	const float expectedTime_SEC = dda.totalDistance / dda.requestedSpeed;
+	float cycleCount = expectedTime_SEC * zHomingParams.frequency_HZ;
+	mp.vibration.stepsPerHalfCycle = zHomingParams.amplitude_MM * stepsPerMm;		// we could possibly just as well specify this in steps instead of MM?
+	totalSteps = 2 * cycleCount * mp.vibration.stepsPerHalfCycle;
+	debugPrintf("vibration with %d phases per cycle, %f HZ\n", vibrationPhasesPerCycle, zHomingParams.frequency_HZ );
+	mp.vibration.clocksPerPhase = DDA::stepClockRate / ( vibrationPhasesPerCycle * zHomingParams.frequency_HZ );
+	mp.vibration.phase = 0; // start things off
+	debugPrintf("Set up vibration with %d clks/phase and %d steps per half cycle\n", mp.vibration.clocksPerPhase, mp.vibration.stepsPerHalfCycle );
 }
 #endif
 
@@ -523,6 +543,77 @@ pre(nextStep < totalSteps; stepsTillRecalc == 0)
 	}
 	return true;
 }
+
+#ifdef POLYPRINTER
+// Calculate and store the time since the start of the move when the next step for the specified DriveMovement is due.
+// Return true if there are more steps to do.
+// This is also used for extruders on delta machines.
+bool DriveMovement::CalcNextStepTimeVibrationFull(const DDA &dda, bool live)
+{
+#ifdef DO_QUADRATURE_MODULATION_OUTPUT // doesn't work well -timing is very unexpected
+	// we change the clock state each quadrature, to get 2x the frequency of the applied wave
+	reprap.GetPlatform().SetProbeModulationOut( mp.vibration.phase & 1 );
+
+	// the next time we need to do anything is simply always 1/4 the period
+	// because we have 4 phases
+	// phase 0: change clock state, do some steps
+	//       1: change clock state
+	//       2: change clock state, do some steps the other way
+	//       3: change clock state
+	if ( ( mp.vibration.phase & 1 ) == 0 )
+	{
+		// we need to generate the steps
+		// We do that by setting it up to step quickly, without coming back into here, for all the steps in the count
+		stepsTillRecalc = mp.vibration.stepsPerHalfCycle;
+		// change direction
+		direction = ! direction;
+		if (live)
+		{
+			reprap.GetPlatform().SetDirection(drive, direction);
+		}
+	}
+	else {
+		// this approach, unfortunately, will generate one more step between movements than we actually want
+		// - there may be a clean way to eliminate this, but it probably makes very little actual difference as long
+		//   as there is no accumulated rotation i.e. one CW, one CCW
+		stepsTillRecalc = 0;  // no additional steps this time
+	}
+
+#else
+
+	// the next time we need to do anything is simply always 1/4 the period
+	// because we have 4 phases
+	// phase 0: change clock state, do some steps
+	//       1: change clock state, do some steps the other way
+	// we need to generate the steps
+	// We do that by setting it up to step quickly, without coming back into here, for all the steps in the count
+	stepsTillRecalc = mp.vibration.stepsPerHalfCycle;
+	// change direction
+	if (live)
+	{
+		reprap.GetPlatform().SetDirection(drive, mp.vibration.phase & 1);
+		// plain modulation. Output a signal analogous to the direction pin - we can choose which one to use later.
+		// we change the clock state each quadrature, to get 2x the frequency of the applied wave
+		reprap.GetPlatform().SetProbeModulationOut( mp.vibration.phase & 1 );
+	}
+
+#endif
+
+	++mp.vibration.phase;
+
+	// change the clock output state
+	// TODO: define the pin, implement the IO
+	nextStepTime += mp.vibration.clocksPerPhase;
+
+	if (nextStepTime > dda.clocksNeeded)
+	{
+		nextStepTime = dda.clocksNeeded;
+		//debugPrintf("vibration ended at %d\n", nextStepTime );
+	}
+
+	return 	nextStepTime < dda.clocksNeeded ? true : false;
+}
+#endif
 
 // Reduce the speed of this movement. Called to reduce the homing speed when we detect we are near the endstop for a drive.
 void DriveMovement::ReduceSpeed(const DDA& dda, float inverseSpeedFactor)

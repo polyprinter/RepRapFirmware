@@ -8,6 +8,7 @@
 #ifndef DRIVEMOVEMENT_H_
 #define DRIVEMOVEMENT_H_
 
+#include <gcodes/gcodes.h>
 #include "RepRapFirmware.h"
 
 // Struct for passing parameters to the DriveMovement Prepare methods
@@ -35,11 +36,15 @@ class DriveMovement
 public:
 	bool CalcNextStepTimeCartesian(const DDA &dda, bool live);
 	bool CalcNextStepTimeDelta(const DDA &dda, bool live);
+#ifdef POLYPRINTER
+	bool CalcNextStepTimeVibration(const DDA &dda, bool live);
+#endif
 	void PrepareCartesianAxis(const DDA& dda, const PrepParams& params);
 	void PrepareDeltaAxis(const DDA& dda, const PrepParams& params);
 	void PrepareExtruder(const DDA& dda, const PrepParams& params, bool doCompensation);
 #ifdef POLYPRINTER
 	void PrepareExtruderWithLinearAdvance(const DDA& dda, const PrepParams& params, bool doCompensation);
+	void PrepareExtruderWithVibration(const DDA& dda, const PrepParams& params, const GCodes::PolyZHomeParams& zHomingParams );
 #endif
 	void ReduceSpeed(const DDA& dda, float inverseSpeedFactor);
 	void DebugPrint(char c, bool withDelta) const;
@@ -48,7 +53,14 @@ public:
 private:
 	bool CalcNextStepTimeCartesianFull(const DDA &dda, bool live);
 	bool CalcNextStepTimeDeltaFull(const DDA &dda, bool live);
-
+#ifdef POLYPRINTER
+	bool CalcNextStepTimeVibrationFull(const DDA &dda, bool live);
+#ifdef DO_QUADRATURE_MODULATION_OUTPUT
+	enum { vibrationPhasesPerCycle = 4 };
+#else
+	enum { vibrationPhasesPerCycle = 2 };
+#endif
+#endif
 public:
 	// Parameters common to Cartesian, delta and extruder moves
 
@@ -71,12 +83,6 @@ public:
 	uint32_t nextStepTime;								// how many clocks after the start of this move the next step is due
 	uint32_t stepInterval;								// how many clocks between steps
 	DriveMovement *nextDM;								// link to next DM that needs a step
-#ifdef POLYPRINTER
-	// Velocity Advance
-	// During acceleration, each lapse of time results in some added advance.
-	//int32_t velocityAdvance_ST{0};							// the number of steps of advance that is our current target
-	//int32_t appliedAdvance_ST{0};							// the current actual applied steps of advance
-#endif
 
 	// Parameters unique to a style of move (Cartesian, delta or extruder). Currently, extruders and Cartesian moves use the same parameters.
 	union MoveParams
@@ -108,6 +114,17 @@ public:
 			uint32_t decelStartDsK;
 			uint32_t mmPerStepTimesCdivtopSpeedK;
 		} delta;
+
+#ifdef POLYPRINTER
+		// for vibration of the extruder, we need a bit of info to use during the move
+		struct ExtruderVibration
+		{
+			// in the future we might choose to do the excitation differently, so a little abstraction is called for
+			int stepsPerHalfCycle; 			// With the basic square wave excitation, each time we reverse, we will do a full set of steps
+			int clocksPerPhase;				// for 4 phases, this is 1/4 the period
+			uint32_t phase;					// keep track of where we are in the cycle
+		} vibration;
+#endif
 	} mp;
 
 	static const uint32_t NoStepTime = 0xFFFFFFFF;		// value to indicate that no further steps are needed when calculating the next step time
@@ -124,6 +141,43 @@ inline bool DriveMovement::CalcNextStepTimeCartesian(const DDA &dda, bool live)
 {
 	if (nextStep < totalSteps)
 	{
+#define POLYPRINTER_FAST_STEP
+#ifdef POLYPRINTER_FAST_STEP
+		uint32_t driverBit = reprap.GetPlatform().GetDriversBitmap( drive );
+		if ( (driverBit & reprap.GetPlatform().GetSlowDrivers()) != 0 )
+		{
+			++nextStep;
+			// we need to slow the steps down anyway - do it the old, formal way
+			if (stepsTillRecalc != 0)
+			{
+				--stepsTillRecalc;			// we are doing double or quad stepping
+				return true;
+			}
+			else
+			{
+				return CalcNextStepTimeCartesianFull(dda, live);
+			}
+		}
+		else
+		{
+			++nextStep;
+			bool moreStepsAfterThese = CalcNextStepTimeCartesianFull(dda, live);
+			// we don't want to make the main code spend time inserting and looping for all these extra steps
+			// plus we want them done with low overhead. So just do them. Could be slightly noisier because of
+			// bunching them together. But this way we can do much higher speeds.
+			while ( stepsTillRecalc-- )
+			{
+				// NOTE: won't work for slow-stepping drives. But the native TMC2660s accept pulses very quickly
+				Platform::StepDriversHigh( driverBit );	// generate the step
+				delayMicroseconds(1);
+				Platform::StepDriversLow();
+				delayMicroseconds(1);
+				++nextStep;
+			}
+			return moreStepsAfterThese;
+		}
+
+#else
 		++nextStep;
 		if (stepsTillRecalc != 0)
 		{
@@ -131,6 +185,7 @@ inline bool DriveMovement::CalcNextStepTimeCartesian(const DDA &dda, bool live)
 			return true;
 		}
 		return CalcNextStepTimeCartesianFull(dda, live);
+#endif
 	}
 
 	state = DMState::idle;
@@ -144,6 +199,39 @@ inline bool DriveMovement::CalcNextStepTimeDelta(const DDA &dda, bool live)
 	if (nextStep < totalSteps)
 	{
 		++nextStep;
+#ifdef POLYPRINTER_FAST_STEP
+		uint32_t driverBit = reprap.GetPlatform().GetDriversBitmap( drive );
+		if ( (driverBit & reprap.GetPlatform().GetSlowDrivers()) != 0 )
+		{
+			// we need to slow the steps down anyway - do it the old, formal way
+			if (stepsTillRecalc != 0)
+			{
+				--stepsTillRecalc;			// we are doing double or quad stepping
+				return true;
+			}
+			else
+			{
+				return CalcNextStepTimeDeltaFull(dda, live);
+			}
+		}
+		else
+		{
+			bool moreStepsAfterThese = CalcNextStepTimeDeltaFull(dda, live);
+			// we don't want to make the main code spend time inserting and looping for all these extra steps
+			// plus we want them done with low overhead. So just do them. Could be slightly noisier because of
+			// bunching them together. But this way we can do much higher speeds.
+			while ( stepsTillRecalc-- )
+			{
+				// NOTE: won't work for slow-stepping drives. But the native TMC2660s accept pulses very quickly
+				Platform::StepDriversHigh( driverBit );	// generate the step
+				delayMicroseconds(1);
+				Platform::StepDriversLow();
+				delayMicroseconds(1);
+			}
+			return moreStepsAfterThese;
+		}
+
+#else
 		if (stepsTillRecalc != 0)
 		{
 			--stepsTillRecalc;			// we are doing double or quad stepping
@@ -153,11 +241,52 @@ inline bool DriveMovement::CalcNextStepTimeDelta(const DDA &dda, bool live)
 		{
 			return CalcNextStepTimeDeltaFull(dda, live);
 		}
+#endif
 	}
 
 	state = DMState::idle;
 	return false;
 }
+
+#ifdef POLYPRINTER
+// Calculate and store the time since the start of the move when the next step for the specified DriveMovement is due.
+// Return true if there are more steps to do.
+// This is also used for extruders on delta machines.
+// We inline this part to speed things up when we are doing double/quad/octal stepping.
+inline bool DriveMovement::CalcNextStepTimeVibration(const DDA &dda, bool live)
+{
+#define DO_EXTRA_STEPS_HERE
+#ifdef DO_EXTRA_STEPS_HERE
+	bool moreStepsAfterThese = CalcNextStepTimeVibrationFull(dda, live);
+	// we don't want to make the main code spend time inserting and looping for all these extra steps
+	// plus we want them done instantly. So just do them.
+	while ( stepsTillRecalc-- )
+	{
+		// NOTE: won't work for slow-stepping drives.
+		Platform::StepDriversHigh( reprap.GetPlatform().GetDriversBitmap( drive ) );	// generate the steps
+		delayMicroseconds(1);
+		//volatile uint32_t x=10;
+		//while ( --x ) {
+		//}
+		Platform::StepDriversLow();
+		delayMicroseconds(1);
+		//x = 9;
+		//while ( --x ) {
+		//}
+
+	}
+	return moreStepsAfterThese;
+#else
+		if (stepsTillRecalc != 0)
+		{
+			--stepsTillRecalc;			// we are doing quick stepping
+			return true;
+		}
+		return CalcNextStepTimeVibrationFull(dda, live);
+#endif
+}
+
+#endif
 
 // Return the number of net steps left for the move in the forwards direction.
 inline int32_t DriveMovement::GetNetStepsLeft() const

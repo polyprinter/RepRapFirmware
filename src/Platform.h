@@ -213,6 +213,16 @@ const unsigned int BED_CONTACT_ENDSTOP_NUM = 4;			// hard-wired, can't be config
 const unsigned int NUT_SWITCH_ENDSTOP_NUM = 3;			// hard-wired, can't be configured (though could be at some point, same as Triggers)
 const bool BED_CONTACT_ACTIVE_CONDITION = false; 		// low is Active bed contact
 const bool NUT_SWITCH_ACTIVE_CONDITION = true; 			// high is Active Nut Switch
+
+// we will store a few user-configurable parameters that are unique to PolyPrinter
+//  ("nonvolatile" parameters)
+struct PolyPrinterParameters
+{
+	float nutSwitchOvertravelLeft_MM{2.0};				// the distance below normal bed contact the left nut switch triggers on this printer (when X=0)
+	float nutSwitchOvertravelRight_MM{2.0};
+	void Init();
+	bool WriteParameters(FileStore *f) const;
+};
 #endif
 
 // Struct for holding Z probe parameters
@@ -230,11 +240,15 @@ struct ZProbeParameters
 	float recoveryTime;				// Z probe recovery time
 	float extraParam;				// extra parameters used by some types of probe e.g. Delta probe
 	bool invertReading;				// true if we need to invert the reading
+#ifdef POLYPRINTER
+	float modulationFrequency_HZ;	// may vary
+#endif
 
 	void Init(float h);
 	float GetStopHeight(float temperature) const;
 	bool WriteParameters(FileStore *f, unsigned int probeType) const;
 };
+
 
 // Class to perform averaging of values read from the ADC
 // numAveraged should be a power of 2 for best efficiency
@@ -507,8 +521,17 @@ public:
 	void SetProbing(bool isProbing);
 
 #ifdef POLYPRINTER
+
+	void SetProbeModulationOut(bool ifHigh) const;
+	void SetsuppressingSpecialErrorChecks( bool val ) { suppressingSpecialErrorChecks = val; }
+	bool SuppressingSpecialErrorChecks() const;
 	EndStopHit GetBedContactExists() const;		// returns lowHit condition, if there is contact
 	EndStopHit GetNutSwitchActive() const;		// returns highHit condition, if the Nut Switch has been activated
+
+	PolyPrinterParameters& GetPolyPrinterParameters();							// accesses the set of parameters - may be used to update individual settings
+	void SetPolyPrinterParameters( const PolyPrinterParameters& params );		// sets all parameters at once
+	bool WritePolyPrinterParameters( FileStore *f ) const;						// writes them to the given file store
+
 #endif
 
 
@@ -654,6 +677,10 @@ private:
 	static_assert(SoftwareResetData::numberOfSlots * sizeof(SoftwareResetData) <= 512, "Can't fit software reset data in SAM4E user signature area");
 #else
 	static_assert(SoftwareResetData::numberOfSlots * sizeof(SoftwareResetData) <= FLASH_DATA_LENGTH, "NVData too large");
+#endif
+#ifdef POLYPRINTER
+	PolyPrinterParameters polyPrinterParameters;
+	bool suppressingSpecialErrorChecks{ false };
 #endif
 
 	ZProbeParameters switchZProbeParameters;		// Z probe values for the switch Z-probe
@@ -1204,7 +1231,11 @@ inline uint16_t Platform::GetRawZProbeReading() const
 			const bool b = ReadPin(endStopPins[E0_AXIS + 1]);
 			return (b) ? 4000 : 0;
 		}
-
+#ifdef POLYPRINTER
+	case ZProbeTypePoly :
+		// TODO: identify and set up the actual pin we use in production if we don't redefine this pin
+		return (ReadPin(zProbePin)) ? 4000 : 0;
+#endif
 	default:
 		return min<uint16_t>(AnalogInReadChannel(zProbeAdcChannel), 4000);
 	}

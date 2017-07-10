@@ -242,6 +242,12 @@ bool GCodes::HandleGcode(GCodeBuffer& gb, StringRef& reply)
 
 		DoFileMacro(gb, BED_EQUATION_G, true);	// Try to execute bed.g
 		break;
+#ifdef POLYPRINTER
+	case 39:
+		// set or report PolyPrinter Parameters e.g. Nut Switch overtravel tweak (non-volatile)
+		result = SetPolyPrinterParameters(gb, reply);
+		break;
+#endif
 
 	case 90: // Absolute coordinates
 		gb.MachineState().axesRelative = false;
@@ -2109,10 +2115,11 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 
 	case 501: // Load parameters from EEPROM
 #ifdef POLYPRINTER
+		; // NOTE: fall through, so 501 or 502 do the same things
+#else
 		// when running M502 the only mcodes we execute are 301 Heater PID Params, 307 Heating params, 558 set Z probe type, 665 Set Delta Config and 666 Set Delta Endstop config
 		// when running M502 the only gcode we execute is G31 Set Z Probe Status
 		// when running M502 we don't execute T commands
-#else
 		DoFileMacro(gb, "config-override.g", true);
 		break;
 #endif
@@ -2441,6 +2448,10 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 
 			gb.TryGetFValue('R', params.recoveryTime, seenParam);	// Z probe recovery time
 			gb.TryGetFValue('S', params.extraParam, seenParam);		// extra parameter for experimentation
+
+#ifdef POLYPRINTER
+			gb.TryGetFValue('J', params.modulationFrequency_HZ, seenParam);		// set Hz of
+#endif
 
 			if (seenParam)
 			{

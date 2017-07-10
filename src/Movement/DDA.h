@@ -88,6 +88,7 @@ public:
 	void DebugPrint() const;
 #ifdef POLYPRINTER
     void setRingIndex( int i ) { ringIndex = i; }
+    bool HadNutSwitchError() const { return hadNutSwitchError; }
 #endif
 
 	static const uint32_t stepClockRate = VARIANT_MCK/128;			// the frequency of the clock used for stepper pulse timing (see Platform::InitialiseInterrupts)
@@ -198,7 +199,15 @@ private:
     float requestedSpeed;					// The speed that the user asked for
 
 #ifdef POLYPRINTER
-	float relativeExtrusionDebt[DRIVES];	// The unused extrusion amount from previous moves rounding off to steps. Carried forward.
+    uint8_t hadNutSwitchError : 1;			// if set, a move was ended prematurely (endCoordinatesValid will also be false) due to an error
+    uint8_t hadBedContactError : 1;
+	GCodes::PolyZHomeParams zHomingParams;
+	bool doZHomingVibration{ false };
+
+	//float vibration_HZ{0};					// if vibrating, the frequency
+	//float vibrationAmplitude_MM{0};			// if vibrating, the amplitude
+    float relativeExtrusionDebt[DRIVES];	// The unused extrusion amount from previous moves rounding off to steps. Carried forward.
+
     // flags for indicating the class of motion. Important for correct junction planning.
     MotionClass motionClass;
 

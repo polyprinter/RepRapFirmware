@@ -372,6 +372,10 @@ void DDA::Init()
 	}
 	state = empty;
 	endCoordinatesValid = false;
+#ifdef POLYPRINTER
+	hadNutSwitchError = false;
+	hadBedContactError = false;
+#endif
 }
 
 // Set up a real move. Return true if it represents real movement, else false.
@@ -448,7 +452,6 @@ bool DDA::Init(const GCodes::RawMove &nextMove, bool doMotorMapping)
 			// extruders are always handled here, but sometimes other drives
 			if ( drive >= numAxes )
 			{
-
 				const float coorddelta = nextMove.coords[drive] - nextMove.initialCoords[drive];
 				// to properly class the type of move, for planner purposes, it's important to know the inent, even
 				// though it may turn out to be zero extruder steps, for example.
@@ -471,6 +474,9 @@ bool DDA::Init(const GCodes::RawMove &nextMove, bool doMotorMapping)
 					relativeExtrusionDebt[drive] = 0;
 				}
 
+				// make note of whether this is a vibration "move" for the extruder, and save the parameters
+				zHomingParams = nextMove.zHomingParams;
+				doZHomingVibration = nextMove.doZHomingVibration;
 			}
 #endif
 			directionVector[drive] = (float)delta/reprap.GetPlatform().DriveStepsPerUnit(drive);
@@ -2090,7 +2096,15 @@ void DDA::Prepare()
 			if (drive >= numAxes)
 			{
 #ifdef POLYPRINTER
-				dm.PrepareExtruderWithLinearAdvance(*this, params, usePressureAdvance);
+				if ( doZHomingVibration )
+				{
+					debugPrintf("Preparing extruder for Vibration\n");
+					dm.PrepareExtruderWithVibration(*this, params, zHomingParams );
+				}
+				else
+				{
+					dm.PrepareExtruderWithLinearAdvance(*this, params, usePressureAdvance);
+				}
 #else
 				dm.PrepareExtruder(*this, params, usePressureAdvance);
 #endif
@@ -2134,7 +2148,11 @@ void DDA::Prepare()
 			dm.stepsTillRecalc = 0;							// so that we don't skip the calculation
 			const bool stepsToDo = (isDeltaMovement && drive < numAxes)
 									? dm.CalcNextStepTimeDelta(*this, false)
+#ifdef POLYPRINTER
+									: ( ( doZHomingVibration && dm.drive == E0_AXIS ) ? dm.CalcNextStepTimeVibration( *this, false ):  dm.CalcNextStepTimeCartesian(*this, false) );
+#else
 									: dm.CalcNextStepTimeCartesian(*this, false);
+#endif
 			if (stepsToDo)
 			{
 				InsertDM(&dm);
@@ -2276,6 +2294,28 @@ void DDA::CheckEndstops(Platform& platform)
 		default:
 			break;
 		}
+#ifdef POLYPRINTER
+		// TODO: properly handle the cas eof Bed Contact.
+		//       - e.g. identify the actual official endstop bit that we connect the bed contact to, and
+		//         make sure it registers properly with HitLowStop(); and then check for that as a special case
+		//if ( platform.GetBedContactExists() != EndStopHit::noStop || platform.GetNutSwitchActive() != EndStopHit::noStop )
+		//{
+		//	// there's another type of error - stop trying to use the probe
+		//	//debugPrintf("Error while doing probe. Abandoning this probe\n");
+		//	MoveAborted();
+		//}
+		// TODO: decide whether to involve the Z switch or not.
+		// if it is, though, it should stop the move (the endstop check below doesn't stop the move just from Z endstop hitting, because ZProbeActive remains set)
+		if ( ((endStopsToCheck & (1 << Z_AXIS)) != 0) && platform.Stopped(Z_AXIS) != EndStopHit::noStop )
+		{
+			// must have hit the Z switch
+			//debugPrintf("Hit Z switch while doing probe. Abandoning this probe\n");
+			MoveAborted();
+			reprap.GetMove().HitLowStop( 1 << Z_AXIS );  // doesn't zero anything
+		}
+
+#endif
+
 	}
 
 #if DDA_LOG_PROBE_CHANGES
@@ -2355,6 +2395,20 @@ void DDA::CheckEndstops(Platform& platform)
 			}
 		}
 	}
+
+	if ( platform.GetBedContactExists() != EndStopHit::noStop )
+	{
+		// TODO: log this error as one needing some kind of behavior modification - depends on what was being done
+		//       - we need to be able to set an error condition
+		MoveAborted();
+		hadBedContactError = true;
+	}
+	else if ( platform.GetNutSwitchActive() != EndStopHit::noStop )
+	{
+		MoveAborted();
+		hadNutSwitchError = true;
+	}
+
 }
 
 // The remaining functions are speed-critical, so use full optimisation
@@ -2386,7 +2440,11 @@ pre(state == frozen)
 			if (dm.state == DMState::moving)
 			{
 				reprap.GetPlatform().SetDirection(i, dm.direction);
-				if (i >= numAxes)
+				if (i >= numAxes
+#ifdef POLYPRINTER
+						&& !doZHomingVibration
+#endif
+						)
 				{
 					if (dm.direction == FORWARDS)
 					{
@@ -2502,7 +2560,12 @@ bool DDA::Step()
 		{
 			const bool hasMoreSteps = (isDeltaMovement && dmToInsert->drive < DELTA_AXES)
 					? dmToInsert->CalcNextStepTimeDelta(*this, true)
+#ifdef POLYPRINTER
+					// when doing the quick set of steps, this does no recalc, so we immediately repeat this whole loop
+					: ( ( doZHomingVibration && dmToInsert->drive == E0_AXIS ) ? dmToInsert->CalcNextStepTimeVibration( *this, true ) : dmToInsert->CalcNextStepTimeCartesian(*this, true) );
+#else
 					: dmToInsert->CalcNextStepTimeCartesian(*this, true);
+#endif
 			DriveMovement * const nextToInsert = dmToInsert->nextDM;
 			if (hasMoreSteps)
 			{

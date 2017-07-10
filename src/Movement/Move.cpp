@@ -41,11 +41,9 @@ Move::Move() : currentDda(NULL), scheduledMoves(0), completedMoves(0)
 
 void Move::Init()
 {
-
-#ifdef POLYPRINTER
+#ifdef POLYPRINTER_SPECIAL_PROBE
 	polyProbing = false;
 #endif
-
 	// Empty the ring
 	ddaRingGetPointer = ddaRingCheckPointer = ddaRingAddPointer;
 	DDA *dda = ddaRingAddPointer;
@@ -199,7 +197,7 @@ void Move::Spin()
 
 	// See whether we need to kick off a move
 	if (currentDda == nullptr
-#ifdef POLYPRINTER
+#ifdef POLYPRINTER_SPECIAL_PROBE
 			&& !polyProbing
 #endif
 			)
@@ -898,6 +896,7 @@ void Move::AdjustMotorPositions(const float_t adjustment[], size_t numMotors)
 	liveCoordinatesValid = false;		// force the live XYZ position to be recalculated
 }
 
+#ifdef POLYPRINTER_SPECIAL_PROBE
 static void ShortDelay()
 {
 	for (unsigned int i = 0; i < 10; ++i)
@@ -913,8 +912,6 @@ static void ShortDelay()
 		asm volatile("nop");
 	}
 }
-
-#ifdef POLYPRINTER
 // This is the function that is called by the timer interrupt to step the motors when we are using the experimental delta probe.
 // The movements are quite slow so it is not time-critical.
 void Move::PolyProbeInterrupt()
@@ -975,11 +972,22 @@ bool Move::TryStartNextMove(uint32_t startTime)
 	}
 }
 
+#ifdef POLYPRINTER
+// This is called from the step ISR. Any variables it modifies that are also read by code outside the ISR must be declared 'volatile'.
+void Move::HitLowStop( uint32_t endtopBits )
+{
+		reprap.GetGCodes().MoveStoppedByLowSwitch( endtopBits );
+}
+#endif
+
 // This is called from the step ISR. Any variables it modifies that are also read by code outside the ISR must be declared 'volatile'.
 void Move::HitLowStop(size_t axis, DDA* hitDDA)
 {
 	if (axis < reprap.GetGCodes().GetTotalAxes() && !IsDeltaMode() && hitDDA->IsHomingAxes())
 	{
+#ifdef POLYPRINTER
+		reprap.GetGCodes().MoveStoppedByLowSwitch( 1 << axis );
+#endif
 		JustHomed(axis, reprap.GetPlatform().AxisMinimum(axis), hitDDA);
 	}
 }
@@ -999,6 +1007,15 @@ void Move::HitHighStop(size_t axis, DDA* hitDDA)
 // This is called from the step ISR. Any variables it modifies that are also read by code outside the ISR must be declared 'volatile'.
 void Move::JustHomed(size_t axisHomed, float hitPoint, DDA* hitDDA)
 {
+#ifdef POLYPRINTER
+	// don't apply this if it was probed! This is only for the explicit nut switch. (not when nut switch is attached to Z axis)
+	// TODO: calculate an amount if on the right (use RHS) or in the middle (interpolate?)
+	if ( axisHomed == Z_AXIS && hitDDA->HadNutSwitchError() )  // even if it was probing but had a nut switch error, use the offset
+	{
+		hitPoint += Platform().GetPolyPrinterParameters().nutSwitchOvertravelLeft_MM;
+		// also move there!!!
+	}
+#endif
 	if (kinematics->DriveIsShared(axisHomed))
 	{
 		float tempCoordinates[MaxAxes];
@@ -1184,7 +1201,7 @@ void Move::PrintCurrentDda() const
 	}
 }
 
-#ifdef POLYPRINTER
+#ifdef POLYPRINTER_SPECIAL_PROBE
 // Do a Z probe returning -1 if still probing, 0 if failed, 1 if success
 int Move::DoPolyProbe(float frequency, float amplitude, float rate, float distance)
 {

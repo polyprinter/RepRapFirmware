@@ -208,6 +208,9 @@ void ZProbeParameters::Init(float h)
 	travelSpeed = DEFAULT_TRAVEL_SPEED;
 	recoveryTime = extraParam = 0.0;
 	invertReading = false;
+#ifdef POLYPRINTER
+	modulationFrequency_HZ = DEFAULT_ZPROBE_MODULATION_FREQUENCY_HZ;
+#endif
 }
 
 float ZProbeParameters::GetStopHeight(float temperature) const
@@ -217,9 +220,26 @@ float ZProbeParameters::GetStopHeight(float temperature) const
 
 bool ZProbeParameters::WriteParameters(FileStore *f, unsigned int probeType) const
 {
-	scratchString.printf("G31 T%u P%d X%.1f Y%.1f Z%.2f\n", probeType, adcValue, xOffset, yOffset, height);
+	scratchString.printf("G31 T%u P%d X%.1f Y%.1f Z%.3f\n", probeType, adcValue, xOffset, yOffset, height);
 	return f->Write(scratchString.Pointer());
 }
+
+#ifdef POLYPRINTER
+/* Parameter support in Gcode:
+ *
+*/
+void PolyPrinterParameters::Init()
+{
+}
+
+// writes them to the given file store
+bool PolyPrinterParameters::WriteParameters( FileStore *f ) const
+{
+	scratchString.printf( "G39 L%f R%f\n", nutSwitchOvertravelLeft_MM, nutSwitchOvertravelRight_MM );
+	return f->Write(scratchString.Pointer());
+}
+
+#endif
 
 //*************************************************************************************************
 // Platform class
@@ -674,16 +694,11 @@ void Platform::InitZProbe()
 		pinMode(zProbeModulationPin, OUTPUT_LOW);		// we now set the modulation output high during probing only when using probe types 4 and higher
 		break;
 
-	case 7:
-		AnalogInEnableChannel(zProbeAdcChannel, false);
-		pinMode(zProbePin, INPUT_PULLUP);
-		pinMode(zProbeModulationPin, OUTPUT_LOW);		// we now set the modulation output high during probing only when using probe types 4 and higher
-		break;	//TODO (DeltaProbe)
 #ifdef POLYPRINTER
 	case ZProbeTypePoly:
 		AnalogInEnableChannel(zProbeAdcChannel, false);
 		pinMode(zProbePin, INPUT_PULLUP);
-		pinMode(zProbeModulationPin, OUTPUT_LOW);		// we now set the modulation output high during probing only when using probe types 4 and higher
+		pinMode(zProbeModulationPin, OUTPUT_LOW);		// we will pulse high once we begin
 		break;
 #endif
 	}
@@ -715,7 +730,12 @@ int Platform::GetZProbeReading() const
 		case 7:		// Delta humming probe
 			zProbeVal = (int) ((zProbeOnFilter.GetSum() + zProbeOffFilter.GetSum()) / (8 * Z_PROBE_AVERAGE_READINGS));	//TODO this is temporary
 			break;
-
+#ifdef POLYPRINTER
+			// skip all the ADC and filtering, just look at the digital pin
+		case ZProbeTypePoly:	// we are going to get a plain old digital signal when it triggers
+			zProbeVal = GetRawZProbeReading();
+			break;
+#endif
 		default:
 			return 0;
 		}
@@ -785,7 +805,14 @@ float Platform::GetZProbeTravelSpeed() const
 
 void Platform::SetZProbeType(int pt)
 {
-	zProbeType = (pt >= 0 && pt <= 6) ? pt : 0;
+	//debugPrintf("Setting probe type %d (poly is %d)\n", pt, ZProbeTypePoly );
+	zProbeType = ( ( pt >= 0 && pt <= 6 )
+#ifdef POLYPRINTER
+			|| pt == ZProbeTypePoly
+#endif
+			) ? pt : 0;
+	//debugPrintf("probe type now %d\n", zProbeType );
+
 	InitZProbe();
 }
 
@@ -797,6 +824,25 @@ void Platform::SetProbing(bool isProbing)
 		digitalWrite(zProbeModulationPin, isProbing);
 	}
 }
+
+#ifdef POLYPRINTER
+void Platform::SetProbeModulationOut(bool ifHigh) const
+{
+	digitalWrite(zProbeModulationPin, ifHigh);
+}
+
+PolyPrinterParameters& Platform::GetPolyPrinterParameters()
+{
+	return polyPrinterParameters;
+}
+
+// sets all parameters at once
+void Platform::SetPolyPrinterParameters( const PolyPrinterParameters& params )
+{
+	polyPrinterParameters = params;
+}
+
+#endif
 
 const ZProbeParameters& Platform::GetZProbeParameters(int32_t probeType) const
 {
@@ -2124,6 +2170,22 @@ bool Platform::WriteZProbeParameters(FileStore *f) const
 }
 
 #ifdef POLYPRINTER
+// Write the PolyPrinter nonvolatile settings to file
+bool Platform::WritePolyPrinterParameters(FileStore *f) const
+{
+	bool ok = f->Write("; PolyPrinter parameters\n");
+	if (ok)
+	{
+		ok = polyPrinterParameters.WriteParameters(f);
+	}
+	return ok;
+}
+
+bool Platform::SuppressingSpecialErrorChecks() const
+{
+	return suppressingSpecialErrorChecks;
+}
+
 // Return the Bed Contact existence result.
 // We assume that if bed contact exists, it acts as a low stop.
 EndStopHit Platform::GetBedContactExists() const

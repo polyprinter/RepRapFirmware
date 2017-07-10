@@ -75,6 +75,13 @@ const int DefaultToolChangeParam = TFreeBit | TPreBit | TPostBit;
 class GCodes
 {   
 public:
+#ifdef POLYPRINTER
+	// describes all parameters to be used in z-homing
+	struct PolyZHomeParams {
+		float frequency_HZ{0};
+		float amplitude_MM{0};
+	};
+#endif
 	struct RawMove
 	{
 		float coords[DRIVES];											// new positions for the axes, amount of movement for the extruders
@@ -91,6 +98,10 @@ public:
 		bool usePressureAdvance;										// true if we want to use extruder pressure advance, if there is any extrusion
 		bool canPauseAfter;												// true if we can pause just after this move and successfully restart
 		bool hasExtrusion;												// true if the move includes extrusion - only valid if the move was set up by SetupMove
+#ifdef POLYPRINTER
+		GCodes::PolyZHomeParams zHomingParams;
+		bool doZHomingVibration{ false };
+#endif
 	};
   
 	GCodes(Platform& p);
@@ -143,7 +154,10 @@ public:
 	void CancelPrint();													// Cancel the current print
 
 	void MoveStoppedByZProbe() { zProbeTriggered = true; }				// Called from the step ISR when the Z probe is triggered, causing the move to be aborted
-
+#ifdef POLYPRINTER
+	// we only care about low stops right now
+	void MoveStoppedByLowSwitch( uint32_t switchBits ) { endstopsTriggeredLastMove |= switchBits; }
+#endif
 	size_t GetTotalAxes() const { return numTotalAxes; }
 	size_t GetVisibleAxes() const { return numVisibleAxes; }
 	size_t GetNumExtruders() const { return numExtruders; }
@@ -275,6 +289,7 @@ private:
 			moveBuffer.coords[drive] = 0.0;
 		}
 	}
+	bool SetPolyPrinterParameters(GCodeBuffer& gb, StringRef& reply);
 #endif
 
 	void ClearBabyStepping() { currentBabyStepZOffset = 0.0; }
@@ -365,6 +380,11 @@ private:
 	volatile bool zProbeTriggered;				// Set by the step ISR when a move is aborted because the Z probe is triggered
 	size_t gridXindex, gridYindex;				// Which grid probe point is next
 	bool doingManualBedProbe;					// true if we are waiting for the user to jog the nozzle until it touches the bed
+
+#ifdef POLYPRINTER
+	// we want to know what ended a move
+	uint32_t endstopsTriggeredLastMove;					// bit will be set corresponding to inputs triggered on the last move
+#endif
 
 	float simulationTime;						// Accumulated simulation time
 	uint8_t simulationMode;						// 0 = not simulating, 1 = simulating, >1 are simulation modes for debugging

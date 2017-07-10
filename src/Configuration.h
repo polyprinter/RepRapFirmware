@@ -159,6 +159,10 @@ const float DEFAULT_TRAVEL_SPEED = 100.0;			// Default speed for travel to probe
 const float TRIANGLE_ZERO = -0.001;					// Millimetres
 const float SILLY_Z_VALUE = -9999.0;				// Millimetres
 
+#ifdef POLYPRINTER
+const float DEFAULT_ZPROBE_MODULATION_FREQUENCY_HZ = 1400; // Hz
+#endif
+
 // String lengths
 
 const size_t FORMAT_STRING_LENGTH = 256;
