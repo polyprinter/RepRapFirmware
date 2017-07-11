@@ -62,6 +62,7 @@ public:
 	float CalcTime() const;											// Calculate the time needed for this move (used for simulation)
 	bool HasStepError() const;
 	bool CanPauseAfter() const { return canPauseAfter; }
+	bool CanPauseBefore() const { return canPauseBefore; }
 	bool IsPrintingMove() const { return isPrintingMove; }			// Return true if this involves both XY movement and extrusion
 
 	DDAState GetState() const { return state; }
@@ -76,8 +77,11 @@ public:
     void SetPositions(const float move[], size_t numDrives);		// Force the endpoints to be these
     FilePosition GetFilePosition() const { return filePos; }
     float GetRequestedSpeed() const { return requestedSpeed; }
+    float GetVirtualExtruderPosition() const { return virtualExtruderPosition; }
 	float AdvanceBabyStepping(float amount);						// Try to push babystepping earlier in the move queue
 	bool IsHomingAxes() const { return (endStopsToCheck & HomeAxes) != 0; }
+	uint32_t GetXAxes() const { return xAxes; }
+	uint32_t GetYAxes() const { return yAxes; }
 
 #if SUPPORT_IOBITS
 	uint32_t GetMoveStartTime() const { return moveStartTime; }
@@ -180,14 +184,16 @@ private:
 	uint8_t endCoordinatesValid : 1;		// True if endCoordinates can be relied on
 	uint8_t isDeltaMovement : 1;			// True if this is a delta printer movement
 	uint8_t canPauseAfter : 1;				// True if we can pause at the end of this move
-	uint8_t goingSlow : 1;					// True if we have reduced speed during homing
+	uint8_t canPauseBefore : 1;				// True if we can pause just before this move
 	uint8_t isPrintingMove : 1;				// True if this move includes XY movement and extrusion
 	uint8_t usePressureAdvance : 1;			// True if pressure advance should be applied to any forward extrusion
 	uint8_t hadLookaheadUnderrun : 1;		// True if the lookahead queue was not long enough to optimise this move
 	uint8_t xyMoving : 1;					// True if we have movement along an X axis or the Y axis
+	// Bit 'goingSlow' has now been moved into endstopChecks to avoid overflowing this byte
 
     EndstopChecks endStopsToCheck;			// Which endstops we are checking on this move
     uint32_t xAxes;							// Which axes are behaving as X axes
+    uint32_t yAxes;							// Which axes are behaving as Y axes
 
     FilePosition filePos;					// The position in the SD card file after this move was read, or zero if not read from SD card
 
@@ -197,6 +203,7 @@ private:
     float totalDistance;					// How long is the move in hypercuboid space
 	float acceleration;						// The acceleration to use
     float requestedSpeed;					// The speed that the user asked for
+    float virtualExtruderPosition;			// the virtual extruder position at the end of this move, used for pause/resume
 
 #ifdef POLYPRINTER
     uint8_t hadNutSwitchError : 1;			// if set, a move was ended prematurely (endCoordinatesValid will also be false) due to an error

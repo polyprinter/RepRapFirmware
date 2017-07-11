@@ -68,7 +68,6 @@ void Move::Init()
 	{
 		move[i] = 0.0;
 		liveEndPoints[i] = 0;									// not actually right for a delta, but better than printing random values in response to M114
-		reprap.GetPlatform().SetDirection(i, FORWARDS);			// DC: I don't see any reason why we do this
 	}
 	SetLiveCoordinates(move);
 	SetPositions(move);
@@ -173,7 +172,7 @@ void Move::Spin()
 					const bool doMotorMapping = (nextMove.moveType == 0) || (nextMove.moveType == 1 && kinematics->GetHomingMode() == Kinematics::homeCartesianAxes);
 					if (doMotorMapping)
 					{
-						AxisAndBedTransform(nextMove.coords, nextMove.xAxes, nextMove.moveType == 0);
+						AxisAndBedTransform(nextMove.coords, nextMove.xAxes, nextMove.yAxes, nextMove.moveType == 0);
 					}
 					if (ddaRingAddPointer->Init(nextMove, doMotorMapping))
 					{
@@ -420,101 +419,110 @@ void Move::ClearPendingMoves()
 }
 #endif
 
-// Pause the print as soon as we can.
+// Pause the print as soon as we can, returning true if we are able to.
 // Returns the file position of the first queue move we are going to skip, or noFilePosition we we are not skipping any moves.
 // We update 'positions' to the positions and feed rate expected for the next move, and the amount of extrusion in the moves we skipped.
-// If we are not skipping any moves then the feed rate and iobits are left alone, therefore the caller should set them up first.
-FilePosition Move::PausePrint(RestorePoint& rp, uint32_t xAxes)
+// If we are not skipping any moves then the feed rate, virtual extruder position and iobits are left alone, therefore the caller should set them up first.
+bool Move::PausePrint(RestorePoint& rp)
 {
 	// Find a move we can pause after.
 	// Ideally, we would adjust a move if necessary and possible so that we can pause after it, but for now we don't do that.
 	// There are a few possibilities:
-	// 1. There are no moves in the queue.
-	// 2. There is a currently-executing move, and possibly some more in the queue.
-	// 3. There are moves in the queue, but we haven't started executing them yet. Unlikely, but possible.
+	// 1. There is no currently executing move and no moves in the queue, and GCodes does not have a move for us.
+	//    Pause immediately. Resume from the current file position.
+	// 2. There is no currently executing move and no moves in the queue, and GCodes has a move for us but that move has not been started.
+	//    Pause immediately. Discard the move that GCodes gas for us, and resume from the start file position of that move.
+	// 3. There is no currently executing move and no moves in the queue, and GCodes has a move for that has not been started.
+	//    We must complete that move and then pause
+	// 5. There is no currently-executing move but there are moves in the queue. Unlikely, but possible.
+	//    If the first move in the queue is the first segment in its move, pause immediately, resume from its start address. Otherwise proceed as in case 5.
+	// 4. There is a currently-executing move, possibly some moves in the queue, and GCodes may have a whole or partial move for us.
+	//    See if we can pause after any of them and before the next. If we can, resume from the start position of the following move.
+	//    If we can't, then the last move in the queue must be part of a multi-segment move and GCodes has the rest. We must finish that move and then pause.
+	//
+	// So on return we need to signal one of the following to GCodes:
+	// 1. We have skipped some moves in the queue. Pass back the file address of the first move we have skipped, the feed rate at the start of that move
+	//    and the iobits at the start of that move, and return true.
+	// 2. All moves in the queue need to be executed. Also any move held by GCodes needs to be completed it is it not the first segment. Return false.
+	//
+	// In general, we can pause after a move if it is the last segment and its end speed is slow enough.
+	// We can pause before a move if it is the first segment in that move.
 
-	// First, see if there is a currently-executing move, and if so, whether we can safely pause at the end of it
 	const DDA *savedDdaRingAddPointer = ddaRingAddPointer;
+	bool pauseOkHere;
+
 	cpu_irq_disable();
 	DDA *dda = currentDda;
-	FilePosition fPos = noFilePosition;
-	if (dda != nullptr)
+	if (dda == nullptr)
 	{
-		// A move is being executed. See if we can safely pause at the end of it.
-		if (dda->CanPauseAfter())
-		{
-			fPos = dda->GetFilePosition();
-			ddaRingAddPointer = dda->GetNext();
-		}
-		else
-		{
-			// We can't safely pause after the currently-executing move because its end speed is too high so we may miss steps.
-			// Search for the next move that we can safely stop after.
-			dda = ddaRingGetPointer;
-			while (dda != ddaRingAddPointer)
-			{
-				if (dda->CanPauseAfter())
-				{
-					fPos = dda->GetFilePosition();
-					ddaRingAddPointer = dda->GetNext();
-					if (ddaRingAddPointer->GetState() == DDA::frozen)
-					{
-						// Change the state so that the ISR won't start executing this move
-						(void)ddaRingAddPointer->Free();
-					}
-					break;
-				}
-				dda = dda->GetNext();
-			}
-		}
+		pauseOkHere = true;								// no move was executing, so we have already paused here whether it was a good idea or not.
+		dda = ddaRingGetPointer;
 	}
 	else
 	{
-		// No move being executed
-		ddaRingAddPointer = ddaRingGetPointer;
+		pauseOkHere = dda->CanPauseAfter();
+		dda = dda->GetNext();
+	}
+
+	while (dda != savedDdaRingAddPointer)
+	{
+		if (pauseOkHere && dda->CanPauseBefore())
+		{
+			// We can pause before executing this move
+			(void)dda->Free();							// free the DDA we are going to pause before it so that it won't get executed after we enable interrupts
+			ddaRingAddPointer = dda;
+			break;
+		}
+		pauseOkHere = dda->CanPauseAfter();
+		dda = dda->GetNext();
 	}
 
 	cpu_irq_enable();
 
-	if (ddaRingAddPointer != savedDdaRingAddPointer)
+	if (ddaRingAddPointer == savedDdaRingAddPointer)
 	{
-		const size_t numAxes = reprap.GetGCodes().GetTotalAxes();
+		return false;									// we can't skip any moves
+	}
 
-		// We are going to skip some moves. dda points to the last move we are going to print.
-		for (size_t axis = 0; axis < numAxes; ++axis)
-		{
-			rp.moveCoords[axis] = dda->GetEndCoordinate(axis, false);
-		}
-		for (size_t drive = numAxes; drive < DRIVES; ++drive)
-		{
-			rp.moveCoords[drive] = 0.0;		// clear out extruder movement
-		}
-		rp.feedRate = dda->GetRequestedSpeed();
+	// We are going to skip some moves. Get the end coordinate of the previous move.
+	DDA * const prevDda = ddaRingAddPointer->GetPrevious();
+	const size_t numVisibleAxes = reprap.GetGCodes().GetVisibleAxes();
+	for (size_t axis = 0; axis < numVisibleAxes; ++axis)
+	{
+		rp.moveCoords[axis] = prevDda->GetEndCoordinate(axis, false);
+	}
+
+	InverseAxisAndBedTransform(rp.moveCoords, prevDda->GetXAxes(), prevDda->GetYAxes());	// we assume that xAxes hasn't changed between the moves
+
+	const size_t numTotalAxes = reprap.GetGCodes().GetTotalAxes();
+	for (size_t drive = numTotalAxes; drive < DRIVES; ++drive)
+	{
+		rp.moveCoords[drive] = 0.0;						// clear out extruder movement
+	}
+
+	dda = ddaRingAddPointer;
+	rp.feedRate = dda->GetRequestedSpeed();
+	rp.virtualExtruderPosition = dda->GetVirtualExtruderPosition();
+	rp.filePos = dda->GetFilePosition();
 
 #if SUPPORT_IOBITS
-		rp.ioBits = dda->GetIoBits();
+	rp.ioBits = dda->GetIoBits();
 #endif
 
-		// Free the DDAs for the moves we are going to skip, and work out how much extrusion they would have performed
-		dda = ddaRingAddPointer;
-		do
-		{
-			for (size_t drive = numAxes; drive < DRIVES; ++drive)
-			{
-				rp.moveCoords[drive] += dda->GetEndCoordinate(drive, true);		// update the amount of extrusion we are going to skip
-			}
-			(void)dda->Free();
-			dda = dda->GetNext();
-			scheduledMoves--;
-		}
-		while (dda != savedDdaRingAddPointer);
-	}
-	else
+	// Free the DDAs for the moves we are going to skip, and work out how much extrusion they would have performed
+	do
 	{
-		GetCurrentUserPosition(rp.moveCoords, 0, xAxes);		// gets positions and clears out extrusion values
+		for (size_t drive = numTotalAxes; drive < DRIVES; ++drive)
+		{
+			rp.moveCoords[drive] += dda->GetEndCoordinate(drive, true);		// update the amount of extrusion we are going to skip
+		}
+		(void)dda->Free();
+		dda = dda->GetNext();
+		scheduledMoves--;
 	}
+	while (dda != savedDdaRingAddPointer);
 
-	return fPos;
+	return true;
 }
 
 uint32_t maxReps = 0;
@@ -595,7 +603,7 @@ void Move::SetNewPosition(const float positionNow[DRIVES], bool doBedCompensatio
 {
 	float newPos[DRIVES];
 	memcpy(newPos, positionNow, sizeof(newPos));			// copy to local storage because Transform modifies it
-	AxisAndBedTransform(newPos, reprap.GetCurrentXAxes(), doBedCompensation);
+	AxisAndBedTransform(newPos, reprap.GetCurrentXAxes(), reprap.GetCurrentYAxes(), doBedCompensation);
 	SetLiveCoordinates(newPos);
 	SetPositions(newPos);
 }
@@ -657,18 +665,18 @@ bool Move::CartesianToMotorSteps(const float machinePos[MaxAxes], int32_t motorP
 	return b;
 }
 
-void Move::AxisAndBedTransform(float xyzPoint[MaxAxes], uint32_t xAxes, bool useBedCompensation) const
+void Move::AxisAndBedTransform(float xyzPoint[MaxAxes], uint32_t xAxes, uint32_t yAxes, bool useBedCompensation) const
 {
 	AxisTransform(xyzPoint);
 	if (useBedCompensation)
 	{
-		BedTransform(xyzPoint, xAxes);
+		BedTransform(xyzPoint, xAxes, yAxes);
 	}
 }
 
-void Move::InverseAxisAndBedTransform(float xyzPoint[MaxAxes], uint32_t xAxes) const
+void Move::InverseAxisAndBedTransform(float xyzPoint[MaxAxes], uint32_t xAxes, uint32_t yAxes) const
 {
-	InverseBedTransform(xyzPoint, xAxes);
+	InverseBedTransform(xyzPoint, xAxes, yAxes);
 	InverseAxisTransform(xyzPoint);
 }
 
@@ -689,36 +697,43 @@ void Move::InverseAxisTransform(float xyzPoint[MaxAxes]) const
 }
 
 // Do the bed transform AFTER the axis transform
-void Move::BedTransform(float xyzPoint[MaxAxes], uint32_t xAxes) const
+void Move::BedTransform(float xyzPoint[MaxAxes], uint32_t xAxes, uint32_t yAxes) const
 {
 	if (!useTaper || xyzPoint[Z_AXIS] < taperHeight)
 	{
 		float zCorrection = 0.0;
 		const size_t numAxes = reprap.GetGCodes().GetVisibleAxes();
-		unsigned int numXAxes = 0;
+		unsigned int numCorrections = 0;
 
 		// Transform the Z coordinate based on the average correction for each axis used as an X axis.
 		// We are assuming that the tool Y offsets are small enough to be ignored.
-		for (uint32_t axis = 0; axis < numAxes; ++axis)
+		for (uint32_t xAxis = 0; xAxis < numAxes; ++xAxis)
 		{
-			if ((xAxes & (1u << axis)) != 0)
+			if ((xAxes & (1u << xAxis)) != 0)
 			{
-				const float xCoord = xyzPoint[axis];
-				if (usingMesh)
+				const float xCoord = xyzPoint[xAxis];
+				for (uint32_t yAxis = 0; yAxis < numAxes; ++yAxis)
 				{
-					zCorrection += grid.GetInterpolatedHeightError(xCoord, xyzPoint[Y_AXIS]);
+					if ((yAxes & (1u << yAxis)) != 0)
+					{
+						const float yCoord = xyzPoint[yAxis];
+						if (usingMesh)
+						{
+							zCorrection += grid.GetInterpolatedHeightError(xCoord, yCoord);
+						}
+						else
+						{
+							zCorrection += probePoints.GetInterpolatedHeightError(xCoord, yCoord);
+						}
+						++numCorrections;
+					}
 				}
-				else
-				{
-					zCorrection += probePoints.GetInterpolatedHeightError(xCoord, xyzPoint[Y_AXIS]);
-				}
-				++numXAxes;
 			}
 		}
 
-		if (numXAxes > 1)
+		if (numCorrections > 1)
 		{
-			zCorrection /= numXAxes;			// take an average
+			zCorrection /= numCorrections;			// take an average
 		}
 
 		xyzPoint[Z_AXIS] += (useTaper) ? (taperHeight - xyzPoint[Z_AXIS]) * recipTaperHeight * zCorrection : zCorrection;
@@ -726,35 +741,41 @@ void Move::BedTransform(float xyzPoint[MaxAxes], uint32_t xAxes) const
 }
 
 // Invert the bed transform BEFORE the axis transform
-void Move::InverseBedTransform(float xyzPoint[MaxAxes], uint32_t xAxes) const
+void Move::InverseBedTransform(float xyzPoint[MaxAxes], uint32_t xAxes, uint32_t yAxes) const
 {
 	float zCorrection = 0.0;
 	const size_t numAxes = reprap.GetGCodes().GetVisibleAxes();
-	unsigned int numXAxes = 0;
+	unsigned int numCorrections = 0;
 
 	// Transform the Z coordinate based on the average correction for each axis used as an X axis.
 	// We are assuming that the tool Y offsets are small enough to be ignored.
-	for (uint32_t axis = 0; axis < numAxes; ++axis)
+	for (uint32_t xAxis = 0; xAxis < numAxes; ++xAxis)
 	{
-		if ((xAxes & (1u << axis)) != 0)
+		if ((xAxes & (1u << xAxis)) != 0)
 		{
-			const float xCoord = xyzPoint[axis];
-			if (usingMesh)
+			const float xCoord = xyzPoint[xAxis];
+			for (uint32_t yAxis = 0; yAxis < numAxes; ++yAxis)
 			{
-				zCorrection += grid.GetInterpolatedHeightError(xCoord, xyzPoint[Y_AXIS]);
+				if ((yAxes & (1u << yAxis)) != 0)
+				{
+					const float yCoord = xyzPoint[yAxis];
+					if (usingMesh)
+					{
+						zCorrection += grid.GetInterpolatedHeightError(xCoord, yCoord);
+					}
+					else
+					{
+						zCorrection += probePoints.GetInterpolatedHeightError(xCoord, yCoord);
+					}
+					++numCorrections;
+				}
 			}
-			else
-			{
-				zCorrection += probePoints.GetInterpolatedHeightError(xCoord, xyzPoint[Y_AXIS]);
-
-			}
-			++numXAxes;
 		}
 	}
 
-	if (numXAxes > 1)
+	if (numCorrections > 1)
 	{
-		zCorrection /= numXAxes;					// take an average
+		zCorrection /= numCorrections;				// take an average
 	}
 
 	if (!useTaper || zCorrection >= taperHeight)	// need check on zCorrection to avoid possible divide by zero
@@ -1075,18 +1096,18 @@ bool Move::IsExtruding() const
 }
 
 // Return the transformed machine coordinates
-void Move::GetCurrentUserPosition(float m[DRIVES], uint8_t moveType, uint32_t xAxes) const
+void Move::GetCurrentUserPosition(float m[DRIVES], uint8_t moveType, uint32_t xAxes, uint32_t yAxes) const
 {
 	GetCurrentMachinePosition(m, moveType == 2 || (moveType == 1 && IsDeltaMode()));
 	if (moveType == 0)
 	{
-		InverseAxisAndBedTransform(m, xAxes);
+		InverseAxisAndBedTransform(m, xAxes, yAxes);
 	}
 }
 
 // Return the current live XYZ and extruder coordinates
 // Interrupts are assumed enabled on entry
-void Move::LiveCoordinates(float m[DRIVES], uint32_t xAxes)
+void Move::LiveCoordinates(float m[DRIVES], uint32_t xAxes, uint32_t yAxes)
 {
 	// The live coordinates and live endpoints are modified by the ISR, so be careful to get a self-consistent set of them
 	const size_t numVisibleAxes = reprap.GetGCodes().GetVisibleAxes();		// do this before we disable interrupts
@@ -1117,7 +1138,7 @@ void Move::LiveCoordinates(float m[DRIVES], uint32_t xAxes)
 		}
 		cpu_irq_enable();
 	}
-	InverseAxisAndBedTransform(m, xAxes);
+	InverseAxisAndBedTransform(m, xAxes, yAxes);
 }
 
 // These are the actual numbers that we want to be the coordinates, so don't transform them.
@@ -1186,11 +1207,23 @@ float Move::GetProbeCoordinates(int count, float& x, float& y, bool wantNozzlePo
 void Move::Simulate(uint8_t simMode)
 {
 	simulationMode = simMode;
-	if (simMode)
+	if (simMode != 0)
 	{
 		simulationTime = 0.0;
 	}
 }
+
+#ifdef DUET_NG
+
+// Write settings for resuming the print
+// The GCodes module deals with the head position so all we need worry about is the bed compensation
+// We don't handle random probe point bed compensation, and we assume that if a height map is being used it is the default one.
+bool Move::WriteResumeSettings(FileStore *f) const
+{
+	return kinematics->WriteResumeSettings(f) && (!usingMesh || f->Write("G29 S1\n"));
+}
+
+#endif
 
 // For debugging
 void Move::PrintCurrentDda() const

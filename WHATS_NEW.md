@@ -1,6 +1,68 @@
 Summary of important changes in recent versions
 ===============================================
 
+Version 1.19beta9
+=================
+
+New and changed features:
+- Experimental resume-after-power-failure support on Duet WiFi/Ethernet. See https://duet3d.com/wiki/Setting_up_to_resume_a_print_after_a_power_failure.
+- Partly implemented bed levelling using multiple independent Z motors (M671). See https://duet3d.com/wiki/Bed_levelling_using_multiple_independent_Z_motors.
+- If the G10 command is used to set the standby temperature of a tool that is on standby, the live temperature is adjusted accordingly
+- SCARA parameters configured using M669 now include X and Y bed origin offsets
+- Baby stepping is no longer cleared when you home the printer or probe the bed
+- The Y axis can now be mapped in a similar way to the X axis
+- When the WiFi module is in access point mode, M122 displays the number of connected clients (needs DuetWiFiServer 1.19beta9)
+- The M305 command now uses the S parameter to set the heater name instead of the H parameter
+- The meaning of the first M669 crosstalk parameter for a SCARA printer has changed. A zero value now means that the proximal motor does not affect the proximal-to-distal arm angle.
+- The CoreXY kinematics calculations have been changed to conform to the way they are defined in other firmwares and at CoreXY.com. See the important upgrade notes. The CoreXZ and CoreXYU kinematics have been changed similarly.
+- The maximum allowed target temperature for auto tuning now depends on the configured maximum temperature for that heater
+- The heater gain that provokes a warning when setting heater model parameters with M307 or after auto tuning now depends on the configured maximum temperature for that heater
+
+Bug fixes:
+- G2 and G3 arc movement commands didn't work when the X axis was mapped
+- On an IDEX machine there was unwanted movement of the new tool after a tool change occurred
+- Duet WiFiServer 1.19-beta9: fixed a bug that sometimes caused WiFi connection failures
+- On the Duet WiFi, if the own access point parameters were configurds but the list of remembered host access points was empty, the own access point name appeared in the remembered list displayed by M587
+- On a SCARA mnachine, sending G92 X0 Y0 caused the Duet to return position data containing NaNs to Duet Web Control, which caused it to disconnect
+
+Upgrade notes:
+- **Important!** On a CoreXY machine, you need to either swap the X and Y motor connections, or set the Y axis factor to -1 in the M667 command. Similarly for CoreXZ and CoreXYU machines.
+
+Version 1.19beta8
+=================
+
+New features:
+- If a PT100 interface reports an error when executing a M105 command with X parameter, the firmware now reports the nature of the error if possible
+- When M305 is used with an X parameter to select a PT100 sensor, a new optional F parameter configures rejection of 50Hz (F50) or 60Hz (F60) interference
+- Added support for prototype thermocouple adapter for type J etc. thermocouples (temperature sensor channels 150 to 157)
+- M408 S0 response now includes message box details for PanelDue (needs new PanelDue firmware)
+- M105 temperature reports are now in tool heater order instead of heater order
+- M105 temperature reports now report the setpoint temperatures as well as the current temperatures, to keep Repetier Host happy
+- Adjustment of head position to account for a changed tool offset is now deferred until the next move that includes axis movement, instead of the next move of any sort
+- If tool offsets are changed when not all axes are homed, instead of adjusting the head position on the next move, the current user position is adjusted. This is to avoid causing implicit axis movement when the printer has not been homed.
+- Definition of "all axes are homed" changed to require only visible axes to be homed
+- When grid probing, if a point cannot be reached by the Z probe, a message is emitted
+- Command and parameter letters in gcode commands are now case-insensitive as per the NIST specification
+- On the Duet WiFi and Duet Ethernet up to 9 axes are now supported, named XYZUVWABC
+- In height map files the mean height error and deviation from the mean are now saved to 3 decimal places instead of 2
+- Z probing moves now use 250mm/sec^2 acceleration unless a lower Z acceleration limit has been configured. This is to avoid triggering nozzle-contact sensors at the start of a probing move.
+
+Bug fixes:
+- When G92 was used to set axis positions, it did not flag the axes concerned as homed
+- When a M563 tool definition mapped X to another axis, commands to change the X position caused by the X axis and the other axis to move
+- Fixed an undefined-behaviour bug in the new filament management code, although in practice this did not appear to cause any problems
+- Fixed a problem with the implementation of the G1 P parameter whereby timing advance was applied to port on-off transitions but not to off-on transitions
+- When an extruding move had a lot more acceleration than deceleration, too many extruder steps were scheduled. A check threw the additional steps away so that printing was not affected, but a step error was logged.
+- Except when delta kinematics were being used, speeds and accelerations were limited independently for the X and Y axes. This is correct for Cartesian printers, but not for CoreXY, Scara etc. The speed and acceleration of XY movement is now always limited to the lower of the specified maximum X and Y speed and acceleration unless Cartesian kinematics are being used.
+- When a print was paused and resumed, it didn't always resume at the correct move
+- When G92 or M374 was used to save a height map using the default filename, sometimes it would save to a random filename instead
+- When G92 S1 or M375 was used to load a height map using the default filename, sometimes it would fail to load
+
+Areas of code refactored (so watch out for new bugs):
+- Pause/resume handling
+
+For upgrade notes, see 1.19beta7.
+
 Version 1.19beta7
 =================
 
@@ -24,6 +86,7 @@ Bug fixes:
 - On the Duet WiFi, after using M589 to set up access point parameters, when M552 S2 was sent to start the WiFi module in AP mode it reported "WiFi reported error: invalid access point configuration". The fix also needs DuetWiFiServer version 1.19beta7.
 - On a delta printer the nozzle height is now limited to reachable values, to avoid the motors trying to move the carriages past the physical endstpos
 - M552 with no parameters now reports the current IP address as well as the status
+- Some Duets would restart immediately after initial power up and then rnu normally
 
 Areas of code refactored (so watch out for new bugs):
 - G30 bed probing
@@ -33,7 +96,8 @@ Areas of code refactored (so watch out for new bugs):
 Upgrade notes:
 - SSIDs and passwords in M587, M588 and M589 commands must now be enclosed in double quotes. If you use macro files to set up SSIDs and passwords of access point to connect to, check whether they have the quotation marks.
 - Height map filenames in G29, M374 and M375 commands must now be enclosed in double quotes
-- On a Duet WiFi you should also upgrade DuetWiFiServer.bin to version 1.19beta7. You do not need to perform a simultaneous upgrade, but M587 and M589 reporting functionality won't work correctly if your DuetWiFiFirmware and DuetWiFiServer versions are out of step.
+- On a Duet WiFi, if you are upgrading form an earlier 1.19beta then you should also upgrade DuetWiFiServer.bin to version 1.19beta7. You do not need to perform a simultaneous upgrade, but M587 and M589 reporting functionality won't work correctly if your DuetWiFiFirmware and DuetWiFiServer versions are out of step. If yu are upgrading a Duet WiFi form 1.18.2 oe earlier firmware, see the important notes at https://duet3d.com/wiki/DuetWiFiFirmware_1.19beta.
+- Every heater that you use must now be configured using a M305 command with a P parameter that identifies the heater. Previously, if a heater used default thermistor parameters, you could omit the M305 command for that heater.
 
 Known issues:
 - Although the WiFi module can now be put into access point mode using M589 abnd M552 S1, WiFi access does not work properly in access point mode
@@ -43,7 +107,7 @@ Version 1.19beta6
 
 New features:
 - Up to 10 virtual heaters can be defined using M305 commands, numbered 100-109. Virtual heater 100 defaults to sensing the MCU temperature (sensor channel 1000), and on the Duet WiFi/Ethernet virtual heaters 101-102 default to sensing the TMC2660 temperature warning/overheat sensors on the Duet and the DueX expansion board respectively (sensor channels 1001-1002).
-- Heaters can be named by adding parameter H"name" in the M105 command. The quote-marks are compulsory. The temperatures of named virtual heaters are made available to DWC for display.
+- Heaters can be named by adding parameter H"name" in the M305 command. The quote-marks are compulsory. The temperatures of named virtual heaters are made available to DWC for display.
 - Fans can be thermostatically controlled based on the temperatures of any real or virtual heaters.
 - Fans can be thermostatically controlled in proportional mode by specifying a temperature range e.g. T40:50. If you specify only one temperature, or the second temperature is not greater than the first, bang-band mode will be used as before. In proportional mode the S parameter is not used but the L value is honoured.
 - Current loop temperature sensors are now supported (sensor channels 300-307). M305 parameters L and H set the temperatures corresponding to 4mA and 20mA current respectively.
@@ -60,7 +124,7 @@ Internal changes:
 - Removed accoustic delta probe code
 
 Upgrade notes:
-- Every heater that you use must now be configured using a M305 command with a P parameter that identifies the heater. Previously, if a heater used default thermistor parameters, you cold omit the M305 command for that heater.
+- Every heater that you use must now be configured using a M305 command with a P parameter that identifies the heater. Previously, if a heater used default thermistor parameters, you could omit the M305 command for that heater.
 
 Version 1.19beta4 and 1.19beta5
 ===============================

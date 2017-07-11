@@ -528,15 +528,24 @@ bool DDA::Init(const GCodes::RawMove &nextMove, bool doMotorMapping)
 
 	// 3. Store some values
 	xAxes = nextMove.xAxes;
+	yAxes = nextMove.yAxes;
 	endStopsToCheck = nextMove.endStopsToCheck;
+	canPauseBefore = nextMove.canPauseBefore;
 	canPauseAfter = nextMove.canPauseAfter;
 	filePos = nextMove.filePos;
 	usePressureAdvance = nextMove.usePressureAdvance;
+	virtualExtruderPosition = nextMove.virtualExtruderPosition;
 	hadLookaheadUnderrun = false;
 
 #if SUPPORT_IOBITS
 	ioBits = nextMove.ioBits;
 #endif
+
+	// If it's a Z probing move, limit the Z acceleration to better handle nozzle-contact probes
+	if ((endStopsToCheck & ZProbeActive) != 0 && accelerations[Z_AXIS] > ZProbeMaxAcceleration)
+	{
+		accelerations[Z_AXIS] = ZProbeMaxAcceleration;
+	}
 
 	// The end coordinates will be valid at the end of this move if it does not involve endstop checks and is not a special move on a delta printer
 	endCoordinatesValid = (endStopsToCheck == 0) && (doMotorMapping || !move.IsDeltaMode());
@@ -609,21 +618,38 @@ bool DDA::Init(const GCodes::RawMove &nextMove, bool doMotorMapping)
 	}
 	requestedSpeed = constrain<float>(reqSpeed, 0.5, VectorBoxIntersection(normalisedDirectionVector, reprap.GetPlatform().MaxFeedrates(), DRIVES));
 
-	// On a Cartesian or CoreXY printer, it is OK to limit the X and Y speeds and accelerations independently, and in consequence to allow greater values
+	// On a Cartesian printer, it is OK to limit the X and Y speeds and accelerations independently, and in consequence to allow greater values
 	// for diagonal moves. On a delta, this is not OK and any movement in the XY plane should be limited to the X/Y axis values, which we assume to be equal.
-	if (isDeltaMovement)
+	if (doMotorMapping)
 	{
-		const float xyFactor = sqrtf(fsquare(normalisedDirectionVector[X_AXIS]) + fsquare(normalisedDirectionVector[Y_AXIS]));
-		const float maxSpeed = reprap.GetPlatform().MaxFeedrates()[X_AXIS];
-		if (requestedSpeed * xyFactor > maxSpeed)
+		switch (reprap.GetMove().GetKinematics().GetKinematicsType())
 		{
-			requestedSpeed = maxSpeed/xyFactor;
-		}
+		case KinematicsType::cartesian:
+			// On a Cartesian printer the axes accelerate independently
+			break;
 
-		const float maxAcceleration = normalAccelerations[X_AXIS];
-		if (acceleration * xyFactor > maxAcceleration)
-		{
-			acceleration = maxAcceleration/xyFactor;
+		case KinematicsType::coreXY:
+		case KinematicsType::coreXYU:
+			// Preferably we would specialise these, but for now fall through to the default implementation
+		default:
+			// On other types of printer, the relationship between motor movement and head movement is complex.
+			// Limit all moves to the lower of X and Y speeds and accelerations.
+			{
+				const float xyFactor = sqrtf(fsquare(normalisedDirectionVector[X_AXIS]) + fsquare(normalisedDirectionVector[Y_AXIS]));
+				const float * const maxSpeeds = reprap.GetPlatform().MaxFeedrates();
+				const float maxSpeed = min<float>(maxSpeeds[X_AXIS], maxSpeeds[Y_AXIS]);
+				if (requestedSpeed * xyFactor > maxSpeed)
+				{
+					requestedSpeed = maxSpeed/xyFactor;
+				}
+
+				const float maxAcceleration = min<float>(normalAccelerations[X_AXIS], normalAccelerations[Y_AXIS]);
+				if (acceleration * xyFactor > maxAcceleration)
+				{
+					acceleration = maxAcceleration/xyFactor;
+				}
+			}
+			break;
 		}
 	}
 #ifdef POLYPRINTER
@@ -2082,7 +2108,6 @@ void DDA::Prepare()
 	params.accelClocksMinusAccelDistanceTimesCdivTopSpeed = (uint32_t)((accelStopTime - (accelDistance/topSpeed)) * stepClockRate);
 	params.compFactor = 1.0 - startSpeed/topSpeed;
 
-	goingSlow = false;
 	firstDM = nullptr;
 
 	const size_t numAxes = reprap.GetGCodes().GetTotalAxes();
@@ -2220,21 +2245,30 @@ void DDA::Prepare()
 float DDA::NormaliseXYZ()
 {
 	// First calculate the magnitude of the vector. If there is more than one X axis, take an average of their movements (they should be equal).
-	float magSquared = 0.0;
-	unsigned int numXaxes = 0;
+	float xMagSquared = 0.0, yMagSquared = 0.0;
+	unsigned int numXaxes = 0, numYaxes = 0;
 	for (size_t d = 0; d < MaxAxes; ++d)
 	{
 		if (((1 << d) & xAxes) != 0)
 		{
-			magSquared += fsquare(directionVector[d]);
+			xMagSquared += fsquare(directionVector[d]);
 			++numXaxes;
 		}
+		if (((1 << d) & yAxes) != 0)
+		{
+			yMagSquared += fsquare(directionVector[d]);
+			++numYaxes;
+		}
 	}
-	if (numXaxes != 0)
+	if (numXaxes > 1)
 	{
-		magSquared /= numXaxes;
+		xMagSquared /= numXaxes;
 	}
-	const float magnitude = sqrtf(magSquared + fsquare(directionVector[Y_AXIS]) + fsquare(directionVector[Z_AXIS]));
+	if (numYaxes > 1)
+	{
+		yMagSquared /= numYaxes;
+	}
+	const float magnitude = sqrtf(xMagSquared + yMagSquared + fsquare(directionVector[Z_AXIS]));
 	if (magnitude <= 0.0)
 	{
 		return 0.0;
@@ -2652,9 +2686,9 @@ void DDA::MoveAborted()
 // As this is only called for homing moves and with very low speeds, we assume that we don't need acceleration or deceleration phases.
 void DDA::ReduceHomingSpeed()
 {
-	if (!goingSlow)
+	if ((endStopsToCheck & GoingSlow) == 0)
 	{
-		goingSlow = true;
+		endStopsToCheck |= GoingSlow;
 		const float factor = 3.0;				// the factor by which we are reducing the speed
 		topSpeed /= factor;
 		for (size_t drive = 0; drive < DRIVES; ++drive)

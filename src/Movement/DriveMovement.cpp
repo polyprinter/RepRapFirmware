@@ -141,7 +141,6 @@ void DriveMovement::PrepareExtruder(const DDA& dda, const PrepParams& params, bo
 		const float reverseStartDistance = (initialDecelSpeed > 0.0)
 												? fsquare(initialDecelSpeed)/(2 * dda.acceleration) + params.decelStartDistance
 												: params.decelStartDistance;
-
 		// Reverse phase parameters
 		if (reverseStartDistance >= dda.totalDistance)
 		{
