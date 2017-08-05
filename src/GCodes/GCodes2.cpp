@@ -210,6 +210,8 @@ bool GCodes::HandleGcode(GCodeBuffer& gb, StringRef& reply)
 		break;
 
 	case 31: // Return the probe value, or set probe variables
+		debugPrintf("G31 came in\n");
+
 		result = SetPrintZProbe(gb, reply);
 		break;
 
@@ -228,6 +230,13 @@ bool GCodes::HandleGcode(GCodeBuffer& gb, StringRef& reply)
 		DoFileMacro(gb, BED_EQUATION_G, true);	// Try to execute bed.g
 		break;
 #ifdef POLYPRINTER
+	case 38:
+		// set or report PolyPrinter Vibration Probing Result data
+		debugPrintf("probe result came in from %s State is %d idle %d ready %d executing %d\n", gb.GetIdentity(), gb.GetState(), gb.IsIdle(), gb.IsReady(), gb.IsExecuting() );
+		result = SetPolyPrinterProbeResult(gb, reply);
+		debugPrintf("G38 result %d\n", result );
+		break;
+
 	case 39:
 		// set or report PolyPrinter Parameters e.g. Nut Switch overtravel tweak (non-volatile)
 		result = SetPolyPrinterParameters(gb, reply);

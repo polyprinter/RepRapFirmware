@@ -301,6 +301,7 @@ private:
 			moveBuffer.coords[drive] = 0.0;
 		}
 	}
+	bool SetPolyPrinterProbeResult(GCodeBuffer& gb, StringRef& reply);
 	bool SetPolyPrinterParameters(GCodeBuffer& gb, StringRef& reply);
 #endif
 

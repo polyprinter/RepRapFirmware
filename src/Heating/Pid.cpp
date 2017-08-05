@@ -96,7 +96,11 @@ bool PID::SetModel(float gain, float tc, float td, float maxPwm, bool usePid)
 		if (model.IsEnabled())
 		{
 			const float predictedMaxTemp = gain + NormalAmbientTemperature;
+#ifdef POLYPRINTER
+			const float noWarnTemp = (temperatureLimit - NormalAmbientTemperature) * 2.0 + 50.0;		// allow 100% extra power plus enough for an extra 50C
+#else
 			const float noWarnTemp = (temperatureLimit - NormalAmbientTemperature) * 1.5 + 50.0;		// allow 50% extra power plus enough for an extra 50C
+#endif
 			if (predictedMaxTemp > noWarnTemp)
 			{
 				platform.MessageF(GENERIC_MESSAGE,

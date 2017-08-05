@@ -223,6 +223,27 @@ struct PolyPrinterParameters
 	void Init();
 	bool WriteParameters(FileStore *f) const;
 };
+
+struct PolyPrinterProbeResult
+{
+	float nonContactSense{0.0f};				// the sensed value before contact, after it stabilizes. This is the noise level.
+	float peakSenseRatio{0.0f};					// this highest sensed ratio of signal to the above noise level
+	int32_t rampBeginCount{0};						// the number of cycles of vibration clock input from the start of the dive until the last ramp was sensed
+	int32_t rampEndCount{0};						// the number of cycles of vibration clock input from the start of the dive until the end of the initial ramp was sensed
+	int32_t rampDetectCount{0};						// the default detection point calculated based on the sensed ramp shape
+
+	// these settings are normally chosen once and left alone. But later we might decide to make them settable. (by some json)
+	float rampBeginRatio{0};
+	float rampendRatio{0};
+	float senseRatio{0};
+
+	// calculated value, to be used as an offset, possibly even in the absence of data?
+	float detectionOffset_MM{0};				// how many mm above the detection point (when the Detect event signal line changed) the projects contact point was
+
+	void Init();
+	//bool WriteParameters(FileStore *f) const;	// if we want to, we can persist the last probe settings
+};
+
 #endif
 
 // Struct for holding Z probe parameters
@@ -526,6 +547,9 @@ public:
 	EndStopHit GetBedContactExists() const;		// returns lowHit condition, if there is contact
 	EndStopHit GetNutSwitchActive() const;		// returns highHit condition, if the Nut Switch has been activated
 
+	PolyPrinterProbeResult& GetPolyPrinterProbeResult();
+	void SetPolyPrinterProbeResult( const PolyPrinterProbeResult& params );
+
 	PolyPrinterParameters& GetPolyPrinterParameters();							// accesses the set of parameters - may be used to update individual settings
 	void SetPolyPrinterParameters( const PolyPrinterParameters& params );		// sets all parameters at once
 	bool WritePolyPrinterParameters( FileStore *f ) const;						// writes them to the given file store
@@ -678,6 +702,7 @@ private:
 	static_assert(SoftwareResetData::numberOfSlots * sizeof(SoftwareResetData) <= FLASH_DATA_LENGTH, "NVData too large");
 #endif
 #ifdef POLYPRINTER
+	PolyPrinterProbeResult polyPrinterProbeResult;
 	PolyPrinterParameters polyPrinterParameters;
 	bool suppressingSpecialErrorChecks{ false };
 #endif

@@ -995,9 +995,9 @@ bool Move::TryStartNextMove(uint32_t startTime)
 
 #ifdef POLYPRINTER
 // This is called from the step ISR. Any variables it modifies that are also read by code outside the ISR must be declared 'volatile'.
-void Move::HitLowStop( uint32_t endtopBits )
+void Move::HitLowStop( uint32_t endstopBits )
 {
-		reprap.GetGCodes().MoveStoppedByLowSwitch( endtopBits );
+		reprap.GetGCodes().MoveStoppedByLowSwitch( endstopBits );
 }
 #endif
 
@@ -1031,7 +1031,7 @@ void Move::JustHomed(size_t axisHomed, float hitPoint, DDA* hitDDA)
 #ifdef POLYPRINTER
 	// don't apply this if it was probed! This is only for the explicit nut switch. (not when nut switch is attached to Z axis)
 	// TODO: calculate an amount if on the right (use RHS) or in the middle (interpolate?)
-	if ( axisHomed == Z_AXIS && hitDDA->HadNutSwitchError() )  // even if it was probing but had a nut switch error, use the offset
+	if ( axisHomed == Z_AXIS && hitDDA->HadNutSwitchActivation() )  // even if it was probing but had a nut switch activation, use the offset
 	{
 		hitPoint += Platform().GetPolyPrinterParameters().nutSwitchOvertravelLeft_MM;
 		// also move there!!!

@@ -373,8 +373,8 @@ void DDA::Init()
 	state = empty;
 	endCoordinatesValid = false;
 #ifdef POLYPRINTER
-	hadNutSwitchError = false;
-	hadBedContactError = false;
+	hadNutSwitch = false;
+	hadBedContact = false;
 #endif
 }
 
@@ -536,6 +536,10 @@ bool DDA::Init(const GCodes::RawMove &nextMove, bool doMotorMapping)
 	usePressureAdvance = nextMove.usePressureAdvance;
 	virtualExtruderPosition = nextMove.virtualExtruderPosition;
 	hadLookaheadUnderrun = false;
+#ifdef POLYPRINTER
+	hadNutSwitch = false;
+	hadBedContact = false;
+#endif
 
 #if SUPPORT_IOBITS
 	ioBits = nextMove.ioBits;
@@ -2329,7 +2333,7 @@ void DDA::CheckEndstops(Platform& platform)
 			break;
 		}
 #ifdef POLYPRINTER
-		// TODO: properly handle the cas eof Bed Contact.
+		// TODO: properly handle the case of Bed Contact.
 		//       - e.g. identify the actual official endstop bit that we connect the bed contact to, and
 		//         make sure it registers properly with HitLowStop(); and then check for that as a special case
 		//if ( platform.GetBedContactExists() != EndStopHit::noStop || platform.GetNutSwitchActive() != EndStopHit::noStop )
@@ -2342,7 +2346,7 @@ void DDA::CheckEndstops(Platform& platform)
 		// if it is, though, it should stop the move (the endstop check below doesn't stop the move just from Z endstop hitting, because ZProbeActive remains set)
 		if ( ((endStopsToCheck & (1 << Z_AXIS)) != 0) && platform.Stopped(Z_AXIS) != EndStopHit::noStop )
 		{
-			// must have hit the Z switch
+			// must have hit the Z switch (or nut switch wired to that pin)
 			//debugPrintf("Hit Z switch while doing probe. Abandoning this probe\n");
 			MoveAborted();
 			reprap.GetMove().HitLowStop( 1 << Z_AXIS );  // doesn't zero anything
@@ -2379,16 +2383,35 @@ void DDA::CheckEndstops(Platform& platform)
 		}
 	}
 #endif
+	// if the bits are set, then a check resulting in an active state is supposed to stop the movement.
+	// this particular check is not necessarily what's used to detect errors while printing But it could.
+	if ( platform.GetBedContactExists() != EndStopHit::noStop )
+	{
+		// TODO: log this error as one needing some kind of behavior modification - depends on what was being done
+		//       - we need to be able to set an error condition
+		MoveAborted();
+		hadBedContact = true;
+		reprap.GetMove().HitLowStop( 1 << BED_CONTACT_ENDSTOP_NUM );  // doesn't zero anything
+		return;
+	}
+	else if ( platform.GetNutSwitchActive() != EndStopHit::noStop )
+	{
+		MoveAborted();
+		hadNutSwitch = true;
+		reprap.GetMove().HitLowStop( 1 << NUT_SWITCH_ENDSTOP_NUM );  // doesn't zero anything
+		return;
+	}
 
 	const size_t numAxes = reprap.GetGCodes().GetTotalAxes();
 	for (size_t drive = 0; drive < numAxes; ++drive)
 	{
-		if ((endStopsToCheck & (1 << drive)) != 0)
+		EndstopChecks driveBit = (1 << drive);
+		if ((endStopsToCheck & driveBit) != 0)
 		{
 			switch(platform.Stopped(drive))
 			{
 			case EndStopHit::lowHit:
-				endStopsToCheck &= ~(1 << drive);					// clear this check so that we can check for more
+				endStopsToCheck &= ~driveBit;					// clear this check so that we can check for more
 				if (endStopsToCheck == 0 || reprap.GetMove().GetKinematics().DriveIsShared(drive))
 				{
 					// No more endstops to check, or this axis uses shared motors, so stop the entire move
@@ -2402,7 +2425,7 @@ void DDA::CheckEndstops(Platform& platform)
 				break;
 
 			case EndStopHit::highHit:
-				endStopsToCheck &= ~(1 << drive);					// clear this check so that we can check for more
+				endStopsToCheck &= ~driveBit;					// clear this check so that we can check for more
 				if (endStopsToCheck == 0 || reprap.GetMove().GetKinematics().DriveIsShared(drive))
 				{
 					// No more endstops to check, or this axis uses shared motors, so stop the entire move
@@ -2418,7 +2441,7 @@ void DDA::CheckEndstops(Platform& platform)
 			case EndStopHit::lowNear:
 				// Only reduce homing speed if there are no more axes to be homed.
 				// This allows us to home X and Y simultaneously.
-				if (endStopsToCheck == (1 << drive))
+				if (endStopsToCheck == driveBit)
 				{
 					ReduceHomingSpeed();
 				}
@@ -2428,19 +2451,6 @@ void DDA::CheckEndstops(Platform& platform)
 				break;
 			}
 		}
-	}
-
-	if ( platform.GetBedContactExists() != EndStopHit::noStop )
-	{
-		// TODO: log this error as one needing some kind of behavior modification - depends on what was being done
-		//       - we need to be able to set an error condition
-		MoveAborted();
-		hadBedContactError = true;
-	}
-	else if ( platform.GetNutSwitchActive() != EndStopHit::noStop )
-	{
-		MoveAborted();
-		hadNutSwitchError = true;
 	}
 
 }

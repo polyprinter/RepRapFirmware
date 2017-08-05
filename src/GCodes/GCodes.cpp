@@ -130,7 +130,12 @@ void GCodes::Reset()
 	fileGCode->Reset();
 	serialGCode->Reset();
 	auxGCode->Reset();
+#ifdef POLYPRINTER
+	// TESTING - make it easier
+	auxGCode->SetCommsProperties(0);
+#else
 	auxGCode->SetCommsProperties(1);					// by default, we require a checksum on the aux port
+#endif
 	daemonGCode->Reset();
 	queuedGCode->Reset();
 #ifdef DUET_NG
@@ -564,6 +569,8 @@ void GCodes::Spin()
 				const GridDefinition& grid = move.AccessBedProbeGrid().GetGrid();
 				const float x = grid.GetXCoordinate(gridXindex);
 				const float y = grid.GetYCoordinate(gridYindex);
+				platform.MessageF(GENERIC_MESSAGE, "gridProbing1: grid point index %d,%d (%.1f, %.1f)\n", gridXindex, gridYindex, x, y);
+
 				if (grid.IsInRadius(x, y))
 				{
 					if (move.IsAccessibleProbePoint(x, y))
@@ -634,6 +641,33 @@ void GCodes::Spin()
 					moveBuffer.feedRate = platform.GetCurrentZProbeParameters().probeSpeed;
 					moveBuffer.xAxes = DefaultXAxisMapping;
 					moveBuffer.yAxes = DefaultYAxisMapping;
+#ifdef POLYPRINTER
+					// this code is copied verbatim from G30 below
+					endstopsTriggeredLastMove = 0;
+					platform.SetsuppressingSpecialErrorChecks( true );  // turn off our normal handling of bed contact or nut switch errors
+
+					if ( platform.GetZProbeType() == ZProbeTypePoly )
+					{
+						// TODO: make this optional? We'll redefine what exactly the Z endstop's role is later
+						// For now, we want to stop probing if it triggers
+						moveBuffer.endStopsToCheck |= 1 << Z_AXIS;
+
+						// also stop on nut switch triggering
+						moveBuffer.endStopsToCheck |= 1 << NUT_SWITCH_ENDSTOP_NUM;
+
+						// at some point it should also be OK to trigger on bed contact - it's a viable indication of contact
+						//later: moveBuffer.endStopsToCheck |= 1 << BED_CONTACT_ENDSTOP_NUM;
+
+						moveBuffer.doZHomingVibration = true;
+						// we must ensure that we trigger a DDA on the E axis as well, so give it some motion request
+						moveBuffer.coords[E0_AXIS] = 1;		// if dual X carriage, we might need to vibrate the other one
+						// this information sets up the specifics (later, with gcode setup options)
+						// necessary to probe at the given location.
+						moveBuffer.zHomingParams.frequency_HZ = platform.GetCurrentZProbeParameters().modulationFrequency_HZ;
+						const float DEFAULT_ZHOME_AMPLITUDE_MM= .08f;
+						moveBuffer.zHomingParams.amplitude_MM = DEFAULT_ZHOME_AMPLITUDE_MM;
+					}
+#endif
 					segmentsLeft = 1;
 					gb.AdvanceState();
 				}
@@ -644,6 +678,9 @@ void GCodes::Spin()
 			if (LockMovementAndWaitForStandstill(gb))
 			{
 				doingManualBedProbe = false;
+#ifdef POLYPRINTER
+				moveBuffer.doZHomingVibration = false;
+#endif
 				float heightError;
 				if (platform.GetZProbeType() == 0)
 				{
@@ -662,6 +699,10 @@ void GCodes::Spin()
 					}
 
 					heightError = moveBuffer.coords[Z_AXIS] - platform.ZProbeStopHeight();
+#ifdef POLYPRINTER
+					debugPrintf("gridProbing3: using height offset %f\n", platform.GetPolyPrinterProbeResult().detectionOffset_MM );
+					heightError += platform.GetPolyPrinterProbeResult().detectionOffset_MM;
+#endif
 				}
 				reprap.GetMove().AccessBedProbeGrid().SetGridHeight(gridXindex, gridYindex, heightError);
 
@@ -816,12 +857,15 @@ void GCodes::Spin()
 
 					if ( platform.GetZProbeType() == ZProbeTypePoly )
 					{
-						// TODO: make this optional? We'll redefine what exactly the Z ensdtop's role is later
+						// TODO: make this optional? We'll redefine what exactly the Z endstop's role is later
 						// For now, we want to stop probing if it triggers
 						moveBuffer.endStopsToCheck |= 1 << Z_AXIS;
 
 						// also stop on nut switch triggering
 						moveBuffer.endStopsToCheck |= 1 << NUT_SWITCH_ENDSTOP_NUM;
+
+						// at some point it should also be OK to trigger on bed contact - it's a viable indication of contact
+						//later: moveBuffer.endStopsToCheck |= 1 << BED_CONTACT_ENDSTOP_NUM;
 
 						moveBuffer.doZHomingVibration = true;
 						// we must ensure that we trigger a DDA on the E axis as well, so give it some motion request
@@ -870,6 +914,11 @@ void GCodes::Spin()
 						bool dummy;
 						gb.TryGetFValue('H', heightAdjust, dummy);
 						heightError = moveBuffer.coords[Z_AXIS] - (platform.ZProbeStopHeight() + heightAdjust);
+#ifdef POLYPRINTER
+						debugPrintf("probingAtPoint4: using height offset %f\n", platform.GetPolyPrinterProbeResult().detectionOffset_MM );
+						heightError += platform.GetPolyPrinterProbeResult().detectionOffset_MM;
+#endif
+
 					}
 				}
 
@@ -916,9 +965,14 @@ void GCodes::Spin()
 						// check to see if a switch was triggered
 						//reprap.GetMove().DidHitLowStop( Z_AXIS,)
 						// DONE: if bed contact detected - move stops... but we should really deal with that here, and allow Z homing moves that make bed contact
-						// TODO: and treat them as a special case to use it for homing - it's better than a Nut Switch event.'
-						if ( endstopsTriggeredLastMove & ( 1 << Z_AXIS ) )
+						// TODO: and treat them as a special case to use it for homing - it's better than a Nut Switch event.
+						bool XYathomePosition = moveBuffer.coords[X_AXIS] == 0 && moveBuffer.coords[Y_AXIS] == 0;
+						bool canUseNutswitch = XYathomePosition;
+						bool canUseBedContact = XYathomePosition;
+
+						if ( canUseNutswitch && endstopsTriggeredLastMove & ( 1 << Z_AXIS ) )
 						{
+							// this is for when the Nut Switch is actually wired to the Z endstop pin
 							reply.printf("Falling back to Left Nut Switch correction");
 
 							// fall back to Nut Switch?
@@ -937,10 +991,44 @@ void GCodes::Spin()
 							moveBuffer.xAxes = DefaultXAxisMapping;
 							segmentsLeft = 1;
 						}
+						else if ( canUseBedContact && endstopsTriggeredLastMove & ( 1 << BED_CONTACT_ENDSTOP_NUM ) )
+						{
+							//reply.printf("Bed Contact on unsuccessful Probe, no Nut Switch Activation - stopping printing");
+							//SetIgnoringZdownAndXYMoves( true );
+							//DoPause( gb, false );
+							// we need to move up
+							reply.printf("Bed Contact on unsuccessful Probe - adjusting contact point");
+							// The probing move has completed or been abandoned
+							// Move back up to the dive height
+							moveBuffer.moveType = 0;
+							moveBuffer.endStopsToCheck = 0;
+							moveBuffer.usePressureAdvance = false;
+							moveBuffer.filePos = noFilePosition;
+							const float BED_CONTACT_OVERTRAVEL_MM = .02f;  // bed tape thickness, by default. Could be made adjustable.
+							moveBuffer.coords[Z_AXIS] = 0 - BED_CONTACT_OVERTRAVEL_MM + platform.ZProbeStopHeight(); // assume it triggers slightly differently from the stop height of the probe
+							reprap.GetMove().SetNewPosition(moveBuffer.coords, false);  // let it know that's were we are
+							moveBuffer.coords[Z_AXIS] = 0; // now go to the zero we determine from that
+							moveBuffer.feedRate = platform.GetZProbeTravelSpeed();
+							moveBuffer.xAxes = DefaultXAxisMapping;
+							segmentsLeft = 1;
+						}
+						else
+						{
+							// problem: no success on Probe, and neither did we get an endstop indication
+							reply.printf("no success on Probe, and neither did we get an endstop indication - stopping printing");
+							// TODO: have some kind of fallback, like storing an official offset between a probe at 0,0 and a good one at the current e.g. 115,155  location.
+							//       - possibly use a known location in the bed height map, or just use the map to make the correction all the time.
+							//       - the official probe point needs to then also be the same as one of the official bed map points too, or we can't update it.
+							//         - that also means it must be at the official bed mapping temperature to update it... but that's a good reason
+							//           to probe every time instead of relying on the map.
+							//         - alternatively, ALWAYS make, keep and use the official map when the bed is the same temperature as it was when last mapped
+							//           - it should stay pretty close.
+							//           - then if it's NOT at the same temperature, do the additional probe at the chosen point
+							SetIgnoringZdownAndXYMoves( true );
+							DoPause( gb, false );
+						}
 					}
 #endif
-					platform.SetsuppressingSpecialErrorChecks( false );  // turn our normal handling of bed contact or nut switch errors back on
-
 					gb.SetState(GCodeState::normal);
 				}
 				else
@@ -992,6 +1080,7 @@ void GCodes::Spin()
 			moveBuffer.yAxes = DefaultYAxisMapping;
 			segmentsLeft = 1;
 			gb.SetState(GCodeState::normal);
+			platform.SetsuppressingSpecialErrorChecks( false );  // turn our normal handling of bed contact or nut switch errors back on
 			break;
 
 		// Firmware retraction/un-retraction states
@@ -1167,6 +1256,7 @@ void GCodes::StartNextGCode(GCodeBuffer& gb, StringRef& reply)
 		// Aux serial port (typically PanelDue)
 		if (auxInput->FillBuffer(auxGCode))
 		{
+			//debugPrintf("detected Aux input\n");
 			// by default we assume no PanelDue is attached
 			platform.SetAuxDetected();
 		}
@@ -1262,27 +1352,26 @@ bool GCodes::CheckErrorConditions( TriggerMask currentEndstopStates, TriggerMask
 			}
 			return true;
 		}
-	}
 
-
-	if ( platform.GetNutSwitchActive() != EndStopHit::noStop )
-	{
-		// there is an active Nut Switch on the loose
-		if ( ! IsIgnoringZdownandXYMoves() )
+		if ( platform.GetNutSwitchActive() != EndStopHit::noStop )
 		{
-			SetIgnoringZdownAndXYMoves( true );
-			// we want to be able to resume if the operator considers it OK: so do not call DoPrintAbort();
-			if (!LockMovement(*fileGCode))					// lock movement before calling DoPause
+			// there is an active Nut Switch on the loose
+			if ( ! IsIgnoringZdownandXYMoves() )
 			{
-				return false;
+				SetIgnoringZdownAndXYMoves( true );
+				// we want to be able to resume if the operator considers it OK: so do not call DoPrintAbort();
+				if (!LockMovement(*fileGCode))					// lock movement before calling DoPause
+				{
+					return false;
+				}
+				DoPause(*fileGCode, false);		// this is generally recoverable, with supervision, if it's clearable
+
+				platform.Message(GENERIC_MESSAGE, "Nut Switch Activation detected! Ignoring moves until Z-home done.\n");
+
 			}
-			DoPause(*fileGCode, false);
 
-			platform.Message(GENERIC_MESSAGE, "Nut Switch Activation detected! Ignoring moves until Z-home done.\n");
-
+			return true;
 		}
-
-		return true;
 	}
 
 	return false; // no error detected
@@ -2468,6 +2557,104 @@ bool GCodes::DoHome(GCodeBuffer& gb, StringRef& reply, bool& error)
 }
 
 #ifdef POLYPRINTER
+/*
+Serial.print( "Base: " );
+Serial.print( nonContactSensedValue );
+Serial.print( " Peak: " );
+Serial.print( peakSenseRatio );
+Serial.print( " Period: " );
+#ifdef DO_PERIOD_DIAGNOSTICS
+Serial.print( lastGoodPeriod );
+#else
+Serial.print( firstHalfCount + secondHalfCount );
+#endif
+#ifdef DO_RAMP_TIMING
+Serial.print( " RampEndCount: " );
+Serial.print( detectionPoint_COUNT ? rampEndPoint_COUNT : 0  );  // zero if no full detection occurred
+Serial.print( " RampBeginCount: " );
+Serial.print( rampBeginPoint_COUNT );
+Serial.print( " DetectCount: " );
+Serial.print( detectionPoint_COUNT );
+#else
+Serial.print( " DetectCount: " );
+Serial.print( detectionPoint_COUNT );
+#endif
+Serial.print( " h1: " );
+Serial.print( firstHalfCount );
+Serial.print( " h2: " );
+	float nonContactSense{0.0f};				// the sensed value before contact, after it stabilizes. This is the noise level.
+	float peakSenseRatio{0.0f};					// this highest sensed ratio of signal to the above noise level
+	int rampBeginCount{0};						// the number of cycles of vibration clock input from the start of the dive until the last ramp was sensed
+	int rampEndCount{0};						// the number of cycles of vibration clock input from the start of the dive until the end of the initial ramp was sensed
+	int rampDetectCount{0};						// the default detection point calculated based on the sensed ramp shape
+
+	// these settings are normally chosen once and left alone. But later we might decide to make them settable. (by some json)
+	float rampBeginRatio{0};
+	float rampendRatio{0};
+	float senseRatio{0};
+
+*/
+// G38 S<nonContactSensedValue> R<peakratio> E<rampendCount> B<rampbegincount> D<detectcount>
+bool GCodes::SetPolyPrinterProbeResult(GCodeBuffer& gb, StringRef& reply)
+{
+	PolyPrinterProbeResult& params = platform.GetPolyPrinterProbeResult();
+
+	bool seen = false;
+	gb.TryGetFValue( 'S', params.nonContactSense, seen );
+	gb.TryGetFValue( 'R', params.peakSenseRatio, seen );
+	gb.TryGetIValue( 'B', params.rampBeginCount, seen );
+	gb.TryGetIValue( 'E', params.rampEndCount, seen );
+	gb.TryGetIValue( 'D', params.rampDetectCount, seen );
+debugPrintf("seen SRBEN %d\n", seen );
+	// this is not usually set by Gcode from the probe - we calculate it from frequency and the other parameters.
+	// This allows us to set it manually, should that prove useful
+	if ( gb.Seen( 'O' ) )
+	{
+		params.detectionOffset_MM = gb.GetFValue();
+		seen = true;
+	}
+	else {
+		if ( params.rampBeginCount != 0 && params.rampEndCount != 0 )
+		{
+			// we will calculate it
+			// we know the travel rate and the vibration clock frequency
+			ZProbeParameters probe = platform.GetZProbeParameters( ZProbeTypePoly );
+			float frequency_HZ = probe.modulationFrequency_HZ;
+			float travelSpeed_MMpSEC = probe.travelSpeed / 60;
+			const float travelPerCycle_MM = travelSpeed_MMpSEC / frequency_HZ; // e.g. 1 / 1800 = .0005555 or .555 micron per cycle
+			// these values need to be the same as in the code in the probe module
+			// or else we need to make them variable
+			//const int MIN_SENSE_RATIO = 4;	// we want to register all events that are very likely correct. This is tolerant but still discriminatory.
+			const int RAMP_START_RATIO = 2; // when the signal gets to  (and stays at) this level, we note a potential detection ramp is beginning
+			const int RAMP_END_RATIO = 3; // we want to project just the initial ramp back to the origin (hopefully). Only valid if goes higher, to the detection point.
+			// simple projection of just the ramp back to the 1:1 ratio should be relatively accurate if the shape is not too weird
+			// calculate the number of cycles before the "begin" that we think the actual contact took place
+
+			float numCyclesGeforeRampBegin = RAMP_START_RATIO/(RAMP_END_RATIO/RAMP_START_RATIO)*(params.rampEndCount-params.rampBeginCount);
+			float numCyclesBeforeDetection = numCyclesGeforeRampBegin + ( params.rampDetectCount - params.rampBeginCount );
+			float projection_MM = numCyclesBeforeDetection * travelPerCycle_MM;
+			params.detectionOffset_MM = projection_MM;
+		}
+	}
+
+	if (seen)
+	{
+		// normally, we don't want to change params if something's still executing
+		// however, this particular event means we're in the middle of homing and we probably need this data immediately
+		// do not wait! if (!LockMovementAndWaitForStandstill(gb))
+		//{
+		//	return false;
+		//}
+
+		platform.SetPolyPrinterProbeResult( params );
+	}
+	else
+	{
+		// TODO: don't report Right side if not present in printer?
+		reply.printf("%f %f %d %d %d %f", params.nonContactSense, params.peakSenseRatio, params.rampBeginCount, params.rampEndCount, params.rampDetectCount, params.detectionOffset_MM );
+	}
+	return true;
+}
 
 // Set or print the PolyPrinter parameters. Called by G39.
 // G39 L-2.3			; sets left nut switch to 2.3mm overtravel. When it triggers, this is the offset below true Z=0
@@ -2930,6 +3117,7 @@ bool GCodes::DefineGrid(GCodeBuffer& gb, StringRef &reply)
 // Prior to calling this the movement system must be locked.
 bool GCodes::ProbeGrid(GCodeBuffer& gb, StringRef& reply)
 {
+	debugPrintf("GCodes::ProbeGrid\n");
 	Move& move = reprap.GetMove();
 	if (!move.AccessBedProbeGrid().GetGrid().IsValid())
 	{
@@ -3602,6 +3790,7 @@ void GCodes::HandleReply(GCodeBuffer& gb, bool error, const char* reply)
 	// Second UART device, e.g. dc42's PanelDue. Do NOT use emulation for this one!
 	if (&gb == auxGCode)
 	{
+		debugPrintf("HandleReply for aux: gb '%s'\n", gb.Buffer() );
 		platform.AppendAuxReply(reply);
 		return;
 	}
@@ -4484,6 +4673,7 @@ void GCodes::CheckReportDue(GCodeBuffer& gb, StringRef& reply) const
 // Return the output buffer containing the response, or nullptr if we failed
 OutputBuffer *GCodes::GenerateJsonStatusResponse(int type, int seq, ResponseSource source) const
 {
+	//debugPrintf("doing GenerateJsonStatusResponse type %d\n", type );
 	OutputBuffer *statusResponse = nullptr;
 	switch (type)
 	{

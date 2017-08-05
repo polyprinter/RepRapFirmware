@@ -92,7 +92,7 @@ public:
 	void DebugPrint() const;
 #ifdef POLYPRINTER
     void setRingIndex( int i ) { ringIndex = i; }
-    bool HadNutSwitchError() const { return hadNutSwitchError; }
+    bool HadNutSwitchActivation() const { return hadNutSwitch; }
 #endif
 
 	static const uint32_t stepClockRate = VARIANT_MCK/128;			// the frequency of the clock used for stepper pulse timing (see Platform::InitialiseInterrupts)
@@ -206,8 +206,8 @@ private:
     float virtualExtruderPosition;			// the virtual extruder position at the end of this move, used for pause/resume
 
 #ifdef POLYPRINTER
-    uint8_t hadNutSwitchError : 1;			// if set, a move was ended prematurely (endCoordinatesValid will also be false) due to an error
-    uint8_t hadBedContactError : 1;
+    uint8_t hadNutSwitch : 1;			// if set, a move was ended prematurely (endCoordinatesValid will also be false) due to an error
+    uint8_t hadBedContact : 1;
 	GCodes::PolyZHomeParams zHomingParams;
 	bool doZHomingVibration{ false };
 

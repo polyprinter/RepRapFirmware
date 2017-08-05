@@ -845,6 +845,18 @@ void Platform::SetProbeModulationOut(bool ifHigh) const
 	digitalWrite(zProbeModulationPin, ifHigh);
 }
 
+PolyPrinterProbeResult& Platform::GetPolyPrinterProbeResult()
+{
+	return polyPrinterProbeResult;
+}
+
+// sets all result items at once
+void Platform::SetPolyPrinterProbeResult( const PolyPrinterProbeResult& params )
+{
+	polyPrinterProbeResult = params;
+}
+
+
 PolyPrinterParameters& Platform::GetPolyPrinterParameters()
 {
 	return polyPrinterParameters;
@@ -2296,8 +2308,10 @@ bool Platform::SuppressingSpecialErrorChecks() const
 // We assume that if bed contact exists, it acts as a low stop.
 EndStopHit Platform::GetBedContactExists() const
 {
-	const TriggerMask currentEndstopStates = GetAllEndstopStates(); // TODO: just use direct pin numbering if this is too slow
-	if ( ( currentEndstopStates & ( 1 << BED_CONTACT_ENDSTOP_NUM ) ? true : false ) == BED_CONTACT_ACTIVE_CONDITION )
+	const Pin pin = endStopPins[BED_CONTACT_ENDSTOP_NUM];
+	bool pinState = (pin != NoPin && ReadPin(pin));
+
+	if ( pinState == BED_CONTACT_ACTIVE_CONDITION )
 	{
 		// there is bed contact
 		return EndStopHit::lowHit;
@@ -2310,9 +2324,10 @@ EndStopHit Platform::GetBedContactExists() const
 // We assume that if a Nut Switch Error exists, it acts as a high stop.
 EndStopHit Platform::GetNutSwitchActive() const
 {
-	const TriggerMask currentEndstopStates = GetAllEndstopStates(); // TODO: just use direct pin numbering if this is too slow
-	// the states are the same as the voltage level so 1 = high (unclosed if pulling down to ground)
-	if ( ( currentEndstopStates & ( 1 << NUT_SWITCH_ENDSTOP_NUM ) ? true : false ) == NUT_SWITCH_ACTIVE_CONDITION )
+	const Pin pin = endStopPins[NUT_SWITCH_ENDSTOP_NUM];
+	bool pinState = (pin != NoPin && ReadPin(pin));
+
+	if ( pinState == NUT_SWITCH_ACTIVE_CONDITION )
 	{
 		// there is a Nut Switch activation
 		return EndStopHit::highHit;

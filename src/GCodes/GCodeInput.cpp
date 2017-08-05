@@ -43,6 +43,7 @@ bool StreamGCodeInput::FillBuffer(GCodeBuffer *gb)
 			}
 
 			// Code is complete, stop here
+			//reprap.GetPlatform().MessageF(DEBUG_MESSAGE, "FillBuffer got gcode\n");
 			return true;
 		}
 	}
