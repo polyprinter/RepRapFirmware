@@ -30,8 +30,8 @@ const size_t NumFirmwareUpdateModules = 1;		// 1 module
 
 // The physical capabilities of the machine
 
-const size_t DRIVES = 10;						// The number of drives in the machine, including X, Y and Z plus extruder drives
-#define DRIVES_(a,b,c,d,e,f,g,h,i,j) { a,b,c,d,e,f,g,h,i,j }
+const size_t DRIVES = 12;						// The maximum number of drives supported by the electronics
+#define DRIVES_(a,b,c,d,e,f,g,h,i,j,k,l) { a,b,c,d,e,f,g,h,i,j,k,l }
 
 const size_t Heaters = 8;						// The number of heaters in the machine; 0 is the heated bed even if there isn't one
 #define HEATERS_(a,b,c,d,e,f,g,h) { a,b,c,d,e,f,g,h }
@@ -48,16 +48,17 @@ const size_t NUM_SERIAL_CHANNELS = 2;			// The number of serial IO channels (USB
 #define SERIAL_MAIN_DEVICE SerialUSB
 #define SERIAL_AUX_DEVICE Serial
 
-const Pin ExpansionStart = 200;					// Pin numbers at/above this are on the I/O expander
+const Pin DueXnExpansionStart = 200;			// Pin numbers 200-215 are on the I/O expander
+const Pin AdditionalIoExpansionStart = 220;		// Pin numbers 220-235 are on the additional I/O expander
 
 // The numbers of entries in each array must correspond with the values of DRIVES, AXES, or HEATERS. Set values to NoPin to flag unavailability.
 
 // DRIVES
 
 const Pin GlobalTmcEnablePin = 38;				// The pin that drives ENN of all TMC2660 drivers on production boards (on pre-production boards they are grounded)
-const Pin ENABLE_PINS[DRIVES] = { 78, 41, 42, 49, 57, 87, 88, 89, 90, 31 };
-const Pin STEP_PINS[DRIVES] = { 70, 71, 72, 69, 68, 66, 65, 64, 67, 91 };
-const Pin DIRECTION_PINS[DRIVES] = { 75, 76, 77, 01, 73, 92, 86, 80, 81, 32 };
+const Pin ENABLE_PINS[DRIVES] = { 78, 41, 42, 49, 57, 87, 88, 89, 90, 31, 82, 60 };
+const Pin STEP_PINS[DRIVES] = { 70, 71, 72, 69, 68, 66, 65, 64, 67, 91, 84, 85 };
+const Pin DIRECTION_PINS[DRIVES] = { 75, 76, 77, 01, 73, 92, 86, 80, 81, 32, 83, 25 };
 
 const Pin DueX_SG = 96;				// DueX stallguard detect pin = PE0 (was E2_STOP)
 const Pin DueX_INT = 17;			// DueX interrupt pin = PA17 (was E6_STOP)
@@ -65,7 +66,7 @@ const Pin DueX_INT = 17;			// DueX interrupt pin = PA17 (was E6_STOP)
 // Endstops
 // RepRapFirmware only has a single endstop per axis.
 // Gcode defines if it is a max ("high end") or min ("low end") endstop and sets if it is active HIGH or LOW.
-const Pin END_STOP_PINS[DRIVES] = { 46, 02, 93, 74, 48, 200, 203, 202, 201, 213 };
+const Pin END_STOP_PINS[DRIVES] = { 46, 02, 93, 74, 48, 200, 203, 202, 201, 213, 39, 8 };
 
 // HEATERS
 
@@ -115,8 +116,8 @@ const float PowerMonitorVoltageRange = 11.0 * 3.3;						// We use an 11:1 voltag
 
 const Pin VssaSensePin = 103;
 
-// Digital pin number to turn the IR LED on (high) or off (low)
-const Pin Z_PROBE_MOD_PIN = 34;											// Digital pin number to turn the IR LED on (high) or off (low) on Duet v0.6 and v1.0 (PB21)
+// Digital pin number to turn the IR LED on (high) or off (low), also controls the DIAG LED
+const Pin Z_PROBE_MOD_PIN = 34;
 
 // Cooling fans
 const size_t NUM_FANS = 9;
@@ -153,8 +154,9 @@ const Pin SpecialPinMap[] =
 {
 	24, 97, 98, 99														// We allow CS5-CS8 to be used because few users need >4 thermocouples or RTDs
 };
-const Pin DueX5GpioPinMap[] = { 211, 210, 209, 208 };					// GPIO 1-4 on DueX5
-const int HighestLogicalPin = 100 + ARRAY_SIZE(DueX5GpioPinMap) - 1;	// highest logical pin number on this electronics
+const Pin DueX5GpioPinMap[] = { 211, 210, 209, 208 };					// Pins 100-103 map to GPIO 1-4 on DueX5
+// We also allow pins 120-135 to be used if there is an additional SX1509B expander
+const int HighestLogicalPin = 135;										// highest logical pin number on this electronics
 
 // SAM4E Flash locations (may be expanded in the future)
 const uint32_t IAP_FLASH_START = 0x00470000;

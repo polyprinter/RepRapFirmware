@@ -139,13 +139,13 @@ bool LinearDeltaKinematics::CartesianToMotorSteps(const float machinePos[], cons
 	//TODO return false if we can't transform the position
 	for (size_t axis = 0; axis < min<size_t>(numVisibleAxes, DELTA_AXES); ++axis)
 	{
-		motorPos[axis] = (int32_t)roundf(Transform(machinePos, axis) * stepsPerMm[axis]);
+		motorPos[axis] = lrintf(Transform(machinePos, axis) * stepsPerMm[axis]);
 	}
 
 	// Transform any additional axes linearly
 	for (size_t axis = DELTA_AXES; axis < numVisibleAxes; ++axis)
 	{
-		motorPos[axis] = (int32_t)roundf(machinePos[axis] * stepsPerMm[axis]);
+		motorPos[axis] = lrintf(machinePos[axis] * stepsPerMm[axis]);
 	}
 	return true;
 }
@@ -169,9 +169,9 @@ bool LinearDeltaKinematics::IsReachable(float x, float y) const
 }
 
 // Limit the Cartesian position that the user wants to move to
-bool LinearDeltaKinematics::LimitPosition(float coords[], size_t numVisibleAxes, uint16_t axesHomed) const
+bool LinearDeltaKinematics::LimitPosition(float coords[], size_t numVisibleAxes, AxesBitmap axesHomed) const
 {
-	const uint16_t allAxes = (1u << X_AXIS) | (1u << Y_AXIS) | (1u << Z_AXIS);
+	const AxesBitmap allAxes = MakeBitmap<AxesBitmap>(X_AXIS) | MakeBitmap<AxesBitmap>(Y_AXIS) | MakeBitmap<AxesBitmap>(Z_AXIS);
 	bool limited = false;
 	if ((axesHomed & allAxes) == allAxes)
 	{
@@ -312,17 +312,19 @@ void LinearDeltaKinematics::DoAutoCalibration(size_t numFactors, const RandomPro
 			PrintVector("Solution", solution, numFactors);
 
 			// Calculate and display the residuals
-			floatc_t residuals[MaxDeltaCalibrationPoints];
+			// Save a little stack by not allocating a residuals vector, because stack for it doesn't only get reserved when debug is enabled.
+			debugPrintf("Residuals:");
 			for (size_t i = 0; i < numPoints; ++i)
 			{
-				residuals[i] = probePoints.GetZHeight(i);
+				floatc_t residual = probePoints.GetZHeight(i);
 				for (size_t j = 0; j < numFactors; ++j)
 				{
-					residuals[i] += solution[j] * derivativeMatrix(i, j);
+					residual += solution[j] * derivativeMatrix(i, j);
 				}
+				debugPrintf(" %7.4f", residual);
 			}
 
-			PrintVector("Residuals", residuals, numPoints);
+			debugPrintf("\n");
 		}
 
 		// Save the old homed carriage heights before we change the endstop corrections
@@ -679,7 +681,7 @@ bool LinearDeltaKinematics::Configure(unsigned int mCode, GCodeBuffer& gb, Strin
 }
 
 // Return the axes that we can assume are homed after executing a G92 command to set the specified axis coordinates
-uint32_t LinearDeltaKinematics::AxesAssumedHomed(uint32_t g92Axes) const
+uint32_t LinearDeltaKinematics::AxesAssumedHomed(AxesBitmap g92Axes) const
 {
 	// If all of X, Y and Z have been specified then we know the positions of all 3 tower motors, otherwise we don't
 	const uint32_t xyzAxes = (1u << X_AXIS) | (1u << Y_AXIS) | (1u << Z_AXIS);
@@ -688,6 +690,33 @@ uint32_t LinearDeltaKinematics::AxesAssumedHomed(uint32_t g92Axes) const
 		g92Axes &= ~xyzAxes;
 	}
 	return g92Axes;
+}
+
+// This function is called when a request is made to home the axes in 'toBeHomed' and the axes in 'alreadyHomed' have already been homed.
+// If we can proceed with homing some axes, return the name of the homing file to be called.
+// If we can't proceed because other axes need to be homed first, return nullptr and pass those axes back in 'mustBeHomedFirst'.
+const char* LinearDeltaKinematics::GetHomingFileName(AxesBitmap toBeHomed, AxesBitmap& alreadyHomed, size_t numVisibleAxes, AxesBitmap& mustHomeFirst) const
+{
+	alreadyHomed = 0;			// if we home one axis, we need to home them all
+	return "homedelta.g";
+}
+
+// This function is called from the step ISR when an endstop switch is triggered during homing.
+// Return true if the entire homing move should be terminated, false if only the motor associated with the endstop switch should be stopped.
+bool LinearDeltaKinematics::QueryTerminateHomingMove(size_t axis) const
+{
+	return false;
+}
+
+// This function is called from the step ISR when an endstop switch is triggered during homing after stopping just one motor or all motors.
+// Take the action needed to define the current position, normally by calling dda.SetDriveCoordinate() and return false.
+void LinearDeltaKinematics::OnHomingSwitchTriggered(size_t axis, bool highEnd, const float stepsPerMm[], DDA& dda) const
+{
+	if (highEnd)
+	{
+		const float hitPoint = GetHomedCarriageHeight(axis);
+		dda.SetDriveCoordinate(hitPoint * stepsPerMm[axis], axis);
+	}
 }
 
 // End

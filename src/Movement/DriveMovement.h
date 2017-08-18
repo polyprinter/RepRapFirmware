@@ -34,6 +34,8 @@ enum class DMState : uint8_t
 class DriveMovement
 {
 public:
+	DriveMovement(DriveMovement *next);
+
 	bool CalcNextStepTimeCartesian(const DDA &dda, bool live);
 	bool CalcNextStepTimeDelta(const DDA &dda, bool live);
 #ifdef POLYPRINTER
@@ -50,9 +52,17 @@ public:
 	void DebugPrint(char c, bool withDelta) const;
 	int32_t GetNetStepsLeft() const;
 
+	static void InitialAllocate(unsigned int num);
+	static int NumFree() { return numFree; }
+	static int MinFree() { return minFree; }
+	static void ResetMinFree() { minFree = numFree; }
+	static DriveMovement *Allocate(size_t drive, DMState st);
+	static void Release(DriveMovement *item);
+
 private:
 	bool CalcNextStepTimeCartesianFull(const DDA &dda, bool live);
 	bool CalcNextStepTimeDeltaFull(const DDA &dda, bool live);
+
 #ifdef POLYPRINTER
 	bool CalcNextStepTimeVibrationFull(const DDA &dda, bool live);
 #ifdef DO_QUADRATURE_MODULATION_OUTPUT
@@ -61,6 +71,11 @@ private:
 	enum { vibrationPhasesPerCycle = 2 };
 #endif
 #endif
+
+	static DriveMovement *freeList;
+	static int numFree;
+	static int minFree;
+
 public:
 	// Parameters common to Cartesian, delta and extruder moves
 

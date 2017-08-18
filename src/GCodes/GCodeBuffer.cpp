@@ -14,7 +14,7 @@
 // Create a default GCodeBuffer
 GCodeBuffer::GCodeBuffer(const char* id, MessageType mt, bool usesCodeQueue)
 	: machineState(new GCodeMachineState()), identity(id), checksumRequired(false), writingFileDirectory(nullptr),
-	  toolNumberAdjust(0), responseMessageType(mt), queueCodes(usesCodeQueue)
+	  toolNumberAdjust(0), responseMessageType(mt), queueCodes(usesCodeQueue), binaryWriting(false)
 {
 	Init();
 }
@@ -81,7 +81,7 @@ bool GCodeBuffer::Put(char c)
 		++commandLength;
 	}
 
-	if (!inQuotes && c == ';')
+	if (!inQuotes && ((c == ';') || (gcodePointer == 0 && c == '(')))
 	{
 		inComment = true;
 	}
@@ -469,6 +469,20 @@ int32_t GCodeBuffer::GetIValue()
 	return result;
 }
 
+// Get an uint32 after a G Code letter
+uint32_t GCodeBuffer::GetUIValue()
+{
+	if (readPointer < 0)
+	{
+		reprap.GetPlatform().Message(GENERIC_MESSAGE, "Error: GCodes: Attempt to read a GCode int before a search.\n");
+		readPointer = -1;
+		return 0;
+	}
+	const uint32_t result = strtoul(&gcodeBuffer[readPointer + 1], 0, 0);
+	readPointer = -1;
+	return result;
+}
+
 // If the specified parameter character is found, fetch 'value' and set 'seen'. Otherwise leave val and seen alone.
 void GCodeBuffer::TryGetFValue(char c, float& val, bool& seen)
 {
@@ -492,12 +506,12 @@ void GCodeBuffer::TryGetIValue(char c, int32_t& val, bool& seen)
 // Try to get a float array exactly 'numVals' long after parameter letter 'c'.
 // If the wrong number of values is provided, generate an error message and return true.
 // Else set 'seen' if we saw the letter and value, and return false.
-bool GCodeBuffer::TryGetFloatArray(char c, size_t numVals, float vals[], StringRef& reply, bool& seen)
+bool GCodeBuffer::TryGetFloatArray(char c, size_t numVals, float vals[], StringRef& reply, bool& seen, bool doPad)
 {
 	if (Seen(c))
 	{
 		size_t count = numVals;
-		GetFloatArray(vals, count, false);
+		GetFloatArray(vals, count, doPad);
 		if (count == numVals)
 		{
 			seen = true;

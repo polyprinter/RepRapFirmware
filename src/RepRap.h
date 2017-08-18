@@ -63,7 +63,6 @@ public:
 	void SelectTool(int toolNumber);
 	void StandbyTool(int toolNumber);
 	Tool* GetCurrentTool() const;
-	Tool* GetLastStandbyTool() const { return lastStandbyTool; }
 	Tool* GetTool(int toolNumber) const;
 	Tool* GetCurrentOrDefaultTool() const;
 	const Tool* GetFirstTool() const { return toolList; }				// Return the lowest-numbered tool
@@ -106,7 +105,7 @@ public:
 
 	void Beep(int freq, int ms);
 	void SetMessage(const char *msg);
-	void SetAlert(const char *msg, const char *title, int mode, float timeout, bool showZControls);
+	void SetAlert(const char *msg, const char *title, int mode, float timeout, AxesBitmap controls);
 	void ClearAlert();
 
 #ifdef DUET_NG
@@ -137,7 +136,6 @@ private:
 
 	Tool* toolList;								// the tool list is sorted in order of increasing tool number
 	Tool* currentTool;
-	Tool* lastStandbyTool;
 	uint32_t lastWarningMillis;					// When we last sent a warning message for things that can happen very often
 
 	uint16_t activeExtruders;
@@ -164,7 +162,7 @@ private:
 	char boxMessage[MESSAGE_LENGTH + 1], boxTitle[MESSAGE_LENGTH + 1];
 	int boxMode;
 	uint32_t boxTimer, boxTimeout;
-	bool boxZControls;
+	AxesBitmap boxControls;
 };
 
 inline Platform& RepRap::GetPlatform() const { return *platform; }

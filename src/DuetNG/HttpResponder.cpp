@@ -1073,7 +1073,10 @@ void HttpResponder::ProcessMessage()
 // Reject the current message
 void HttpResponder::RejectMessage(const char* response, unsigned int code)
 {
-	GetPlatform().MessageF(HOST_MESSAGE, "Webserver: rejecting message with: %s\n", response);
+	if (reprap.Debug(moduleWebserver))
+	{
+		GetPlatform().MessageF(HOST_MESSAGE, "Webserver: rejecting message with: %u %s\n", code, response);
+	}
 	outBuf->printf("HTTP/1.1 %u %s\nConnection: close\n\n", code, response);
 	Commit();
 }
@@ -1128,7 +1131,7 @@ void HttpResponder::DoUpload()
 // This is called to force termination if we implement the specified protocol
 void HttpResponder::Terminate(Protocol protocol)
 {
-	if (protocol == HttpProtocol || protocol == AnyProtocol)
+	if (responderState != ResponderState::free && (protocol == HttpProtocol || protocol == AnyProtocol))
 	{
 		ConnectionLost();
 	}

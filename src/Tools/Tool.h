@@ -28,16 +28,16 @@ Licence: GPL
 
 #include "RepRapFirmware.h"
 
-const size_t ToolNameLength = 32;					// maximum allowed length for tool names
-const uint32_t DefaultXAxisMapping = 1u << X_AXIS;	// by default, X is mapped to X
-const uint32_t DefaultYAxisMapping = 1u << Y_AXIS;	// by default, Y is mapped to Y
+const size_t ToolNameLength = 32;						// maximum allowed length for tool names
+const AxesBitmap DefaultXAxisMapping = 1u << X_AXIS;	// by default, X is mapped to X
+const AxesBitmap DefaultYAxisMapping = 1u << Y_AXIS;	// by default, Y is mapped to Y
 
 class Filament;
 class Tool
 {
 public:
 
-	static Tool *Create(int toolNumber, const char *name, long d[], size_t dCount, long h[], size_t hCount, uint32_t xMap, uint32_t yMap, uint32_t fanMap);
+	static Tool *Create(int toolNumber, const char *name, long d[], size_t dCount, long h[], size_t hCount, AxesBitmap xMap, AxesBitmap yMap, FansBitmap fanMap, StringRef& reply);
 	static void Delete(Tool *t);
 
 	const float *GetOffset() const;
@@ -53,14 +53,12 @@ public:
 	void GetVariables(float* standby, float* active) const;
 	void DefineMix(const float m[]);
 	const float* GetMix() const;
-	void SetMixing(bool b);
-	bool GetMixing() const;
 	float MaxFeedrate() const;
 	float InstantDv() const;
 	void Print(StringRef& reply);
-	uint32_t GetXAxisMap() const { return xMapping; }
-	uint32_t GetYAxisMap() const { return yMapping; }
-	uint32_t GetFanMapping() const { return fanMapping; }
+	AxesBitmap GetXAxisMap() const { return xMapping; }
+	AxesBitmap GetYAxisMap() const { return yMapping; }
+	FansBitmap GetFanMapping() const { return fanMapping; }
 	Filament *GetFilament() const { return filament; }
 	Tool *Next() const { return next; }
 
@@ -97,8 +95,8 @@ private:
 	float standbyTemperatures[Heaters];
 	size_t heaterCount;
 	float offset[MaxAxes];
-	uint32_t xMapping, yMapping;
-	uint32_t fanMapping;
+	AxesBitmap xMapping, yMapping;
+	FansBitmap fanMapping;
 	Filament *filament;
 	Tool* next;
 
@@ -110,7 +108,6 @@ private:
 	};
 	ToolState state;
 
-	bool mixing;
 	bool heaterFault;
 	volatile bool displayColdExtrudeWarning;
 };
@@ -143,16 +140,6 @@ inline int Tool::Number() const
 inline const float* Tool::GetMix() const
 {
 	return mix;
-}
-
-inline void Tool::SetMixing(bool b)
-{
-	mixing = b;
-}
-
-inline bool Tool::GetMixing() const
-{
-	return mixing;
 }
 
 inline size_t Tool::DriveCount() const

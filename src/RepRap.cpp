@@ -11,6 +11,10 @@
 #include "Tools/Filament.h"
 #include "Version.h"
 
+#ifdef DUET_NG
+#include "DueXn.h"
+#endif
+
 #if SUPPORT_IOBITS
 # include "PortControl.h"
 #endif
@@ -33,13 +37,21 @@ extern "C" void hsmciIdle()
 		reprap.GetPortControl().Spin(false);
 	}
 #endif
+
+#ifdef DUET_NG
+	if (reprap.GetSpinningModule() != moduleDuetExpansion)
+	{
+		DuetExpansion::Spin(false);
+	}
+#endif
+
 }
 
 // RepRap member functions.
 
 // Do nothing more in the constructor; put what you want in RepRap:Init()
 
-RepRap::RepRap() : toolList(nullptr), currentTool(nullptr), lastStandbyTool(nullptr), lastWarningMillis(0), activeExtruders(0),
+RepRap::RepRap() : toolList(nullptr), currentTool(nullptr), lastWarningMillis(0), activeExtruders(0),
 	activeToolHeaters(0), ticksInSpinState(0), spinningModule(noModule), debug(0), stopped(false),
 	active(false), resetting(false), processingConfig(true), beepFrequency(0), beepDuration(0)
 {
@@ -107,7 +119,7 @@ void RepRap::Init()
 	{
 		while (gCodes->IsDaemonBusy())
 		{
-			// GCodes::Spin will read the macro and ensure DoingFileMacro returns false when it's done
+			// GCodes::Spin will read the macro and ensure IsDaemonBusy returns false when it's done
 			Spin();
 		}
 		platform->Message(HOST_MESSAGE, "Done!\n");
@@ -132,6 +144,9 @@ void RepRap::Init()
 
 void RepRap::Exit()
 {
+#if !defined(__RADDS__) && !defined(__ALLIGATOR__)
+	hsmci_set_idle_func(nullptr);
+#endif
 	active = false;
 	heat->Exit();
 	move->Exit();
@@ -143,7 +158,6 @@ void RepRap::Exit()
 	portControl->Exit();
 #endif
 	network->Exit();
-	platform->Message(GENERIC_MESSAGE, "RepRap class exited.\n");
 	platform->Exit();
 }
 
@@ -196,6 +210,12 @@ void RepRap::Spin()
 	spinningModule = modulePrintMonitor;
 	ticksInSpinState = 0;
 	printMonitor->Spin();
+
+#ifdef DUET_NG
+	spinningModule = moduleDuetExpansion;
+	ticksInSpinState = 0;
+	DuetExpansion::Spin(true);
+#endif
 
 	spinningModule = noModule;
 	ticksInSpinState = 0;
@@ -379,7 +399,7 @@ void RepRap::DeleteTool(Tool* tool)
 		SelectTool(-1);
 	}
 
-	// Switch off any associated heater
+	// Switch off any associated heater and remove heater references
 	for (size_t i = 0; i < tool->HeaterCount(); i++)
 	{
 		reprap.GetHeat().SwitchOff(tool->Heater(i));
@@ -449,8 +469,7 @@ void RepRap::StandbyTool(int toolNumber)
 	if (tool != nullptr)
 	{
 		tool->Standby();
-		lastStandbyTool = tool;
-		if (currentTool == tool)
+  		if (currentTool == tool)
 		{
 			currentTool = nullptr;
 		}
@@ -570,7 +589,7 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 	// Coordinates
 	const size_t numAxes = reprap.GetGCodes().GetVisibleAxes();
 	{
-		float liveCoordinates[DRIVES + 1];
+		float liveCoordinates[DRIVES];
 #if SUPPORT_ROLAND
 		if (roland->Active())
 		{
@@ -614,12 +633,14 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 		}
 
 		// XYZ positions
-		// TODO ideally we would report "unknown" or similar for axis positions that are not known because we haven't homed them, but that requires changes to DWC and PanelDue.
+		// TODO ideally we would report "unknown" or similar for axis positions that are not known because we haven't homed them, but that requires changes to both DWC and PanelDue.
 		response->cat("],\"xyz\":");
 		ch = '[';
 		for (size_t axis = 0; axis < numAxes; axis++)
 		{
-			response->catf("%c%.3f", ch, liveCoordinates[axis]);
+			// Coordinates may be NaNs, for example when delta or SCARA homing fails. Replace any NaNs by 999.9 to prevent JSON parsing errors.
+			const float coord = liveCoordinates[axis];
+			response->catf("%c%.3f", ch, (std::isnan(coord) || std::isinf(coord)) ? 999.9 : coord);
 			ch = ',';
 		}
 	}
@@ -674,8 +695,8 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 				response->EncodeString(boxMessage, ARRAY_SIZE(boxMessage), false);
 				response->cat(",\"title\":");
 				response->EncodeString(boxTitle, ARRAY_SIZE(boxTitle), false);
-				response->catf(",\"mode\":%d,\"timeout\":%.1f,\"showZ\":%d}",
-						boxMode, timeLeft, boxZControls ? 1 : 0);
+				response->catf(",\"mode\":%d,\"timeout\":%.1f,\"controls\":%u}",
+						boxMode, timeLeft, boxControls);
 			}
 			response->cat("}");
 		}
@@ -745,22 +766,44 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 		const int8_t bedHeater = heat->GetBedHeater();
 		if (bedHeater != -1)
 		{
-			response->catf("\"bed\":{\"current\":%.1f,\"active\":%.1f,\"state\":%d},",
+			response->catf("\"bed\":{\"current\":%.1f,\"active\":%.1f,\"state\":%d,\"heater\":%d},",
 					heat->GetTemperature(bedHeater), heat->GetActiveTemperature(bedHeater),
-					heat->GetStatus(bedHeater));
+					heat->GetStatus(bedHeater), bedHeater);
 		}
 
 		/* Chamber */
 		const int8_t chamberHeater = heat->GetChamberHeater();
 		if (chamberHeater != -1)
 		{
-			response->catf("\"chamber\":{\"current\":%.1f,", heat->GetTemperature(chamberHeater));
-			response->catf("\"active\":%.1f,", heat->GetActiveTemperature(chamberHeater));
-			response->catf("\"state\":%d},", static_cast<int>(heat->GetStatus(chamberHeater)));
+			response->catf("\"chamber\":{\"current\":%.1f,\"active\":%.1f,\"state\":%d,\"heater\":%d},",
+					heat->GetTemperature(chamberHeater), heat->GetActiveTemperature(chamberHeater),
+					heat->GetStatus(chamberHeater), chamberHeater);
 		}
 
-		/* Heads */
-		response->cat("\"heads\":{\"current\":");
+		/* Heaters */
+
+		// Current temperatures
+		response->cat("\"current\":");
+		ch = '[';
+		for (size_t heater = 0; heater < Heaters; heater++)
+		{
+			response->catf("%c%.1f", ch, heat->GetTemperature(heater));
+			ch = ',';
+		}
+		response->cat((ch == '[') ? "[]" : "]");
+
+		// Current states
+		response->cat(",\"state\":");
+		ch = '[';
+		for (size_t heater = 0; heater < Heaters; heater++)
+		{
+			response->catf("%c%d", ch, heat->GetStatus(heater));
+			ch = ',';
+		}
+		response->cat((ch == '[') ? "[]" : "]");
+
+		/* Heads - NOTE: This field is subject to deprecation and will be removed in v1.20 */
+		response->cat(",\"heads\":{\"current\":");
 
 		// Current temperatures
 		ch = '[';
@@ -1149,6 +1192,11 @@ OutputBuffer *RepRap::GetConfigResponse()
 	{
 		response->catf(" + %s", expansionName);
 	}
+	const char* additionalExpansionName = DuetExpansion::GetAdditionalExpansionBoardName();
+	if (additionalExpansionName != nullptr)
+	{
+		response->catf(" + %s", additionalExpansionName);
+	}
 #endif
 	response->catf("\",\"firmwareName\":\"%s\"", FIRMWARE_NAME);
 	response->catf(",\"firmwareVersion\":\"%s\"", VERSION);
@@ -1390,8 +1438,8 @@ OutputBuffer *RepRap::GetLegacyStatusResponse(uint8_t type, int seq)
 
 	if (displayMessageBox)
 	{
-		response->catf(",\"msgBox.mode\":%d,\"msgBox.timeout\":%.1f,\"msgBox.showZ\":%d",
-				boxMode, timeLeft, boxZControls ? 1 : 0);
+		response->catf(",\"msgBox.mode\":%d,\"msgBox.timeout\":%.1f,\"msgBox.axes\":%u",
+				boxMode, timeLeft, boxControls);
 		response->cat(",\"msgBox.msg\":");
 		response->EncodeString(boxMessage, ARRAY_SIZE(boxMessage), false);
 		response->cat(",\"msgBox.title\":");
@@ -1625,14 +1673,14 @@ void RepRap::SetMessage(const char *msg)
 }
 
 // Display a message box on the web interface
-void RepRap::SetAlert(const char *msg, const char *title, int mode, float timeout, bool showZControls)
+void RepRap::SetAlert(const char *msg, const char *title, int mode, float timeout, AxesBitmap controls)
 {
 	SafeStrncpy(boxMessage, msg, ARRAY_SIZE(boxMessage));
 	SafeStrncpy(boxTitle, title, ARRAY_SIZE(boxTitle));
 	boxMode = mode;
 	boxTimer = (timeout <= 0.0) ? 0 : millis();
 	boxTimeout = round(max<float>(timeout, 0.0) * 1000.0);
-	boxZControls = showZControls;
+	boxControls = controls;
 	displayMessageBox = true;
 }
 
@@ -1746,13 +1794,13 @@ void RepRap::ClearTemperatureFault(int8_t wasDudHeater)
 }
 
 // Get the current axes used as X axes
-uint32_t RepRap::GetCurrentXAxes() const
+AxesBitmap RepRap::GetCurrentXAxes() const
 {
 	return (currentTool == nullptr) ? DefaultXAxisMapping : currentTool->GetXAxisMap();
 }
 
 // Get the current axes used as X axes
-uint32_t RepRap::GetCurrentYAxes() const
+AxesBitmap RepRap::GetCurrentYAxes() const
 {
 	return (currentTool == nullptr) ? DefaultYAxisMapping : currentTool->GetYAxisMap();
 }

@@ -28,6 +28,7 @@ public:
 	char GetCommandLetter();							// Find the first G, M or T command
 	float GetFValue();									// Get a float after a key letter
 	int32_t GetIValue();								// Get an integer after a key letter
+	uint32_t GetUIValue();								// Get an unsigned integer value
 	bool GetIPAddress(uint8_t ip[4]);					// Get an IP address quad after a key letter
 	bool GetIPAddress(uint32_t& ip);					// Get an IP address quad after a key letter
 	const char* GetUnprecedentedString(bool optional = false);	// Get a string with no preceding key letter
@@ -38,7 +39,7 @@ public:
 
 	void TryGetFValue(char c, float& val, bool& seen);
 	void TryGetIValue(char c, int32_t& val, bool& seen);
-	bool TryGetFloatArray(char c, size_t numVals, float vals[], StringRef& reply, bool& seen);
+	bool TryGetFloatArray(char c, size_t numVals, float vals[], StringRef& reply, bool& seen, bool doPad = false);
 	bool TryGetQuotedString(char c, char *buf, size_t buflen, bool& seen);
 
 	const char* Buffer() const;
@@ -69,6 +70,10 @@ public:
 	const bool CanQueueCodes() const { return queueCodes; }
 	void MessageAcknowledged(bool cancelled);
 	FilePosition GetFilePosition(size_t bytesCached) const;	// Get the file position at the start of the current command
+	bool IsWritingBinary() const;		// returns true if writing binary
+	void SetBinaryWriting(bool state);	// set true if writing binary
+	uint32_t GetCRC32() const;
+	void SetCRC32(uint32_t newCRC32);
 
 	uint32_t whenTimerStarted;							// when we started waiting
 	bool timerRunning;									// true if we are waiting
@@ -98,7 +103,29 @@ private:
 	int toolNumberAdjust;								// The adjustment to tool numbers in commands we receive
 	const MessageType responseMessageType;				// The message type we use for responses to commands coming from this channel
 	bool queueCodes;									// Can we queue certain G-codes from this source?
+	bool binaryWriting;									// Executing gcode or writing binary file?
+	uint32_t crc32;										// crc32 of the binary file
 };
+
+inline uint32_t GCodeBuffer::GetCRC32() const
+{
+	return crc32;
+}
+
+inline void GCodeBuffer::SetCRC32(uint32_t newCRC32)
+{
+	crc32 = newCRC32;
+}
+
+inline bool GCodeBuffer::IsWritingBinary() const
+{
+	return binaryWriting;
+}
+
+inline void GCodeBuffer::SetBinaryWriting(bool state)
+{
+	binaryWriting = state;
+}
 
 inline const char* GCodeBuffer::Buffer() const
 {

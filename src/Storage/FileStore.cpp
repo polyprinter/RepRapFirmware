@@ -40,9 +40,9 @@ bool FileStore::IsOpenOn(const FATFS *fs) const
 // This is protected - only Platform can access it.
 bool FileStore::Open(const char* directory, const char* fileName, bool write)
 {
-	const char* location = (directory != nullptr)
-							? platform->GetMassStorage()->CombineName(directory, fileName)
-								: fileName;
+	const char* const location = (directory != nullptr)
+									? platform->GetMassStorage()->CombineName(directory, fileName)
+										: fileName;
 	writing = write;
 
 	if (writing)
@@ -89,7 +89,7 @@ bool FileStore::Open(const char* directory, const char* fileName, bool write)
 		}
 		return false;
 	}
-
+	crc.Reset();
 	inUse = true;
 	openCount = 1;
 	return true;
@@ -117,7 +117,7 @@ bool FileStore::Close()
 			return false;
 		}
 
-		irqflags_t flags = cpu_irq_save();
+		const irqflags_t flags = cpu_irq_save();
 		if (openCount > 1)
 		{
 			--openCount;
@@ -136,7 +136,7 @@ bool FileStore::Close()
 		return false;
 	}
 
-	irqflags_t flags = cpu_irq_save();
+	const irqflags_t flags = cpu_irq_save();
 	--openCount;
 	bool leaveOpen = (openCount != 0);
 	cpu_irq_restore(flags);
@@ -195,7 +195,8 @@ FilePosition FileStore::Length() const
 		platform->Message(GENERIC_MESSAGE, "Error: Attempt to size non-open file.\n");
 		return 0;
 	}
-	return file.fsize;
+
+	return (writeBuffer != nullptr) ? file.fsize + writeBuffer->BytesStored() : file.fsize;
 }
 
 float FileStore::FractionRead() const
@@ -268,6 +269,19 @@ int FileStore::ReadLine(char* buf, size_t nBytes)
 	return i;
 }
 
+FRESULT FileStore::Store(const char *s, size_t len, size_t *bytesWritten)
+{
+	uint32_t time = micros();
+	crc.Update(s, len);
+	FRESULT writeStatus = f_write(&file, s, len, bytesWritten);
+	time = micros() - time;
+	if (time > longestWriteTime)
+	{
+		longestWriteTime = time;
+	}
+	return writeStatus;
+}
+
 bool FileStore::Write(char b)
 {
 	return Write(&b, sizeof(char));
@@ -290,13 +304,7 @@ bool FileStore::Write(const char *s, size_t len)
 	FRESULT writeStatus = FR_OK;
 	if (writeBuffer == nullptr)
 	{
-		uint32_t time = micros();
-		writeStatus = f_write(&file, s, len, &totalBytesWritten);
-		time = micros() - time;
-		if (time > longestWriteTime)
-		{
-			longestWriteTime = time;
-		}
+		writeStatus = Store(s, len, &totalBytesWritten);
 	}
 	else
 	{
@@ -306,13 +314,7 @@ bool FileStore::Write(const char *s, size_t len)
 			if (writeBuffer->BytesLeft() == 0)
 			{
 				size_t bytesToWrite = writeBuffer->BytesStored(), bytesWritten;
-				uint32_t time = micros();
-				writeStatus = f_write(&file, writeBuffer->Data(), bytesToWrite, &bytesWritten);
-				time = micros() - time;
-				if (time > longestWriteTime)
-				{
-					longestWriteTime = time;
-				}
+				writeStatus = Store(writeBuffer->Data(), bytesToWrite, &bytesWritten);
 				writeBuffer->DataTaken();
 
 				if (bytesToWrite != bytesWritten)
@@ -345,13 +347,7 @@ bool FileStore::Flush()
 	if (writeBuffer != nullptr)
 	{
 		size_t bytesToWrite = writeBuffer->BytesStored(), bytesWritten;
-		uint32_t time = micros();
-		FRESULT writeStatus = f_write(&file, writeBuffer->Data(), bytesToWrite, &bytesWritten);
-		time = micros() - time;
-		if (time > longestWriteTime)
-		{
-			longestWriteTime = time;
-		}
+		FRESULT writeStatus = Store(writeBuffer->Data(), bytesToWrite, &bytesWritten);
 		writeBuffer->DataTaken();
 
 		if ((writeStatus != FR_OK) || (bytesToWrite != bytesWritten))
