@@ -16,7 +16,7 @@ enum class GCodeState : uint8_t
 {
 	normal,												// not doing anything and ready to process a new GCode
 
-	waitingForMoveToComplete,							// doing a special move, so we must wait for it to finish before processing another GCode
+	waitingForSpecialMoveToComplete,							// doing a special move, so we must wait for it to finish before processing another GCode
 
 	homing1,
 	homing2,
@@ -85,6 +85,7 @@ public:
 		doingFileMacro : 1,
 		waitWhileCooling : 1,
 		runningM502 : 1,
+		volumetricExtrusion : 1,
 		// Caution: these next 3 will be modified out-of-process when we use RTOS, so they will need to be individual bool variables
 		waitingForAcknowledgement : 1,
 		messageAcknowledged : 1,

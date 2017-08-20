@@ -28,6 +28,7 @@ Licence: GPL
 #include "Platform.h"		// for type EndStopHit
 #include "GCodeInput.h"
 #include "Tools/Filament.h"
+#include "FilamentSensors/FilamentSensor.h"
 #include "RestorePoint.h"
 
 const char feedrateLetter = 'F';						// GCode feedrate
@@ -85,7 +86,7 @@ public:
 		float coords[DRIVES];											// new positions for the axes, amount of movement for the extruders
 		float initialCoords[MaxAxes];									// the initial positions of the axes
 		float feedRate;													// feed rate of this move
-		float virtualExtruderPosition;									// the virtual extruder position of the current tool at the start of this move
+		float virtualExtruderPosition;									// the virtual extruder position at the start of this move
 		FilePosition filePos;											// offset in the file being printed at the start of reading this move
 		AxesBitmap xAxes;												// axes that X is mapped to
 		AxesBitmap yAxes;												// axes that Y is mapped to
@@ -113,6 +114,7 @@ public:
 	bool ReadMove(RawMove& m);											// Called by the Move class to get a movement set by the last G Code
 	void ClearMove();
 	void QueueFileToPrint(const char* fileName);						// Open a file of G Codes to run
+	void StartPrinting();												// Start printing the file already selected
 	void DeleteFile(const char* fileName);								// Does what it says
 	void GetCurrentCoordinates(StringRef& s) const;						// Write where we are into a string
 	bool DoingFileMacro() const;										// Or still busy processing a macro file?
@@ -131,7 +133,6 @@ public:
 
 	float GetSpeedFactor() const { return speedFactor * MinutesToSeconds; }	// Return the current speed factor
 	float GetExtrusionFactor(size_t extruder) { return extrusionFactors[extruder]; } // Return the current extrusion factors
-	float GetRawExtruderPosition(size_t drive) const;					// Get the actual extruder position, after adjusting the extrusion factor
 	float GetRawExtruderTotalByDrive(size_t extruder) const;			// Get the total extrusion since start of print, for one drive
 	float GetTotalRawExtrusion() const { return rawExtruderTotal; }		// Get the total extrusion since start of print, all drives
 	float GetBabyStepOffset() const { return currentBabyStepZOffset; }	// Get the current baby stepping Z offset
@@ -162,6 +163,8 @@ public:
 	size_t GetTotalAxes() const { return numTotalAxes; }
 	size_t GetVisibleAxes() const { return numVisibleAxes; }
 	size_t GetNumExtruders() const { return numExtruders; }
+
+	void FilamentError(size_t extruder, FilamentSensorStatus fstat);
 
 #ifdef DUET_NG
 	bool AutoPause();
@@ -235,7 +238,6 @@ private:
 
 	bool SetPositions(GCodeBuffer& gb);									// Deal with a G92
 	bool LoadExtrusionAndFeedrateFromGCode(GCodeBuffer& gb, int moveType); // Set up the extrusion and feed rate of a move for the Move class
-	float GetVirtualExtruderPosition() const;							// Get the virtual extruder position of the current tool
 
 	bool Push(GCodeBuffer& gb);											// Push feedrate etc on the stack
 	void Pop(GCodeBuffer& gb);											// Pop feedrate etc
@@ -374,8 +376,8 @@ private:
 	size_t numExtruders;						// How many extruders we have, or may have
 	float axisOffsets[MaxAxes];					// M206 axis offsets
 	float axisScaleFactors[MaxAxes];			// Scale XYZ coordinates by this factor (for Delta configurations)
-	float lastRawExtruderPosition[MaxExtruders]; // Extruder position of the last move fed into the Move class
-	float rawExtruderTotalByDrive[MaxExtruders]; // Total extrusion amount fed to Move class since starting print, before applying extrusion factor, per drive
+	float virtualExtruderPosition;				// Virtual extruder position of the last move fed into the Move class
+	float rawExtruderTotalByDrive[MaxExtruders]; // Extrusion amount in the last G1 command with an E parameter when in absolute extrusion mode
 	float rawExtruderTotal;						// Total extrusion amount fed to Move class since starting print, before applying extrusion factor, summed over all drives
 	float record[DRIVES];						// Temporary store for move positions
 	float distanceScale;						// MM or inches
@@ -389,7 +391,6 @@ private:
 
 	int oldToolNumber, newToolNumber;			// Tools being changed
 	int toolChangeParam;						// Bitmap of all the macros to be run during a tool change
-	AxesBitmap toolChangeMappedAxes;			// Axes that X or Y were mapped tp in either the old or the new tool
 
 	const char* eofString;						// What's at the end of an HTML file?
 	uint8_t eofStringCounter;					// Check the...
@@ -451,6 +452,10 @@ private:
 	SHA1Context hash;
 	bool StartHash(const char* filename);
 	bool AdvanceHash(StringRef &reply);
+
+	// Filament monitoring
+	FilamentSensorStatus lastFilamentError;
+	size_t lastFilamentErrorExtruder;
 
 	// Misc
 	float longWait;								// Timer for things that happen occasionally (seconds)

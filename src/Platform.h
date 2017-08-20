@@ -645,9 +645,7 @@ public:
 	// User I/O and servo support
 	bool GetFirmwarePin(int logicalPin, PinAccess access, Pin& firmwarePin, bool& invert);
 
-	// Filament sensor support
-	FilamentSensor *GetFilamentSensor(int extruder) const;
-	bool SetFilamentSensorType(int extruder, int newSensorType);
+	// For filament sensor support
 	Pin GetEndstopPin(int endstop) const;			// Get the firmware pin number for an endstop
 
 //-------------------------------------------------------------------------------------------------------
@@ -764,7 +762,6 @@ private:
 	float driveStepsPerUnit[DRIVES];
 	float instantDvs[DRIVES];
 	float pressureAdvance[MaxExtruders];
-	FilamentSensor *filamentSensors[MaxExtruders];
 	float motorCurrents[DRIVES];					// the normal motor current for each stepper driver
 	float motorCurrentFraction[DRIVES];				// the percentages of normal motor current that each driver is set to
 	AxisDriversConfig axisDrivers[MaxAxes];			// the driver numbers assigned to each axis
@@ -925,7 +922,8 @@ private:
 
 	enum class AutoSaveState : uint8_t
 	{
-		normal = 0,
+		starting = 0,
+		normal,
 		autoPaused,
 		autoShutdown
 	};

@@ -64,14 +64,21 @@ void Move::Init()
 
 	// Put the origin on the lookahead ring with default velocity in the previous position to the first one that will be used.
 	// Do this by calling SetLiveCoordinates and SetPositions, so that the motor coordinates will be correct too even on a delta.
-	float move[DRIVES];
-	for (size_t i = 0; i < DRIVES; i++)
 	{
-		move[i] = 0.0;
-		liveEndPoints[i] = 0;									// not actually right for a delta, but better than printing random values in response to M114
+		float move[DRIVES];
+		for (size_t i = 0; i < DRIVES; i++)
+		{
+			move[i] = 0.0;
+			liveEndPoints[i] = 0;								// not actually right for a delta, but better than printing random values in response to M114
+		}
+		SetLiveCoordinates(move);
+		SetPositions(move);
 	}
-	SetLiveCoordinates(move);
-	SetPositions(move);
+
+	for (size_t i = 0; i < ARRAY_SIZE(extrusionAccumulators); ++i)
+	{
+		extrusionAccumulators[i] = 0;
+	}
 
 	usingMesh = false;
 	useTaper = false;
@@ -202,12 +209,11 @@ void Move::Spin()
 					// We have a new move
 					if (simulationMode < 2)		// in simulation mode 2 and higher, we don't process incoming moves beyond this point
 					{
-						const bool doMotorMapping = !IsRawMotorMove(nextMove.moveType);
-						if (doMotorMapping)
+						if (nextMove.moveType == 0)
 						{
-							AxisAndBedTransform(nextMove.coords, nextMove.xAxes, nextMove.yAxes, nextMove.moveType == 0);
+							AxisAndBedTransform(nextMove.coords, nextMove.xAxes, nextMove.yAxes, true);
 						}
-						if (ddaRingAddPointer->Init(nextMove, doMotorMapping))
+						if (ddaRingAddPointer->Init(nextMove, !IsRawMotorMove(nextMove.moveType)))
 						{
 							ddaRingAddPointer = ddaRingAddPointer->GetNext();
 							idleCount = 0;
@@ -1021,8 +1027,13 @@ void Move::CurrentMoveCompleted()
 {
 	// Save the current motor coordinates, and the machine Cartesian coordinates if known
 	liveCoordinatesValid = currentDda->FetchEndPosition(const_cast<int32_t*>(liveEndPoints), const_cast<float *>(liveCoordinates));
-
+	const size_t numAxes = reprap.GetGCodes().GetTotalAxes();
+	for (size_t drive = numAxes; drive < DRIVES; ++drive)
+	{
+		extrusionAccumulators[drive - numAxes] += currentDda->GetStepsTaken(drive);
+	}
 	currentDda = nullptr;
+
 	ddaRingGetPointer = ddaRingGetPointer->GetNext();
 	completedMoves++;
 }
@@ -1220,6 +1231,23 @@ void Move::ResetExtruderPositions()
 		liveCoordinates[eDrive] = 0.0;
 	}
 	cpu_irq_enable();
+}
+
+int32_t Move::GetAccumulatedExtrusion(size_t extruder)
+{
+	const size_t drive = extruder + reprap.GetGCodes().GetTotalAxes();
+	if (drive < DRIVES)
+	{
+		const irqflags_t flags = cpu_irq_save();
+		const int32_t ret = extrusionAccumulators[extruder];
+		const DDA * const cdda = currentDda;						// capture volatile variable
+		const int32_t adjustment = (cdda != nullptr) ? cdda->GetStepsTaken(drive) : 0;
+		extrusionAccumulators[extruder] = -adjustment;
+		cpu_irq_restore(flags);
+		return ret + adjustment;
+	}
+
+	return 0.0;
 }
 
 void Move::SetXYBedProbePoint(size_t index, float x, float y)

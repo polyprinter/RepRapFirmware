@@ -84,6 +84,8 @@ public:
 	uint32_t GetXAxes() const { return xAxes; }
 	uint32_t GetYAxes() const { return yAxes; }
 
+	int32_t GetStepsTaken(size_t drive) const;
+
 #if SUPPORT_IOBITS
 	uint32_t GetMoveStartTime() const { return moveStartTime; }
 	uint32_t GetClocksNeeded() const { return clocksNeeded; }

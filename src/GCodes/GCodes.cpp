@@ -83,10 +83,9 @@ void GCodes::Init()
 
 	distanceScale = 1.0;
 	arcSegmentLength = DefaultArcSegmentLength;
-	rawExtruderTotal = 0.0;
+	virtualExtruderPosition = rawExtruderTotal = 0.0;
 	for (size_t extruder = 0; extruder < MaxExtruders; extruder++)
 	{
-		lastRawExtruderPosition[extruder] = 0.0;
 		rawExtruderTotalByDrive[extruder] = 0.0;
 	}
 	eofString = EOF_STRING;
@@ -151,10 +150,16 @@ void GCodes::Reset()
 	{
 		extrusionFactors[i] = volumetricExtrusionFactors[i] = 1.0;
 	}
+
 	for (size_t i = 0; i < MaxAxes; ++i)
 	{
 		axisOffsets[i] = 0.0;
 		axisScaleFactors[i] = 1.0;
+	}
+
+	for (size_t i = 0; i < DRIVES; ++i)
+	{
+		moveBuffer.coords[i] = 0.0;						// clear out all axis and extruder coordinates
 	}
 
 	ClearMove();
@@ -167,11 +172,6 @@ void GCodes::Reset()
 
 	reprap.GetMove().GetKinematics().GetAssumedInitialPosition(numVisibleAxes, moveBuffer.coords);
 	ToolOffsetInverseTransform(moveBuffer.coords, currentUserPosition);
-
-	for (size_t i = numTotalAxes; i < DRIVES; ++i)
-	{
-		moveBuffer.coords[i] = 0.0;
-	}
 
 	pauseRestorePoint.Init();
 	toolChangeRestorePoint.Init();
@@ -195,6 +195,7 @@ void GCodes::Reset()
 	moveBuffer.filePos = noFilePosition;
 	lastEndstopStates = platform.GetAllEndstopStates();
 	firmwareUpdateModuleMap = 0;
+	lastFilamentError = FilamentSensorStatus::ok;
 
 	codeQueue->Clear();
 	cancelWait = isWaiting = displayNoToolWarning = displayDeltaNotHomedWarning = false;
@@ -296,7 +297,7 @@ void GCodes::Spin()
 
 		switch (gb.GetState())
 		{
-		case GCodeState::waitingForMoveToComplete:
+		case GCodeState::waitingForSpecialMoveToComplete:
 			if (LockMovementAndWaitForStandstill(gb))		// movement should already be locked, but we need to wait for standstill and fetch the current position
 			{
 				// Check whether we made any G1 S3 moves and need to set the axis limits
@@ -398,7 +399,6 @@ void GCodes::Spin()
 
 		case GCodeState::toolChange1:		// Release the old tool (if any), then run tpre for the new tool
 		case GCodeState::m109ToolChange1:	// Release the old tool (if any), then run tpre for the new tool
-			toolChangeMappedAxes = reprap.GetCurrentXAxes() | reprap.GetCurrentYAxes();
 			{
 				const Tool * const oldTool = reprap.GetCurrentTool();
 				if (oldTool != nullptr)
@@ -422,8 +422,7 @@ void GCodes::Spin()
 		case GCodeState::toolChange2:		// Select the new tool (even if it doesn't exist - that just deselects all tools) and run tpost
 		case GCodeState::m109ToolChange2:	// Select the new tool (even if it doesn't exist - that just deselects all tools) and run tpost
 			reprap.SelectTool(newToolNumber);
-			toolChangeMappedAxes |= reprap.GetCurrentXAxes() | reprap.GetCurrentYAxes();
-			GetCurrentUserPosition();									// get the new position of X and Y in case they are mapped, and the new position of Z
+			GetCurrentUserPosition();									// get the actual position of the new tool
 
 			gb.AdvanceState();
 			if (AllAxesAreHomed())
@@ -438,14 +437,8 @@ void GCodes::Spin()
 
 		case GCodeState::toolChangeComplete:
 		case GCodeState::m109ToolChangeComplete:
-			// Restore the desired user position, apart from any additional axes that were used for mapping XY
- 			for (size_t axis = 0; axis < MaxAxes; ++axis)
-			{
-				if (axis <= Z_AXIS || !IsBitSet(toolChangeMappedAxes, axis))
-				{
-					currentUserPosition[axis] = toolChangeRestorePoint.moveCoords[axis];
-				}
-			}
+			// Restore the original Z axis user position, so that different tool Z offsets work even if the first move after the tool change doesn't have a Z coordinate
+			currentUserPosition[Z_AXIS] = toolChangeRestorePoint.moveCoords[Z_AXIS];
 			gb.MachineState().feedrate = toolChangeRestorePoint.feedRate;
 			// We don't restore the default fan speed in case the user wants to use a different one for the new tool
 			doingToolChange = false;
@@ -539,17 +532,9 @@ void GCodes::Spin()
 				{
 					platform.SetFanValue(i, pausedFanSpeeds[i]);
 				}
-				for (size_t drive = numTotalAxes; drive < DRIVES; ++drive)
-				{
-					lastRawExtruderPosition[drive - numTotalAxes] = pauseRestorePoint.moveCoords[drive];	// reset the extruder position in case we are receiving absolute extruder moves
-				}
+				virtualExtruderPosition = pauseRestorePoint.virtualExtruderPosition;	// reset the extruder position in case we are receiving absolute extruder moves
 				moveBuffer.virtualExtruderPosition = pauseRestorePoint.virtualExtruderPosition;
 				fileGCode->MachineState().feedrate = pauseRestorePoint.feedRate;
-				Tool * const ct = reprap.GetCurrentTool();
-				if (ct != nullptr)
-				{
-					ct->virtualExtruderPosition = pauseRestorePoint.virtualExtruderPosition;
-				}
 				isPaused = false;
 				reply.copy("Printing resumed");
 				gb.SetState(GCodeState::normal);
@@ -1570,6 +1555,27 @@ void GCodes::CheckTriggers()
 			DoFileMacro(*daemonGCode, filename.Pointer(), true);
 		}
 	}
+	else if (   lastFilamentError != FilamentSensorStatus::ok		// check for a filament error
+			 && reprap.GetPrintMonitor().IsPrinting()
+			 && !isPaused
+			 && LockMovement(*daemonGCode)							// need to lock movement before executing the pause macro
+		 	)
+	{
+		scratchString.printf("Extruder %u reports %s", lastFilamentErrorExtruder, FilamentSensor::GetErrorMessage(lastFilamentError));
+		platform.SendAlert(GENERIC_MESSAGE, scratchString.Pointer(), "Filament error", 1, 0.0, false);
+		DoPause(*daemonGCode, false);
+		lastFilamentError = FilamentSensorStatus::ok;
+	}
+}
+
+// Log a filament error. Called by Platform when a filament sensor reports an incorrect status and a print is in progress.
+void GCodes::FilamentError(size_t extruder, FilamentSensorStatus fstat)
+{
+	if (lastFilamentError == FilamentSensorStatus::ok)
+	{
+		lastFilamentErrorExtruder = extruder;
+		lastFilamentError = fstat;
+	}
 }
 
 // Execute an emergency stop
@@ -1648,7 +1654,7 @@ void GCodes::DoPause(GCodeBuffer& gb, bool isAuto)
 		{
 			// We were not able to skip any moves, and if there is a move waiting then we can't skip that one either
 			pauseRestorePoint.feedRate = fileGCode->MachineState().feedrate;
-			pauseRestorePoint.virtualExtruderPosition = GetVirtualExtruderPosition();
+			pauseRestorePoint.virtualExtruderPosition = virtualExtruderPosition;
 
 			// TODO: when we use RTOS there is a possible race condition in the following,
 			// because we might try to pause when a waiting move has just been added but before the gcode buffer has been re-initialised ready for the next command
@@ -1668,11 +1674,7 @@ void GCodes::DoPause(GCodeBuffer& gb, bool isAuto)
 			pauseRestorePoint.moveCoords[axis] = currentUserPosition[axis];
 		}
 
-		// The extruder positions in the pause restore point currently give the amount of extrusion skipped. Replaced by the extruder position at the pause point.
-		for (size_t drive = numTotalAxes; drive < DRIVES; ++drive)
-		{
-			pauseRestorePoint.moveCoords[drive] = lastRawExtruderPosition[drive - numTotalAxes] - pauseRestorePoint.moveCoords[drive];
-		}
+		pauseRestorePoint.virtualExtruderPosition = virtualExtruderPosition;
 
 		// If we skipped any moves, reset the file pointer to the start of the first move we need to replay
 		// The following could be delayed until we resume the print
@@ -1814,7 +1816,7 @@ void GCodes::SaveResumeInfo()
 				time_t timeNow = reprap.GetPlatform().GetDateTime();
 				const struct tm * const timeInfo = gmtime(&timeNow);
 				buf.catf(" at %04u-%02u-%02u %02u:%02u",
-								timeInfo->tm_year + 1900, timeInfo->tm_mon, timeInfo->tm_mday, timeInfo->tm_hour, timeInfo->tm_min);
+								timeInfo->tm_year + 1900, timeInfo->tm_mon + 1, timeInfo->tm_mday, timeInfo->tm_hour, timeInfo->tm_min);
 			}
 			buf.cat('\n');
 			bool ok = f->Write(buf.Pointer())
@@ -1836,6 +1838,23 @@ void GCodes::SaveResumeInfo()
 			{
 				buf.printf("M116\nM290 S%.3f\nM23 %s\nM26 S%u\n", currentBabyStepZOffset, printingFilename, pauseRestorePoint.filePos);
 				ok = f->Write(buf.Pointer());								// write baby stepping offset, filename and file position
+			}
+			if (ok && fileGCode->OriginalMachineState().volumetricExtrusion)
+			{
+				buf.copy("M200 ");
+				char c = 'D';
+				for (size_t i = 0; i < numExtruders; ++i)
+				{
+					buf.catf("%c%.03f", c, volumetricExtrusionFactors[i]);
+					c = ':';
+				}
+				buf.cat('\n');
+				ok = f->Write(buf.Pointer());								// write volumetric extrusion factors
+			}
+			if (ok)
+			{
+				buf.printf("G92 E%.5f\n%s\n", virtualExtruderPosition, (fileGCode->OriginalMachineState().drivesRelative) ? "M83" : "M82");
+				ok = f->Write(buf.Pointer());								// write virtual extruder position and absolute/relative extrusion flag
 			}
 			if (ok)
 			{
@@ -1983,51 +2002,58 @@ bool GCodes::LoadExtrusionAndFeedrateFromGCode(GCodeBuffer& gb, int moveType)
 				if (gb.MachineState().drivesRelative)
 				{
 					requestedExtrusionAmount = moveArg;
-					tool->virtualExtruderPosition += moveArg;
 				}
 				else
 				{
-					requestedExtrusionAmount = moveArg - tool->virtualExtruderPosition;
-					tool->virtualExtruderPosition = moveArg;
+					requestedExtrusionAmount = moveArg - virtualExtruderPosition;
+					virtualExtruderPosition = moveArg;
 				}
 
 				for (size_t eDrive = 0; eDrive < eMoveCount; eDrive++)
 				{
 					const int drive = tool->Drive(eDrive);
-					const float extrusionAmount = requestedExtrusionAmount * tool->GetMix()[eDrive];
-					lastRawExtruderPosition[drive] += extrusionAmount;
+					float extrusionAmount = requestedExtrusionAmount * tool->GetMix()[eDrive];
+					if (gb.MachineState().volumetricExtrusion)
+					{
+						extrusionAmount *= volumetricExtrusionFactors[drive];
+					}
 					rawExtruderTotalByDrive[drive] += extrusionAmount;
-					rawExtruderTotal += extrusionAmount;
-					moveBuffer.coords[drive + numTotalAxes] = extrusionAmount * extrusionFactors[drive] * volumetricExtrusionFactors[drive];
+					if (!doingToolChange)			// don't count extrusion done in tool change macros towards total filament consumed, it distorts the print progress
+					{
+						rawExtruderTotal += extrusionAmount;
+					}
+					moveBuffer.coords[drive + numTotalAxes] = extrusionAmount * extrusionFactors[drive];
 				}
-
 			}
 			else
 			{
-				// Individual extrusion amounts have been provided
-				for (size_t eDrive = 0; eDrive < eMoveCount; eDrive++)
+				// Individual extrusion amounts have been provided. This is supported in relative extrusion mode only.
+				if (gb.MachineState().drivesRelative)
 				{
-					const int drive = tool->Drive(eDrive);
-					const float moveArg = eMovement[eDrive] * distanceScale;
-					const float extrusionAmount = (gb.MachineState().drivesRelative)
-												? moveArg
-												: moveArg - lastRawExtruderPosition[drive];
-					lastRawExtruderPosition[drive] += extrusionAmount;
-					rawExtruderTotalByDrive[drive] += extrusionAmount;
-					rawExtruderTotal += extrusionAmount;
-					moveBuffer.coords[drive + numTotalAxes] = extrusionAmount * extrusionFactors[drive] * volumetricExtrusionFactors[drive];
+					for (size_t eDrive = 0; eDrive < eMoveCount; eDrive++)
+					{
+						const int drive = tool->Drive(eDrive);
+						float extrusionAmount = eMovement[eDrive] * distanceScale;
+						if (gb.MachineState().volumetricExtrusion)
+						{
+							extrusionAmount *= volumetricExtrusionFactors[drive];
+						}
+						rawExtruderTotalByDrive[drive] += extrusionAmount;
+						if (!doingToolChange)		// don't count extrusion done in tool change macros towards total filament consumed, it distorts the print progress
+						{
+							rawExtruderTotal += extrusionAmount;
+						}
+						moveBuffer.coords[drive + numTotalAxes] = extrusionAmount * extrusionFactors[drive] * volumetricExtrusionFactors[drive];
+					}
+				}
+				else
+				{
+					platform.Message(GENERIC_MESSAGE, "Error: multiple E parameters in G1 commands are not supported in absolute extrusion mode\n");
 				}
 			}
 		}
 	}
 	return true;
-}
-
-// Get the virtual extruder position of the current tool
-float GCodes::GetVirtualExtruderPosition() const
-{
-	const Tool * const ct = reprap.GetCurrentTool();
-	return (ct == nullptr) ? 0.0 : ct->virtualExtruderPosition;
 }
 
 // Execute a straight move returning true if an error was written to 'reply'
@@ -2042,14 +2068,15 @@ bool GCodes::DoStraightMove(GCodeBuffer& gb, StringRef& reply)
 	moveBuffer.yAxes = reprap.GetCurrentYAxes();
 	moveBuffer.usePressureAdvance = false;
 	moveBuffer.filePos = (&gb == fileGCode) ? gb.GetFilePosition(fileInput->BytesCached()) : noFilePosition;
-	moveBuffer.virtualExtruderPosition = GetVirtualExtruderPosition();
+	moveBuffer.virtualExtruderPosition = virtualExtruderPosition;
 	axesToSenseLength = 0;
 
 	// Check to see if the move is a 'homing' move that endstops are checked on.
 	if (gb.Seen('S'))
 	{
 		// PolyPrinter TODO: prevent XY homing moves if there had been bed contact
-		int ival = gb.GetIValue();
+		const int ival = gb.GetIValue();
+
 		if (ival == 1 || ival == 2 || ival == 3)
 		{
 			moveBuffer.moveType = ival;
@@ -2131,9 +2158,11 @@ bool GCodes::DoStraightMove(GCodeBuffer& gb, StringRef& reply)
 	}
 #endif
 
-	if (reprap.GetMove().IsRawMotorMove(moveBuffer.moveType))
+	if (moveBuffer.moveType != 0)
 	{
-		// This is a raw motor move, so we need the current raw motor positions in moveBuffer.coords
+		// This may be a raw motor move, in which case we need the current raw motor positions in moveBuffer.coords.
+		// If it isn't a raw motor move, it will still be applied without axis or bed transform applies,
+		// so make sure the initial coordinates don't have those either to avoid unwanted Z movement.
 		reprap.GetMove().GetCurrentUserPosition(moveBuffer.coords, moveBuffer.moveType, reprap.GetCurrentXAxes(), reprap.GetCurrentYAxes());
 	}
 
@@ -2179,10 +2208,9 @@ bool GCodes::DoStraightMove(GCodeBuffer& gb, StringRef& reply)
 				currentUserPosition[axis] = moveArg;
 			}
 		}
-		else if (rp != nullptr)
-		{
-			currentUserPosition[axis] = rp->moveCoords[axis];
-		}
+		// If a restore point is being used (G1 R parameter) then we used to set any coordinates that were not mentioned to the restore point values.
+		// But that causes issues for tool change on IDEX machines because we end up restoring the U axis when we shouldn't.
+		// So we no longer do that, and the user must mention any axes that he wants restored e.g. G1 R2 X0 Y0.
 	}
 
 	// Deal with extrusion and feed rate
@@ -2194,7 +2222,7 @@ bool GCodes::DoStraightMove(GCodeBuffer& gb, StringRef& reply)
 	{
 		// It's a raw motor move, so do it in a single segment and wait for it to complete
 		segmentsLeft = 1;
-		gb.SetState(GCodeState::waitingForMoveToComplete);
+		gb.SetState(GCodeState::waitingForSpecialMoveToComplete);
 	}
 	else if (!includesAxisMovement)
 	{
@@ -2334,7 +2362,7 @@ bool GCodes::DoArcMove(GCodeBuffer& gb, bool clockwise)
 	moveBuffer.canPauseAfter = moveBuffer.canPauseBefore = true;
 	moveBuffer.xAxes = reprap.GetCurrentXAxes();
 	moveBuffer.yAxes = reprap.GetCurrentYAxes();
-	moveBuffer.virtualExtruderPosition = GetVirtualExtruderPosition();
+	moveBuffer.virtualExtruderPosition = virtualExtruderPosition;
 	moveBuffer.endStopsToCheck = 0;
 	moveBuffer.usePressureAdvance = true;
 	moveBuffer.filePos = (&gb == fileGCode) ? gb.GetFilePosition(fileInput->BytesCached()) : noFilePosition;
@@ -2518,33 +2546,10 @@ bool GCodes::SetPositions(GCodeBuffer& gb)
 		}
 	}
 
-	// Handle any E parameter in the G92 command. If we get an error, ignore it and do the axes anyway.
+	// Handle any E parameter in the G92 command
 	if (gb.Seen(extrudeLetter))
 	{
-		Tool* const tool = reprap.GetCurrentTool();
-		if (tool != nullptr)
-		{
-			const size_t eMoveCount = tool->DriveCount();
-			if (eMoveCount != 0)
-			{
-				float eMovement[MaxExtruders];
-				size_t mc = eMoveCount;
-				gb.GetFloatArray(eMovement, mc, false);
-				if (mc == 1)
-				{
-					// The tool has multiple extruders, but only one position was given. Treat it as the mix position.
-					tool->virtualExtruderPosition = eMovement[0] * distanceScale;
-					lastRawExtruderPosition[tool->Drive(0)] = eMovement[0] * distanceScale;
-				}
-				else
-				{
-					for (size_t eDrive = 0; eDrive < eMoveCount; eDrive++)
-					{
-						lastRawExtruderPosition[tool->Drive(eDrive)] = eMovement[eDrive] * distanceScale;
-					}
-				}
-			}
-		}
+		virtualExtruderPosition = gb.GetFValue() * distanceScale;
 	}
 
 
@@ -3393,6 +3398,13 @@ void GCodes::GetCurrentCoordinates(StringRef& s) const
 	{
 		s.catf(" %d", reprap.GetMove().GetEndPoint(i));
 	}
+
+	// Add the user coordinates because they may be different from the machine coordinates under some conditions
+	s.cat(" User");
+	for (size_t i = 0; i < numVisibleAxes; ++i)
+	{
+		s.catf(" %.1f", currentUserPosition[i]);
+	}
 }
 
 bool GCodes::OpenFileToWrite(GCodeBuffer& gb, const char* directory, const char* fileName, const FilePosition size, const bool binaryWrite, const uint32_t fileCRC32)
@@ -3520,12 +3532,13 @@ void GCodes::QueueFileToPrint(const char* fileName)
 			CancelPrint();
 		}
 
-		fileGCode->SetToolNumberAdjust(0);	// clear tool number adjustment
+		fileGCode->SetToolNumberAdjust(0);								// clear tool number adjustment
+		fileGCode->MachineState().volumetricExtrusion = false;			// default to non-volumetric extrusion
 
 		// Reset all extruder positions when starting a new print
+		virtualExtruderPosition = 0.0;
 		for (size_t extruder = 0; extruder < MaxExtruders; extruder++)
 		{
-			lastRawExtruderPosition[extruder] = 0.0;
 			rawExtruderTotalByDrive[extruder] = 0.0;
 		}
 		rawExtruderTotal = 0.0;
@@ -3538,6 +3551,15 @@ void GCodes::QueueFileToPrint(const char* fileName)
 	{
 		platform.MessageF(GENERIC_MESSAGE, "GCode file \"%s\" not found\n", fileName);
 	}
+}
+
+// Start printing the file already selected
+void GCodes::StartPrinting()
+{
+	fileGCode->OriginalMachineState().fileState.MoveFrom(fileToPrint);
+	fileInput->Reset();
+	lastFilamentError = FilamentSensorStatus::ok;
+	reprap.GetPrintMonitor().StartedPrint();
 }
 
 void GCodes::DeleteFile(const char* fileName)
@@ -4433,12 +4455,6 @@ bool GCodes::UnloadFilament(GCodeBuffer& gb, StringRef& reply, bool &error)
 	return true;
 }
 
-// Return the amount of filament extruded
-float GCodes::GetRawExtruderPosition(size_t extruder) const
-{
-	return (extruder < numExtruders) ? lastRawExtruderPosition[extruder] : 0.0;
-}
-
 float GCodes::GetRawExtruderTotalByDrive(size_t extruder) const
 {
 	return (extruder < numExtruders) ? rawExtruderTotalByDrive[extruder] : 0.0;
@@ -4523,13 +4539,8 @@ void GCodes::SavePosition(RestorePoint& rp, const GCodeBuffer& gb) const
 		rp.moveCoords[axis] = currentUserPosition[axis];
 	}
 
-	for (size_t drive = numTotalAxes; drive < DRIVES; ++drive)
-	{
-		rp.moveCoords[drive] = lastRawExtruderPosition[drive - numTotalAxes];	// get current extruder positions into pausedMoveBuffer
-	}
-
 	rp.feedRate = gb.MachineState().feedrate;
-	rp.virtualExtruderPosition = GetVirtualExtruderPosition();
+	rp.virtualExtruderPosition = virtualExtruderPosition;
 
 #if SUPPORT_IOBITS
 	rp.ioBits = moveBuffer.ioBits;

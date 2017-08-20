@@ -51,6 +51,7 @@ public:
 	void ReduceSpeed(const DDA& dda, float inverseSpeedFactor);
 	void DebugPrint(char c, bool withDelta) const;
 	int32_t GetNetStepsLeft() const;
+	int32_t GetNetStepsTaken() const;
 
 	static void InitialAllocate(unsigned int num);
 	static int NumFree() { return numFree; }
@@ -149,12 +150,13 @@ public:
 };
 
 // Calculate and store the time since the start of the move when the next step for the specified DriveMovement is due.
-// Return true if there are more steps to do.
+// Return true if there are more steps to do. When finished, leave nextStep == totalSteps + 1.
 // This is also used for extruders on delta machines.
 // We inline this part to speed things up when we are doing double/quad/octal stepping.
 inline bool DriveMovement::CalcNextStepTimeCartesian(const DDA &dda, bool live)
 {
-	if (nextStep < totalSteps)
+	++nextStep;
+	if (nextStep <= totalSteps)
 	{
 #define POLYPRINTER_FAST_STEP
 #ifdef POLYPRINTER_FAST_STEP
@@ -193,7 +195,6 @@ inline bool DriveMovement::CalcNextStepTimeCartesian(const DDA &dda, bool live)
 		}
 
 #else
-		++nextStep;
 		if (stepsTillRecalc != 0)
 		{
 			--stepsTillRecalc;			// we are doing double/quad/octal stepping
@@ -208,10 +209,11 @@ inline bool DriveMovement::CalcNextStepTimeCartesian(const DDA &dda, bool live)
 }
 
 // Calculate the time since the start of the move when the next step for the specified DriveMovement is due
-// Return true if there are more steps to do
+// Return true if there are more steps to do. When finished, leave nextStep == totalSteps + 1.
 inline bool DriveMovement::CalcNextStepTimeDelta(const DDA &dda, bool live)
 {
-	if (nextStep < totalSteps)
+	++nextStep;
+	if (nextStep <= totalSteps)
 	{
 		++nextStep;
 #ifdef POLYPRINTER_FAST_STEP
@@ -304,15 +306,40 @@ inline bool DriveMovement::CalcNextStepTimeVibration(const DDA &dda, bool live)
 #endif
 
 // Return the number of net steps left for the move in the forwards direction.
+// We have already taken nextSteps - 1 steps, unless nextStep is zero.
 inline int32_t DriveMovement::GetNetStepsLeft() const
 {
-	const int32_t netStepsLeft =
-			(  (nextStep >= reverseStartStep || reverseStartStep >= totalSteps)
-			 ? totalSteps									// no reverse due, or we have already reversed
-			 : 2 * reverseStartStep - totalSteps			// we have yet to reverse
-			)
-			- nextStep + 1;
+	int32_t netStepsLeft;
+	if (reverseStartStep > totalSteps)		// if no reverse phase
+	{
+		netStepsLeft = (nextStep == 0) ? (int32_t)totalSteps : (int32_t)totalSteps - (int32_t)nextStep + 1;
+	}
+	else if (nextStep >= reverseStartStep)
+	{
+		netStepsLeft = (int32_t)totalSteps - (int32_t)nextStep + 1;
+	}
+	else
+	{
+		const int32_t totalNetSteps = (int32_t)(2 * reverseStartStep) - (int32_t)totalSteps - 2;
+		netStepsLeft = (nextStep == 0) ? totalNetSteps : totalNetSteps - (int32_t)nextStep + 1;
+	}
 	return (direction) ? netStepsLeft : -netStepsLeft;
+}
+
+// Return the number of net steps already taken for the move in the forwards direction.
+// We have already taken nextSteps - 1 steps, unless nextStep is zero.
+inline int32_t DriveMovement::GetNetStepsTaken() const
+{
+	int32_t netStepsTaken;
+	if (nextStep < reverseStartStep || reverseStartStep > totalSteps)				// if no reverse phase, or not started it yet
+	{
+		netStepsTaken = (nextStep == 0) ? 0 : (int32_t)nextStep - 1;
+	}
+	else
+	{
+		netStepsTaken = (int32_t)nextStep - (int32_t)(2 * reverseStartStep) + 2;	// allowing for direction having changed
+	}
+	return (direction) ? netStepsTaken : -netStepsTaken;
 }
 
 #endif /* DRIVEMOVEMENT_H_ */

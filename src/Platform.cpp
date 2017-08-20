@@ -24,6 +24,7 @@
 #include "Heating/Heat.h"
 #include "Movement/DDA.h"
 #include "Movement/Move.h"
+#include "PrintMonitor.h"
 #include "FilamentSensors/FilamentSensor.h"
 #include "Network.h"
 #include "RepRap.h"
@@ -497,7 +498,6 @@ void Platform::Init()
 	{
 		extruderDrivers[extr] = (uint8_t)(extr + MinAxes);		// set up default extruder drive mapping
 		SetPressureAdvance(extr, 0.0);							// no pressure advance
-		filamentSensors[extr] = nullptr;						// no filament sensor
 	}
 
 #ifdef DUET_NG
@@ -543,7 +543,7 @@ void Platform::Init()
 	temperatureShutdownDrivers = temperatureWarningDrivers = shortToGroundDrivers = openLoadDrivers = 0;
 	onBoardDriversFanRunning = offBoardDriversFanRunning = false;
 	autoSaveEnabled = false;
-	autoSaveState = AutoSaveState::normal;
+	autoSaveState = AutoSaveState::starting;
 #endif
 
 	// Allow extrusion ancillary PWM to use FAN0 even if FAN0 has not been disabled, for backwards compatibility
@@ -705,7 +705,7 @@ void Platform::InitZProbe()
 	case 4:
 		AnalogInEnableChannel(zProbeAdcChannel, false);
 		pinMode(zProbePin, INPUT_PULLUP);
-		pinMode(endStopPins[E0_AXIS], INPUT_PULLUP);
+		pinMode(endStopPins[E0_AXIS], INPUT);
 		pinMode(zProbeModulationPin, OUTPUT_LOW);		// we now set the modulation output high during probing only when using probe types 4 and higher
 		break;
 
@@ -719,7 +719,7 @@ void Platform::InitZProbe()
 	case 6:
 		AnalogInEnableChannel(zProbeAdcChannel, false);
 		pinMode(zProbePin, INPUT_PULLUP);
-		pinMode(endStopPins[E0_AXIS + 1], INPUT_PULLUP);
+		pinMode(endStopPins[E0_AXIS + 1], INPUT);
 		pinMode(zProbeModulationPin, OUTPUT_LOW);		// we now set the modulation output high during probing only when using probe types 4 and higher
 		break;
 
@@ -1392,14 +1392,17 @@ void Platform::Spin()
 
 	// Check the MCU max and min temperatures
 #ifndef __RADDS__
-	const uint32_t currentMcuTemperature = cpuTemperatureFilter.GetSum();
-	if (currentMcuTemperature > highestMcuTemperature)
+	if (cpuTemperatureFilter.IsValid())
 	{
-		highestMcuTemperature= currentMcuTemperature;
-	}
-	if (currentMcuTemperature < lowestMcuTemperature && currentMcuTemperature != 0)
-	{
-		lowestMcuTemperature = currentMcuTemperature;
+		const uint32_t currentMcuTemperature = cpuTemperatureFilter.GetSum();
+		if (currentMcuTemperature > highestMcuTemperature)
+		{
+			highestMcuTemperature= currentMcuTemperature;
+		}
+		if (currentMcuTemperature < lowestMcuTemperature)
+		{
+			lowestMcuTemperature = currentMcuTemperature;
+		}
 	}
 #endif
 
@@ -1494,7 +1497,8 @@ void Platform::Spin()
 			bool reported = false;
 			ReportDrivers(shortToGroundDrivers, "Error: Short-to-ground", reported);
 			ReportDrivers(temperatureShutdownDrivers, "Error: Over temperature shutdown", reported);
-//			ReportDrivers(openLoadDrivers, "Error: Open load", reported);
+			// Don't report open load because we get too many spurious open load reports
+			//ReportDrivers(openLoadDrivers, "Error: Open load", reported);
 
 			// Don't want about a hot driver if we recently turned on a fan to cool it
 			if (temperatureWarningDrivers != 0)
@@ -1541,6 +1545,13 @@ void Platform::Spin()
 	{
 		switch (autoSaveState)
 		{
+		case AutoSaveState::starting:
+			if (currentVin >= autoResumeReading)
+			{
+				autoSaveState = AutoSaveState::normal;
+			}
+			break;
+
 		case AutoSaveState::normal:
 			if (currentVin < autoPauseReading)
 			{
@@ -1583,15 +1594,6 @@ void Platform::Spin()
 		}
 	}
 #endif
-
-	// Filament sensors
-	for (size_t i = 0; i < MaxExtruders; ++i)
-	{
-		if (filamentSensors[i] != nullptr)
-		{
-			filamentSensors[i]->Poll();
-		}
-	}
 
 	ClassReport(longWait);
 }
@@ -1831,6 +1833,12 @@ void Platform::InitialiseInterrupts()
 	NVIC_SetPriority(PIOE_IRQn, NvicPriorityPins);
 #endif
 
+#if SAM3XA
+	NVIC_SetPriority(UOTGHS_IRQn, NvicPriorityUSB);
+#endif
+#if SAM4E
+	NVIC_SetPriority(UDP_IRQn, NvicPriorityUSB);
+#endif
 	NVIC_SetPriority(TWI1_IRQn, NvicPriorityTwi);
 
 	// Interrupt for 4-pin PWM fan sense line
@@ -1846,7 +1854,7 @@ void Platform::InitialiseInterrupts()
 	// Set up the timeout of the regulator watchdog, and set up the backup watchdog if there is one
 	// The clock frequency for both watchdogs is 32768/128 = 256Hz
 	const uint16_t timeout = 32768/128;												// set watchdog timeout to 1 second (max allowed value is 4095 = 16 seconds)
-	wdt_init(WDT, WDT_MR_WDRSTEN, timeout,timeout);									// reset the processor on a watchdog fault
+	wdt_init(WDT, WDT_MR_WDRSTEN, timeout, timeout);								// reset the processor on a watchdog fault
 
 	active = true;							// this enables the tick interrupt, which keeps the watchdog happy
 }
@@ -2091,15 +2099,6 @@ void Platform::Diagnostics(MessageType mtype)
 				);
 	}
 #endif
-
-	// Filament sensors
-	for (size_t i = 0; i < MaxExtruders; ++i)
-	{
-		if (filamentSensors[i] != nullptr)
-		{
-			filamentSensors[i]->Diagnostics(mtype, i);
-		}
-	}
 
 	// Show current RTC time
 	Message(mtype, "Date/time: ");
@@ -3162,6 +3161,7 @@ void Platform::SendAlert(MessageType mt, const char *message, const char *title,
 	{
 	case HTTP_MESSAGE:
 	case AUX_MESSAGE:
+	case GENERIC_MESSAGE:
 		// Make the RepRap class cache this message until it's picked up by the HTTP clients and/or PanelDue
 		reprap.SetAlert(message, title, sParam, tParam, zParam);
 		break;
@@ -3453,38 +3453,11 @@ bool Platform::SetExtrusionAncilliaryPwmPin(int logicalPin)
 	return GetFirmwarePin(logicalPin, PinAccess::pwm, extrusionAncilliaryPwmFirmwarePin, extrusionAncilliaryPwmInvert);
 }
 
-// Filament sensor support
-// Get the filament sensor object for an extruder, or nullptr if there isn't one
-FilamentSensor *Platform::GetFilamentSensor(int extruder) const
-{
-	return (extruder >= 0 && extruder < (int)MaxExtruders) ? filamentSensors[extruder] : nullptr;
-}
-
-// Set the filament sensor type for an extruder, returning true if it has changed.
-// Passing newSensorType as 0 sets no sensor.
-bool Platform::SetFilamentSensorType(int extruder, int newSensorType)
-{
-	if (extruder >= 0 && extruder < (int)MaxExtruders)
-	{
-		FilamentSensor*& sensor = filamentSensors[extruder];
-		const int oldSensorType = (sensor == nullptr) ? 0 : sensor->GetType();
-		if (newSensorType != oldSensorType)
-		{
-			delete sensor;
-			sensor = FilamentSensor::Create(newSensorType);
-			return true;
-		}
-	}
-
-	return false;
-}
-
 // Get the firmware pin number for an endstop, or NoPin if it is out of range
 Pin Platform::GetEndstopPin(int endstop) const
 {
 	return (endstop >= 0 && endstop < (int)ARRAY_SIZE(endStopPins)) ? endStopPins[endstop] : NoPin;
 }
-
 
 #if SUPPORT_INKJET
 

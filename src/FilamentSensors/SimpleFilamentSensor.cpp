@@ -13,7 +13,7 @@ SimpleFilamentSensor::SimpleFilamentSensor(int type) : FilamentSensor(type), hig
 {
 }
 
-// Configure this sensor returning true if error
+// Configure this sensor, returning true if error and setting 'seen' if we processed any configuration parameters
 bool SimpleFilamentSensor::Configure(GCodeBuffer& gb, StringRef& reply, bool& seen)
 {
 	if (ConfigurePin(gb, reply, seen))
@@ -23,7 +23,7 @@ bool SimpleFilamentSensor::Configure(GCodeBuffer& gb, StringRef& reply, bool& se
 
 	if (seen)
 	{
-		Poll();
+		Check(true, 0.0);
 	}
 	else
 	{
@@ -49,10 +49,17 @@ void SimpleFilamentSensor::Poll()
 
 // Call the following at intervals to check the status. This is only called when extrusion is in progress or imminent.
 // 'filamentConsumed' is the net amount of extrusion since the last call to this function.
-// Return nullptr if everything is OK, else an error reason to include in a message.
-const char *SimpleFilamentSensor::Check(float filamentConsumed)
+FilamentSensorStatus SimpleFilamentSensor::Check(bool full, float filamentConsumed)
 {
-	return (filamentPresent) ? nullptr : "no filament";
+	Poll();
+	return (filamentPresent) ? FilamentSensorStatus::ok : FilamentSensorStatus::noFilament;
+}
+
+// Clear the measurement state - called when we are not printing a file. Return the present/not present status if available.
+FilamentSensorStatus SimpleFilamentSensor::Clear(bool full)
+{
+	Poll();
+	return (filamentPresent) ? FilamentSensorStatus::ok : FilamentSensorStatus::noFilament;
 }
 
 // Print diagnostic info for this sensor

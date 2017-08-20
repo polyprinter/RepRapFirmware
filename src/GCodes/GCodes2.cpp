@@ -521,10 +521,7 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 
 					if (code == 32)
 					{
-						fileToPrint.Seek(fileOffsetToPrint);
-						fileGCode->OriginalMachineState().fileState.MoveFrom(fileToPrint);
-						fileInput->Reset();
-						reprap.GetPrintMonitor().StartedPrint();
+						StartPrinting();
 					}
 				}
 				else
@@ -556,10 +553,15 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 		}
 		else
 		{
-			fileToPrint.Seek(fileOffsetToPrint);
-			fileGCode->OriginalMachineState().fileState.MoveFrom(fileToPrint);
-			fileInput->Reset();
-			reprap.GetPrintMonitor().StartedPrint();
+			if (fileOffsetToPrint != 0)
+			{
+				// We executed M23 to set the file offset, which normally means that we are executing resurrect.g.
+				// We need to copy the absolute/relative and volumetric extrusion flags over
+				fileGCode->OriginalMachineState().drivesRelative = gb.MachineState().drivesRelative;
+				fileGCode->OriginalMachineState().volumetricExtrusion = gb.MachineState().volumetricExtrusion;
+				fileToPrint.Seek(fileOffsetToPrint);
+			}
+			StartPrinting();
 		}
 		break;
 
@@ -801,25 +803,11 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 		break;
 
 	case 82:	// Use absolute extruder positioning
-		if (gb.MachineState().drivesRelative)		// don't reset the absolute extruder position if it was already absolute
-		{
-			for (size_t extruder = 0; extruder < MaxExtruders; extruder++)
-			{
-				lastRawExtruderPosition[extruder] = 0.0;
-			}
-			gb.MachineState().drivesRelative = false;
-		}
+		gb.MachineState().drivesRelative = false;
 		break;
 
 	case 83:	// Use relative extruder positioning
-		if (!gb.MachineState().drivesRelative)		// don't reset the absolute extruder position if it was already relative
-		{
-			for (size_t extruder = 0; extruder < MaxExtruders; extruder++)
-			{
-				lastRawExtruderPosition[extruder] = 0.0;
-			}
-			gb.MachineState().drivesRelative = true;
-		}
+		gb.MachineState().drivesRelative = true;
 		break;
 
 		// For case 84, see case 18
@@ -1410,7 +1398,7 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 		}
 		break;
 
-	case 200: // Set filament diameter for volumetric extrusion
+	case 200: // Set filament diameter for volumetric extrusion and enable/disable volumetric extrusion
 		if (gb.Seen('D'))
 		{
 			float diameters[MaxExtruders];
@@ -1421,10 +1409,15 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 				const float d = diameters[i];
 				volumetricExtrusionFactors[i] = (d <= 0.0) ? 1.0 : 4.0/(fsquare(d) * PI);
 			}
+			gb.MachineState().volumetricExtrusion = (diameters[0] > 0.0);
+		}
+		else if (!gb.MachineState().volumetricExtrusion)
+		{
+			reply.copy("Volumetric extrusion is disabled for this input source");
 		}
 		else
 		{
-			reply.copy("Filament diameters for volumentric extrusion:");
+			reply.copy("Filament diameters for volumetric extrusion:");
 			for (size_t i = 0; i < numExtruders; ++i)
 			{
 				const float vef = volumetricExtrusionFactors[i];
@@ -1812,8 +1805,6 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 					}
 				}
 
-				const MessageType mt = GetMessageBoxDevice(gb);						// get the display device
-
 				// If we need to wait for an acknowledgement, save the state and set waiting
 				if ((sParam == 2 || sParam == 3) && Push(gb))						// stack the machine state including the file position
 				{
@@ -1821,6 +1812,9 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 					gb.MachineState().waitingForAcknowledgement = true;				// flag that we are waiting for acknowledgement
 				}
 
+				// TODO: consider displaying the message box on all relevant devices. Acknowledging any one of them needs to clear them all.
+				// Currently, if mt is http or aux or generic, we display the message box both in DWC and on PanelDue.
+				const MessageType mt = GetMessageBoxDevice(gb);						// get the display device
 				platform.SendAlert(mt, messageBuffer, titleBuffer, (int)sParam, tParam, axisControls);
 			}
 		}
@@ -3126,6 +3120,7 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 						while (numTotalAxes <= drive)
 						{
 							moveBuffer.coords[numTotalAxes] = 0.0;		// user has defined a new axis, so set its position
+							currentUserPosition[numTotalAxes] = 0.0;	// set its requested user position too in case it is visible
 							++numTotalAxes;
 						}
 						numVisibleAxes = numTotalAxes;					// assume all axes are visible unless there is a P parameter
@@ -3441,17 +3436,17 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 				gb.TryGetIValue('P', sensorType, seen);
 				if (seen)
 				{
-					platform.SetFilamentSensorType(extruder, sensorType);
+					FilamentSensor::SetFilamentSensorType(extruder, sensorType);
 				}
 
-				FilamentSensor *sensor = platform.GetFilamentSensor(extruder);
+				FilamentSensor *sensor = FilamentSensor::GetFilamentSensor(extruder);
 				if (sensor != nullptr)
 				{
 					// Configure the sensor
 					error = sensor->Configure(gb, reply, seen);
 					if (error)
 					{
-						platform.SetFilamentSensorType(extruder, 0);		// delete the sensor
+						FilamentSensor::SetFilamentSensorType(extruder, 0);		// delete the sensor
 					}
 				}
 				else if (!seen)
