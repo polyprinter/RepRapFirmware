@@ -271,7 +271,7 @@ void PID::Spin()
 							{
 								SetHeater(0.0);					// do this here just to be sure
 								mode = HeaterMode::fault;
-								reprap.GetGCodes().CancelPrint();
+								reprap.GetGCodes().CancelPrint(false, false);
 								platform.MessageF(GENERIC_MESSAGE,
 											"Error: heating fault on heater %d, temperature rising much more slowly than the expected %.1f" DEGREE_SYMBOL "C/sec\n",
 											heater, expectedRate);
@@ -298,8 +298,9 @@ void PID::Spin()
 					{
 						SetHeater(0.0);					// do this here just to be sure
 						mode = HeaterMode::fault;
-						reprap.GetGCodes().CancelPrint();
-						platform.MessageF(GENERIC_MESSAGE, "Error: heating fault on heater %d, temperature excursion exceeded %.1fC\n", heater, maxTempExcursion);
+						reprap.GetGCodes().CancelPrint(false, false);
+						platform.MessageF(GENERIC_MESSAGE, "Error: heating fault on heater %d, temperature excursion exceeded %.1fC\n",
+											heater, maxTempExcursion);
 					}
 				}
 				else if (heatingFaultCount != 0)

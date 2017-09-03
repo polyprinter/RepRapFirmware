@@ -88,7 +88,7 @@ bool GCodeBuffer::Put(char c)
 	else if (c == '\n' || c == '\r' || c == 0)
 	{
 		gcodeBuffer[gcodePointer] = 0;
-		if (reprap.Debug(moduleGcodes) && gcodeBuffer[0] != 0 && !writingFileDirectory) // Don't bother with blank/comment lines
+		if (reprap.Debug(moduleGcodes) && gcodeBuffer[0] != 0 && !writingFileDirectory)		// don't bother echoing blank/comment lines
 		{
 			reprap.GetPlatform().MessageF(DEBUG_MESSAGE, "%s: %s\n", identity, gcodeBuffer);
 		}
@@ -149,7 +149,7 @@ bool GCodeBuffer::Put(char c)
 	{
 		if (gcodePointer >= (int)GCODE_LENGTH)
 		{
-			reprap.GetPlatform().MessageF(GENERIC_MESSAGE, "Error: G-Code buffer '$s' length overflow\n", identity);
+			reprap.GetPlatform().MessageF(GENERIC_MESSAGE, "Error: G-Code buffer '%s' length overflow\n", identity);
 			Init();
 		}
 		else
@@ -165,9 +165,11 @@ bool GCodeBuffer::Put(char c)
 	return false;
 }
 
+// Add an entire string, overwriting any existing content
 bool GCodeBuffer::Put(const char *str, size_t len)
 {
-	for(size_t i = 0; i <= len; i++)
+	Init();
+	for (size_t i = 0; i < len; i++)
 	{
 		if (Put(str[i]))
 		{
@@ -377,23 +379,22 @@ const char* GCodeBuffer::GetString()
 	return result;
 }
 
-// Get and copy a quoted string
-bool GCodeBuffer::GetQuotedString(char *buf, size_t buflen)
+// Get and copy a quoted string returning true if successful
+bool GCodeBuffer::GetQuotedString(const StringRef& str)
 {
+	str.Clear();
 	if (readPointer < 0)
 	{
 		reprap.GetPlatform().Message(GENERIC_MESSAGE, "Error: GCodes: Attempt to read a GCode string before a search.\n");
 		return false;
 	}
 	++readPointer;				// skip the character that introduced the string
-	char c = gcodeBuffer[readPointer++];
-	size_t i = 0;
-	if (c == '"')
+	if (gcodeBuffer[readPointer] == '"')
 	{
-		// Quoted string
+		++readPointer;
 		for (;;)
 		{
-			c = gcodeBuffer[readPointer++];
+			char c = gcodeBuffer[readPointer++];
 			if (c < ' ')
 			{
 				return false;
@@ -402,22 +403,49 @@ bool GCodeBuffer::GetQuotedString(char *buf, size_t buflen)
 			{
 				if (gcodeBuffer[readPointer++] != '"')
 				{
-					if (i < buflen)
-					{
-						buf[i] = 0;
-						return true;
-					}
-					return false;
+					return true;
 				}
 			}
-			if (i < buflen)
+			else if (c == '\'')
 			{
-				buf[i] = c;
+				if (isalpha(gcodeBuffer[readPointer]))
+				{
+					// Single quote before an alphabetic character forces that character to lower case
+					c = tolower(gcodeBuffer[readPointer++]);
+				}
+				else if (gcodeBuffer[readPointer] == c)
+				{
+					// Two single quotes are used to represent one
+					++readPointer;
+				}
 			}
-			++i;
+			str.cat(c);
 		}
 	}
 	return false;
+}
+
+// Get and copy a string which may or may not be quoted. If it is not quoted, it ends at the first space or control character.
+bool GCodeBuffer::GetPossiblyQuotedString(const StringRef& str)
+{
+	if (gcodeBuffer[readPointer + 1] == '"')
+	{
+		return GetQuotedString(str);
+	}
+
+	str.Clear();
+	for (;;)
+	{
+		++readPointer;
+		const char c = gcodeBuffer[readPointer];
+		if (c < ' ')
+		{
+			break;
+		}
+		str.cat(c);
+	}
+	str.StripTrailingSpaces();
+	return !str.IsEmpty();
 }
 
 // This returns a pointer to the end of the buffer where a
@@ -503,10 +531,20 @@ void GCodeBuffer::TryGetIValue(char c, int32_t& val, bool& seen)
 	}
 }
 
+// If the specified parameter character is found, fetch 'value' and set 'seen'. Otherwise leave val and seen alone.
+void GCodeBuffer::TryGetUIValue(char c, uint32_t& val, bool& seen)
+{
+	if (Seen(c))
+	{
+		val = GetUIValue();
+		seen = true;
+	}
+}
+
 // Try to get a float array exactly 'numVals' long after parameter letter 'c'.
 // If the wrong number of values is provided, generate an error message and return true.
 // Else set 'seen' if we saw the letter and value, and return false.
-bool GCodeBuffer::TryGetFloatArray(char c, size_t numVals, float vals[], StringRef& reply, bool& seen, bool doPad)
+bool GCodeBuffer::TryGetFloatArray(char c, size_t numVals, float vals[], const StringRef& reply, bool& seen, bool doPad)
 {
 	if (Seen(c))
 	{
@@ -527,9 +565,21 @@ bool GCodeBuffer::TryGetFloatArray(char c, size_t numVals, float vals[], StringR
 
 // Try to get a quoted string after parameter letter.
 // If we found it then set 'seen' true and return true, else leave 'seen' alone and return false
-bool GCodeBuffer::TryGetQuotedString(char c, char *buf, size_t buflen, bool& seen)
+bool GCodeBuffer::TryGetQuotedString(char c, const StringRef& str, bool& seen)
 {
-	if (Seen(c) && GetQuotedString(buf, buflen))
+	if (Seen(c) && GetQuotedString(str))
+	{
+		seen = true;
+		return true;
+	}
+	return false;
+}
+
+// Try to get a string, which may be quoted, after parameter letter.
+// If we found it then set 'seen' true and return true, else leave 'seen' alone and return false
+bool GCodeBuffer::TryGetPossiblyQuotedString(char c, const StringRef& str, bool& seen)
+{
+	if (Seen(c) && GetPossiblyQuotedString(str))
 	{
 		seen = true;
 		return true;

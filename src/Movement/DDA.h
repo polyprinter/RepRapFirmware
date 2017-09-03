@@ -50,7 +50,7 @@ public:
 
 	DDA(DDA* n);
 
-	bool Init(const GCodes::RawMove &nextMove, bool doMotorMapping); // Set up a new move, returning true if it represents real movement
+	bool Init(GCodes::RawMove &nextMove, bool doMotorMapping);		// Set up a new move, returning true if it represents real movement
 	bool Init(const float_t steps[DRIVES]);							// Set up a raw (unmapped) motor move
 	void Init();													// Set up initial positions for machine startup
 	bool Start(uint32_t tim);										// Start executing the DDA, i.e. move the move.
@@ -59,7 +59,7 @@ public:
 	void SetPrevious(DDA *p) { prev = p; }
 	void Complete() { state = completed; }
 	bool Free();
-	void Prepare();													// Calculate all the values and freeze this DDA
+	void Prepare(uint8_t simMode);									// Calculate all the values and freeze this DDA
 	float CalcTime() const;											// Calculate the time needed for this move (used for simulation)
 	bool HasStepError() const;
 	bool CanPauseAfter() const { return canPauseAfter; }
@@ -192,7 +192,7 @@ private:
 	uint8_t isPrintingMove : 1;				// True if this move includes XY movement and extrusion
 	uint8_t usePressureAdvance : 1;			// True if pressure advance should be applied to any forward extrusion
 	uint8_t hadLookaheadUnderrun : 1;		// True if the lookahead queue was not long enough to optimise this move
-	uint8_t xyMoving : 1;					// True if we have movement along an X axis or the Y axis
+	uint8_t xyMoving : 1;					// True if movement along an X axis or the Y axis was requested, even it if's too small to do
 	uint8_t goingSlow : 1;					// True if we have slowed the movement because the Z probe is approaching its threshold
 	uint8_t isLeadscrewAdjustmentMove : 1;	// True if this is a leadscrews adjustment move
 

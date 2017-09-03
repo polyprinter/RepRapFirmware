@@ -153,7 +153,7 @@ public:
 
 	bool AllAxesAreHomed() const;										// Return true if all axes are homed
 
-	void CancelPrint();													// Cancel the current print
+	void CancelPrint(bool printStats, bool deleteResumeFile);			// Cancel the current print
 
 	void MoveStoppedByZProbe() { zProbeTriggered = true; }				// Called from the step ISR when the Z probe is triggered, causing the move to be aborted
 #ifdef POLYPRINTER
@@ -224,7 +224,7 @@ private:
 	bool HandleMcode(GCodeBuffer& gb, StringRef& reply);				// Do an M code
 	bool HandleTcode(GCodeBuffer& gb, StringRef& reply);				// Do a T code
 
-	bool DoStraightMove(GCodeBuffer& gb, StringRef& reply);				// Execute a straight move returning true if an error was written to 'reply'
+	bool DoStraightMove(GCodeBuffer& gb, StringRef& reply, bool isCoordinated);	// Execute a straight move returning true if an error was written to 'reply'
 	bool DoArcMove(GCodeBuffer& gb, bool clockwise)						// Execute an arc move returning true if it was badly-formed
 		pre(segmentsLeft == 0; resourceOwners[MoveResource] == &gb);
 
@@ -253,19 +253,19 @@ private:
 	void SetPidParameters(GCodeBuffer& gb, int heater, StringRef& reply); // Set the P/I/D parameters for a heater
 	bool SetHeaterParameters(GCodeBuffer& gb, StringRef& reply);		// Set the thermistor and ADC parameters for a heater, returning true if an error occurs
 	bool ManageTool(GCodeBuffer& gb, StringRef& reply);					// Create a new tool definition, returning true if an error was reported
-	void SetToolHeaters(Tool *tool, float temperature);					// Set all a tool's heaters to the temperature.  For M104...
+	void SetToolHeaters(Tool *tool, float temperature);					// Set all a tool's heaters to the temperature, for M104
 	bool ToolHeatersAtSetTemperatures(const Tool *tool, bool waitWhenCooling) const; // Wait for the heaters associated with the specified tool to reach their set temperatures
 	void GenerateTemperatureReport(StringRef& reply) const;				// Store a standard-format temperature report in reply
 	OutputBuffer *GenerateJsonStatusResponse(int type, int seq, ResponseSource source) const;	// Generate a M408 response
 	void CheckReportDue(GCodeBuffer& gb, StringRef& reply) const;		// Check whether we need to report temperatures or status
 
 	void SavePosition(RestorePoint& rp, const GCodeBuffer& gb) const;	// Save position to a restore point
-	void RestorePosition(const RestorePoint& rp, GCodeBuffer& gb);		// Restore user position form a restore point
+	void RestorePosition(const RestorePoint& rp, GCodeBuffer *gb);		// Restore user position form a restore point
 
 	void SetAllAxesNotHomed();											// Flag all axes as not homed
 	void SetMachinePosition(const float positionNow[DRIVES], bool doBedCompensation = true); // Set the current position to be this
 	void GetCurrentUserPosition();										// Get the current position form the Move class
-	void ToolOffsetTransform(const float coordsIn[MaxAxes], float coordsOut[MaxAxes]);	// Convert user coordinates to head reference point coordinates
+	void ToolOffsetTransform(const float coordsIn[MaxAxes], float coordsOut[MaxAxes], AxesBitmap explicitAxes = 0);	// Convert user coordinates to head reference point coordinates
 	void ToolOffsetInverseTransform(const float coordsIn[MaxAxes], float coordsOut[MaxAxes]);	// Convert head reference point coordinates to user coordinates
 	const char *TranslateEndStopResult(EndStopHit es);					// Translate end stop result to text
 	bool RetractFilament(GCodeBuffer& gb, bool retract);				// Retract or un-retract filaments
@@ -312,6 +312,9 @@ private:
 	void DoManualProbe(GCodeBuffer& gb);								// Do a manual bed probe
 
 	void AppendAxes(StringRef& reply, AxesBitmap axes) const;			// Append a list of axes to a string
+
+	void EndSimulation(GCodeBuffer *gb);								// Restore positions etc. when exiting simulation mode
+	bool IsCodeQueueIdle() const;										// Return true if the code queue is idle
 
 #ifdef DUET_NG
 	void SaveResumeInfo();
@@ -426,6 +429,7 @@ private:
 
 	float simulationTime;						// Accumulated simulation time
 	uint8_t simulationMode;						// 0 = not simulating, 1 = simulating, >1 are simulation modes for debugging
+	bool exitSimulationWhenFileComplete;		// true if simulating a file
 
 	// Firmware retraction settings
 	float retractLength, retractExtra;			// retraction length and extra length to un-retract

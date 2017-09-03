@@ -23,7 +23,7 @@ TemperatureSensor::~TemperatureSensor()
 	delete heaterName;
 }
 
-// Set the name - normally called only once
+// Set the name - normally called only once, so we allow heap memory to be allocated
 void TemperatureSensor::SetHeaterName(const char *newName)
 {
 	// Change the heater name in a thread-safe manner
@@ -33,7 +33,7 @@ void TemperatureSensor::SetHeaterName(const char *newName)
 
 	if (newName != nullptr)
 	{
-		char *temp = new char[strlen(newName)];
+		char * const temp = new char[strlen(newName) + 1];
 		strcpy(temp, newName);
 		heaterName = temp;
 	}
@@ -68,12 +68,12 @@ void TemperatureSensor::CopyBasicHeaterDetails(unsigned int heater, StringRef& r
 // Configure then heater name, if it is provided
 void TemperatureSensor::TryConfigureHeaterName(GCodeBuffer& gb, bool& seen)
 {
-	char buf[MaxHeaterNameLength + 1];
+	String<MaxHeaterNameLength> buf;
 	bool localSeen = false;
-	gb.TryGetQuotedString('S', buf, ARRAY_SIZE(buf), localSeen);
+	gb.TryGetQuotedString('S', buf.GetRef(), localSeen);
 	if (localSeen)
 	{
-		SetHeaterName(buf);
+		SetHeaterName(buf.c_str());
 		seen = true;
 	}
 }
