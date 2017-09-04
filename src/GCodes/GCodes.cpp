@@ -1613,7 +1613,7 @@ void GCodes::DoPrintAbort()
 	reprap.FastStop();		// stop everything but does not officially Halt or completely disable things, so doesn't need a reboot to be active again
 
 	// make sure we don't read any more lines from a file
-	CancelPrint();  // this leaves it able to print again, when tested by itself
+	CancelPrint( false , false );  // this leaves it able to print again, when tested by itself
 
 
 	reprap.GetMove().ClearPendingMoves();
