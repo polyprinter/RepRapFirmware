@@ -158,7 +158,7 @@ void Tool::Print(StringRef& reply)
 	sep = ' ';
 	for (size_t heater = 0; heater < heaterCount; heater++)
 	{
-		reply.catf("%c%d (%.1f/%.1f)", sep, heaters[heater], activeTemperatures[heater], standbyTemperatures[heater]);
+		reply.catf("%c%d (%.1f/%.1f)", sep, heaters[heater], (double)activeTemperatures[heater], (double)standbyTemperatures[heater]);
 		sep = ',';
 	}
 
@@ -202,7 +202,7 @@ float Tool::MaxFeedrate() const
 {
 	if (driveCount <= 0)
 	{
-		reprap.GetPlatform().Message(GENERIC_MESSAGE, "Error: Attempt to get maximum feedrate for a tool with no drives.\n");
+		reprap.GetPlatform().Message(ErrorMessage, "Attempt to get maximum feedrate for a tool with no drives.\n");
 		return 1.0;
 	}
 	float result = 0.0;
@@ -222,7 +222,7 @@ float Tool::InstantDv() const
 {
 	if (driveCount <= 0)
 	{
-		reprap.GetPlatform().Message(GENERIC_MESSAGE, "Error: Attempt to get InstantDv for a tool with no drives.\n");
+		reprap.GetPlatform().Message(ErrorMessage, "Attempt to get InstantDv for a tool with no drives.\n");
 		return 1.0;
 	}
 	float result = FLT_MAX;
@@ -423,8 +423,6 @@ void Tool::DefineMix(const float m[])
 	}
 }
 
-#ifdef DUET_NG
-
 // Write the tool's settings to file returning true if successful
 bool Tool::WriteSettings(FileStore *f) const
 {
@@ -435,7 +433,7 @@ bool Tool::WriteSettings(FileStore *f) const
 	bool ok = true;
 	if (heaterCount != 0)
 	{
-		buf.copy("G10 ");
+		buf.printf("G10 P%d ", myNumber);
 		char c = 'S';
 		for (size_t i = 0; i < heaterCount; ++i)
 		{
@@ -463,6 +461,12 @@ bool Tool::WriteSettings(FileStore *f) const
 	return ok;
 }
 
-#endif
+void Tool::SetOffsets(const float offs[MaxAxes])
+{
+	for(size_t i = 0; i < MaxAxes; ++i)
+	{
+		offset[i] = offs[i];
+	}
+}
 
 // End

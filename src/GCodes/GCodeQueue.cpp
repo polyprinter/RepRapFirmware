@@ -136,7 +136,7 @@ bool GCodeQueue::QueueCode(GCodeBuffer &gb, uint32_t segmentsLeft)
 		{
 			if (reprap.Debug(moduleGcodes))
 			{
-				reprap.GetPlatform().Message(DEBUG_MESSAGE, "(swap) ");
+				reprap.GetPlatform().Message(DebugMessage, "(swap) ");
 			}
 			if (!gb.Put(codeToRun, codeToRunLength))
 			{
@@ -228,7 +228,7 @@ void GCodeQueue::Diagnostics(MessageType mtype)
 		do
 		{
 			queueLength++;
-			reprap.GetPlatform().MessageF(mtype, "Queued '%s' for move %d\n", item->code, item->executeAtMove);
+			reprap.GetPlatform().MessageF(mtype, "Queued '%s' for move %" PRIu32 "\n", item->code, item->executeAtMove);
 		} while ((item = item->Next()) != nullptr);
 		reprap.GetPlatform().MessageF(mtype, "%d of %d codes have been queued.\n", queueLength, maxQueuedCodes);
 	}

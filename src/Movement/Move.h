@@ -46,8 +46,8 @@ public:
 	void Spin();													// Called in a tight loop to keep the class going
 	void Exit();													// Shut down
 
-	void GetCurrentMachinePosition(float m[DRIVES], bool disableMotorMapping) const; // Get the current position in untransformed coords
-	void GetCurrentUserPosition(float m[DRIVES], uint8_t moveType, AxesBitmap xAxes, AxesBitmap yAxes) const;
+	void GetCurrentMachinePosition(float m[MaxAxes], bool disableMotorMapping) const; // Get the current position in untransformed coords
+	void GetCurrentUserPosition(float m[MaxAxes], uint8_t moveType, AxesBitmap xAxes, AxesBitmap yAxes) const;
 																	// Return the position (after all queued moves have been executed) in transformed coords
 	int32_t GetEndPoint(size_t drive) const { return liveEndPoints[drive]; } 	// Get the current position of a motor
 	void LiveCoordinates(float m[DRIVES], AxesBitmap xAxes, AxesBitmap yAxes);	// Gives the last point at the end of the last complete DDA transformed to user coords
@@ -73,7 +73,7 @@ public:
 	void SetXYBedProbePoint(size_t index, float x, float y);		// Record the X and Y coordinates of a probe point
 	void SetZBedProbePoint(size_t index, float z, bool wasXyCorrected, bool wasError); // Record the Z coordinate of a probe point
 	float GetProbeCoordinates(int count, float& x, float& y, bool wantNozzlePosition) const; // Get pre-recorded probe coordinates
-	void FinishedBedProbing(int sParam, StringRef& reply);			// Calibrate or set the bed equation after probing
+	bool FinishedBedProbing(int sParam, StringRef& reply);			// Calibrate or set the bed equation after probing
 	void SetAxisCompensation(unsigned int axis, float tangent);		// Set an axis-pair compensation angle
 	float AxisCompensation(unsigned int axis) const;				// The tangent value
 	void SetIdentityTransform();									// Cancel the bed equation; does not reset axis angle compensation
@@ -92,7 +92,7 @@ public:
 	// Kinematics and related functions
 	Kinematics& GetKinematics() const { return *kinematics; }
 	bool SetKinematics(KinematicsType k);											// Set kinematics, return true if successful
-	bool CartesianToMotorSteps(const float machinePos[MaxAxes], int32_t motorPos[MaxAxes]) const;
+	bool CartesianToMotorSteps(const float machinePos[MaxAxes], int32_t motorPos[MaxAxes], bool allowModeChange) const;
 																					// Convert Cartesian coordinates to delta motor coordinates, return true if successful
 	void MotorStepsToCartesian(const int32_t motorPos[], size_t numVisibleAxes, size_t numTotalAxes, float machinePos[]) const;
 																					// Convert motor coordinates to machine coordinates
@@ -109,8 +109,8 @@ public:
 
 	void CurrentMoveCompleted();													// Signal that the current move has just been completed
 	bool TryStartNextMove(uint32_t startTime);										// Try to start another move, returning true if Step() needs to be called immediately
-	float IdleTimeout() const { return idleTimeout; }								// Returns the idle timeout in seconds
-	void SetIdleTimeout(float timeout) { idleTimeout = timeout; }					// Set the idle timeout in seconds
+	float IdleTimeout() const;														// Returns the idle timeout in seconds
+	void SetIdleTimeout(float timeout);												// Set the idle timeout in seconds
 
 	void Simulate(uint8_t simMode);													// Enter or leave simulation mode
 	float GetSimulationTime() const { return simulationTime; }						// Get the accumulated simulation time
@@ -134,7 +134,7 @@ public:
 	uint32_t GetCompletedMoves() const { return completedMoves; }					// How many moves have been completed?
 	void ResetMoveCounters() { scheduledMoves = completedMoves = 0; }
 
-	HeightMap& AccessBedProbeGrid() { return grid; }								// Access the bed probing grid
+	HeightMap& AccessHeightMap() { return heightMap; }								// Access the bed probing grid
 
 	const DDA *GetCurrentDDA() const { return currentDda; }							// Return the DDA of the currently-executing move
 
@@ -142,9 +142,7 @@ public:
 
 	int32_t GetAccumulatedExtrusion(size_t extruder);								// Return ands reset the accumulated extrusion amount
 
-#ifdef DUET_NG
 	bool WriteResumeSettings(FileStore *f) const;									// Write settings for resuming the print
-#endif
 
 	static int32_t MotorEndPointToMachine(size_t drive, float coord);				// Convert a single motor position to number of steps
 	static float MotorEndpointToPosition(int32_t endpoint, size_t drive);			// Convert number of motor steps to motor position
@@ -200,14 +198,14 @@ private:
 	float recipTaperHeight;								// Reciprocal of the taper height
 	bool useTaper;										// True to taper off the compensation
 
-	HeightMap grid;    									// Grid definition and height map for G29 bed probing. The probe heights are stored in zBedProbePoints, see above.
+	HeightMap heightMap;    							// The grid definition in use and height map for G29 bed probing
 	RandomProbePointSet probePoints;					// G30 bed probe points
 	bool usingMesh;										// true if we are using the height map, false if we are using the random probe point set
 	float taperHeight;									// Height over which we taper
 
-	float idleTimeout;									// How long we wait with no activity before we reduce motor currents to idle
-	float lastMoveTime;									// The approximate time at which the last move was completed, or 0
-	float longWait;										// A long time for things that need to be done occasionally
+	uint32_t idleTimeout;								// How long we wait with no activity before we reduce motor currents to idle, in milliseconds
+	uint32_t lastMoveTime;								// The approximate time at which the last move was completed
+	uint32_t longWait;									// A long time for things that need to be done occasionally
 	IdleState iState;									// whether the idle timer is active
 
 	Kinematics *kinematics;								// What kinematics we are using

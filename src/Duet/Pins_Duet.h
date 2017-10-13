@@ -3,6 +3,11 @@
 
 #define FIRMWARE_NAME "RepRapFirmware for Duet"
 
+// Features definition
+#define HAS_LWIP_NETWORKING		1
+#define HAS_CPU_TEMP_SENSOR		1
+#define HAS_HIGH_SPEED_SD		1
+
 const size_t NumFirmwareUpdateModules = 1;
 #define IAP_UPDATE_FILE "iap.bin"
 #define IAP_FIRMWARE_FILE "RepRapFirmware.bin"
@@ -116,7 +121,7 @@ const Pin COOLING_FAN_RPM_PIN = 23;										// Pin PA15
 
 // SD cards
 const size_t NumSdCards = 2;
-const Pin SdCardDetectPins[NumSdCards] = {13, NoPin};
+const Pin SdCardDetectPins[NumSdCards] = {NoPin, NoPin};				// Although the Duet PCB supports a CD pin, due to a bug in the SAM3X it is unusable if we enable the temperature sensor
 const Pin SdWriteProtectPins[NumSdCards] = {NoPin, NoPin};
 const Pin SdSpiCSPins[1] = {67};										// Pin PB16 Note: this clashes with inkjet support
 

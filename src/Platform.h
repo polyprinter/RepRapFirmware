@@ -39,6 +39,7 @@ Licence: GPL
 // Platform-specific includes
 
 #include "RepRapFirmware.h"
+#include "IoPort.h"
 #include "DueFlashStorage.h"
 #include "Fan.h"
 #include "Heating/TemperatureError.h"
@@ -48,15 +49,16 @@ Licence: GPL
 #include "Storage/MassStorage.h"	// must be after Pins.h because it needs NumSdCards defined
 #include "MessageType.h"
 #include "ZProbeProgrammer.h"
+#include "Logger.h"
 
 #if defined(DUET_NG)
 # include "DueXn.h"
+#elif defined(DUET_06_085)
+# include "MCP4461/MCP4461.h"
 #elif defined(__ALLIGATOR__)
 # include "DAC/DAC084S085.h"       // SPI DAC for motor current vref
 # include "EUI48/EUI48EEPROM.h"    // SPI EUI48 mac address EEPROM
 # include "Microstepping.h"
-#elif !defined(__RADDS__)
-# include "MCP4461/MCP4461.h"
 #endif
 
 const bool FORWARDS = true;
@@ -95,12 +97,12 @@ const float AXIS_MAXIMA[MaxAxes] = AXES_(230.0, 230.0, 230.0, 0.0, 0.0, 0.0, 0.0
 const float Z_PROBE_STOP_HEIGHT = 0.7;							// Millimetres
 const unsigned int Z_PROBE_AVERAGE_READINGS = 8;				// We average this number of readings with IR on, and the same number with IR off
 
-#ifdef DUET_NG
-const int Z_PROBE_AD_VALUE = 500;								// Default for the Z probe - should be overwritten by experiment
-const uint32_t Z_PROBE_AXES = (1 << Z_AXIS);					// Axes for which the Z-probe is normally used
-#else
+#if defined DUET_06_085
 const int Z_PROBE_AD_VALUE = 400;								// Default for the Z probe - should be overwritten by experiment
 const uint32_t Z_PROBE_AXES = (1 << X_AXIS) | (1 << Z_AXIS);	// Axes for which the Z-probe is normally used
+#else
+const int Z_PROBE_AD_VALUE = 500;								// Default for the Z probe - should be overwritten by experiment
+const uint32_t Z_PROBE_AXES = (1 << Z_AXIS);					// Axes for which the Z-probe is normally used
 #endif
 
 #ifdef POLYPRINTER
@@ -131,14 +133,16 @@ enum class BoardType : uint8_t
 	DuetWiFi_10 = 1
 #elif defined(DUET_NG) && defined(DUET_ETHERNET)
 	DuetEthernet_10 = 1
+#elif defined(DUET_06_085)
+	Duet_06 = 1,
+	Duet_07 = 2,
+	Duet_085 = 3
 #elif defined(__RADDS__)
 	RADDS_15 = 1
 #elif defined(__ALLIGATOR__)
 	Alligator_2 = 1
 #else
-	Duet_06 = 1,
-	Duet_07 = 2,
-	Duet_085 = 3
+# error Unknown board
 #endif
 };
 
@@ -190,15 +194,6 @@ enum class DiagnosticTestType : int
 	PrintExpanderStatus = 101,		// print DueXn expander status
 #endif
 	TimeSquareRoot = 102			// do a timing test on the square root function
-};
-
-// Enumeration to describe what we want to do with a logical pin
-enum class PinAccess : int
-{
-	read,
-	write,
-	pwm,
-	servo
 };
 
 /***************************************************************************************************************/
@@ -370,7 +365,7 @@ public:
 	void SetEmulating(Compatibility c);
 	void Diagnostics(MessageType mtype);
 	void DiagnosticTest(int d);
-	void ClassReport(float &lastTime);  			// Called on Spin() return to check everything's live.
+	void ClassReport(uint32_t &lastTime);  			// Called on Spin() return to check everything's live.
 	void LogError(ErrorCode e) { errorCodeBits |= (uint32_t)e; }
 
 	void SoftwareReset(uint16_t reason, const uint32_t *stk = nullptr);
@@ -382,21 +377,18 @@ public:
 
 	// Timing
   
-	float Time();											// Returns elapsed seconds since some arbitrary time - DEPRECATED
 	static uint32_t GetInterruptClocks();					// Get the interrupt clock count
 	static bool ScheduleStepInterrupt(uint32_t tim);		// Schedule an interrupt at the specified clock count, or return true if it has passed already
 	static void DisableStepInterrupt();						// Make sure we get no step interrupts
 	static bool ScheduleSoftTimerInterrupt(uint32_t tim);	// Schedule an interrupt at the specified clock count, or return true if it has passed already
 	static void DisableSoftTimerInterrupt();				// Make sure we get no software timer interrupts
-	void Tick();											// Process a systick interrupt
+	void Tick() __attribute__((hot));						// Process a systick interrupt
 
 	// Real-time clock
 
 	bool IsDateTimeSet() const;						// Has the RTC been set yet?
 	time_t GetDateTime() const;						// Retrieves the current RTC datetime and returns true if it's valid
 	bool SetDateTime(time_t time);					// Sets the current RTC date and time or returns false on error
-	bool SetDate(time_t date);						// Sets the current RTC date or returns false on error
-	bool SetTime(time_t time);						// Sets the current RTC time or returns false on error
 
   	// Communications and data storage
   
@@ -428,7 +420,7 @@ public:
 	friend class FileStore;
 
 	MassStorage* GetMassStorage() const;
-	FileStore* GetFileStore(const char* directory, const char* fileName, bool write);
+	FileStore* GetFileStore(const char* directory, const char* fileName, OpenMode mode);
 	const char* GetWebDir() const; 					// Where the html etc files are
 	const char* GetGCodeDir() const; 				// Where the gcodes are
 	const char* GetSysDir() const;  				// Where the system files are
@@ -440,12 +432,13 @@ public:
 
 	// Message output (see MessageType for further details)
 
-	void Message(const MessageType type, const char *message);
-	void Message(const MessageType type, OutputBuffer *buffer);
-	void MessageF(const MessageType type, const char *fmt, ...);
-	void MessageF(const MessageType type, const char *fmt, va_list vargs);
+	void Message(MessageType type, const char *message);
+	void Message(MessageType type, OutputBuffer *buffer);
+	void MessageF(MessageType type, const char *fmt, ...) __attribute__ ((format (printf, 3, 4)));
+	void MessageF(MessageType type, const char *fmt, va_list vargs);
 	bool FlushMessages();							// Flush messages to USB and aux, returning true if there is more to send
 	void SendAlert(MessageType mt, const char *message, const char *title, int sParam, float tParam, AxesBitmap controls);
+	void StopLogging();
 
 	// Movement
 
@@ -459,6 +452,7 @@ public:
 	void DisableDriver(size_t driver);
 	void EnableDrive(size_t drive);
 	void DisableDrive(size_t drive);
+	void DisableAllDrives();
 	void SetDriversIdle();
 	void SetMotorCurrent(size_t drive, float current, bool isPercent);
 	float GetMotorCurrent(size_t drive, bool isPercent) const;
@@ -544,8 +538,8 @@ public:
 	bool ProgramZProbe(GCodeBuffer& gb, StringRef& reply);
 	void SetZProbeModState(bool b) const;
 
-#ifdef POLYPRINTER
 
+#ifdef POLYPRINTER
 	void SetProbeModulationOut(bool ifHigh) const;
 	void SetsuppressingSpecialErrorChecks( bool val ) { suppressingSpecialErrorChecks = val; }
 	bool SuppressingSpecialErrorChecks() const;
@@ -558,20 +552,7 @@ public:
 	PolyPrinterParameters& GetPolyPrinterParameters();							// accesses the set of parameters - may be used to update individual settings
 	void SetPolyPrinterParameters( const PolyPrinterParameters& params );		// sets all parameters at once
 	bool WritePolyPrinterParameters( FileStore *f ) const;						// writes them to the given file store
-
 #endif
-
-
-	// Ancilliary PWM
-
-	void SetExtrusionAncilliaryPwmValue(float v);
-	float GetExtrusionAncilliaryPwmValue() const;
-	void SetExtrusionAncilliaryPwmFrequency(float f);
-	float GetExtrusionAncilliaryPwmFrequency() const;
-	bool SetExtrusionAncilliaryPwmPin(int logicalPin);
-	int GetExtrusionAncilliaryPwmPin() const { return extrusionAncilliaryPwmLogicalPin; }
-	void ExtrudeOn();
-	void ExtrudeOff();
 
 	// Heat and temperature
 	float GetZProbeTemperature();							// Get our best estimate of the Z probe temperature
@@ -595,10 +576,11 @@ public:
 
 	float GetFanValue(size_t fan) const;					// Result is returned in percent
 	void SetFanValue(size_t fan, float speed);				// Accepts values between 0..1 and 1..255
-#if !defined(DUET_NG) && !defined(__RADDS__) & !defined(__ALLIGATOR__)
+#if defined(DUET_06_085)
 	void EnableSharedFan(bool enable);						// enable/disable the fan that shares its PWM pin with the last heater
 #endif
 
+	bool WriteFanSettings(FileStore *f) const;		// Save some resume information
 	float GetFanRPM() const;
 
 	// Flash operations
@@ -621,37 +603,59 @@ public:
 	bool Inkjet(int bitPattern);
 
 	// MCU temperature
-#ifndef __RADDS
+#if HAS_CPU_TEMP_SENSOR
 	void GetMcuTemperatures(float& minT, float& currT, float& maxT) const;
 #endif
 	void SetMcuTemperatureAdjust(float v) { mcuTemperatureAdjust = v; }
 	float GetMcuTemperatureAdjust() const { return mcuTemperatureAdjust; }
-
-	// Low level port access
-	static void SetPinMode(Pin p, PinMode mode);
-	static bool ReadPin(Pin p);
-	static void WriteDigital(Pin p, bool high);
-	static void WriteAnalog(Pin p, float pwm, uint16_t frequency);
 
 #ifdef DUET_NG
 	// Power in voltage
 	void GetPowerVoltages(float& minV, float& currV, float& maxV) const;
 	float GetTmcDriversTemperature(unsigned int board) const;
 	void DriverCoolingFansOn(uint32_t driverChannelsMonitored);
-	void ConfigureAutoSave(GCodeBuffer& gb, StringRef& reply, bool& error);
-	bool WriteFanSettings(FileStore *f) const;		// Save some resume information
+	bool ConfigureAutoSave(GCodeBuffer& gb, StringRef& reply);
 #endif
 
 	// User I/O and servo support
-	bool GetFirmwarePin(int logicalPin, PinAccess access, Pin& firmwarePin, bool& invert);
+	bool GetFirmwarePin(LogicalPin logicalPin, PinAccess access, Pin& firmwarePin, bool& invert);
 
 	// For filament sensor support
 	Pin GetEndstopPin(int endstop) const;			// Get the firmware pin number for an endstop
+
+	// Logging support
+	bool ConfigureLogging(GCodeBuffer& gb, StringRef& reply);
+
+	// Ancilliary PWM
+	void SetExtrusionAncilliaryPwmValue(float v);
+	float GetExtrusionAncilliaryPwmValue() const;
+	void SetExtrusionAncilliaryPwmFrequency(float f);
+	float GetExtrusionAncilliaryPwmFrequency() const;
+	bool SetExtrusionAncilliaryPwmPin(LogicalPin logicalPin);
+	int GetExtrusionAncilliaryPwmPin() const { return extrusionAncilliaryPwmPort.GetLogicalPin(); }
+	void ExtrudeOn();
+	void ExtrudeOff();
+
+	// CNC and laser support
+	void SetSpindlePwm(float pwm);
+	void SetLaserPwm(float pwm);
+
+	bool SetSpindlePins(LogicalPin lpf, LogicalPin lpr);
+	void GetSpindlePins(LogicalPin& lpf, LogicalPin& lpr) const;
+	void SetSpindlePwmFrequency(float freq);
+	float GetSpindlePwmFrequency() const { return spindleForwardPort.GetFrequency(); }
+
+	bool SetLaserPin(LogicalPin lp);
+	LogicalPin GetLaserPin() const { return laserPort.GetLogicalPin(); }
+	void SetLaserPwmFrequency(float freq);
+	float GetLaserPwmFrequency() const { return laserPort.GetFrequency(); }
 
 //-------------------------------------------------------------------------------------------------------
   
 private:
 	Platform(const Platform&);						// private copy constructor to make sure we don't try to copy a Platform
+
+	void RawMessage(MessageType type, const char *message);	// called by Message after handling error/warning flags
 
 	void ResetChannel(size_t chan);					// re-initialise a serial channel
 	float AdcReadingToCpuTemperature(uint32_t reading) const;
@@ -674,7 +678,7 @@ private:
 	{
 		static const uint16_t versionValue = 7;		// increment this whenever this struct changes
 		static const uint16_t magicValue = 0x7D00 | versionValue;	// value we use to recognise that all the flash data has been written
-#ifndef DUET_NG
+#if SAM3XA
 		static const uint32_t nvAddress = 0;		// must be 4-byte aligned
 #endif
 		static const size_t numberOfSlots = 5;		// number of storage slots used to implement wear levelling - must fit in 512 bytes
@@ -704,7 +708,7 @@ private:
 		}
 	};
 
-#ifdef DUET_NG
+#if SAM4E
 	static_assert(SoftwareResetData::numberOfSlots * sizeof(SoftwareResetData) <= 512, "Can't fit software reset data in SAM4E user signature area");
 #else
 	static_assert(SoftwareResetData::numberOfSlots * sizeof(SoftwareResetData) <= FLASH_DATA_LENGTH, "NVData too large");
@@ -715,11 +719,17 @@ private:
 	bool suppressingSpecialErrorChecks{ false };
 #endif
 
+	// Logging
+	Logger *logger;
+	uint32_t lastLogFlushTime;
+
+	// Z probes
 	ZProbeParameters switchZProbeParameters;		// Z probe values for the switch Z-probe
 	ZProbeParameters irZProbeParameters;			// Z probe values for the IR sensor
 	ZProbeParameters alternateZProbeParameters;		// Z probe values for the alternate sensor
 	int zProbeType;									// the type of Z probe we are currently using
 	AxesBitmap zProbeAxes;							// Z probe is used for these axes (bitmap)
+
 	byte ipAddress[4];
 	byte netMask[4];
 	byte gateWay[4];
@@ -731,10 +741,7 @@ private:
 	ExpansionBoardType expansionBoard;
 #endif
 
-	float lastTime;
-	float longWait;
-	float addToTime;
-	unsigned long lastTimeCall;
+	uint32_t longWait;
 
 	bool active;
 	uint32_t errorCodeBits;
@@ -773,11 +780,7 @@ private:
 
 #if defined(DUET_NG)
 	size_t numTMC2660Drivers;						// the number of TMC2660 drivers we have, the remaining are simple enable/step/dir drivers
-#elif defined(__ALLIGATOR__)
-	Pin spiDacCS[MaxSpiDac];
-	DAC084S085 dacAlligator;
-	DAC084S085 dacPiggy;
-#elif !defined(__RADDS__)
+#elif defined(DUET_06_085)
 	// Digipots
 	MCP4461 mcpDuet;
 	MCP4461 mcpExpansion;
@@ -785,6 +788,10 @@ private:
 	float senseResistor;
 	float maxStepperDigipotVoltage;
 	float stepperDacVoltageRange, stepperDacVoltageOffset;
+#elif defined(__ALLIGATOR__)
+	Pin spiDacCS[MaxSpiDac];
+	DAC084S085 dacAlligator;
+	DAC084S085 dacPiggy;
 #endif
 
 	// Z probe
@@ -797,15 +804,9 @@ private:
 
 	// Thermistors
 	volatile ThermistorAveragingFilter thermistorFilters[Heaters];	// bed and extruder thermistor readings
-#ifndef __RADDS__
+#if HAS_CPU_TEMP_SENSOR
 	volatile ThermistorAveragingFilter cpuTemperatureFilter;		// MCU temperature readings
 #endif
-
-	float extrusionAncilliaryPwmValue;
-	float extrusionAncilliaryPwmFrequency;
-	int extrusionAncilliaryPwmLogicalPin;
-	Pin extrusionAncilliaryPwmFirmwarePin;
-	bool extrusionAncilliaryPwmInvert;
 
 	void InitZProbe();
 	uint16_t GetRawZProbeReading() const;
@@ -897,7 +898,7 @@ private:
 	float nozzleDiameter;
 
 	// Temperature and power monitoring
-#ifndef __RADDS__		// reading temperature on the RADDS messes up one of the heater pins, so don't do it
+#if HAS_CPU_TEMP_SENSOR		// reading temperature on the RADDS messes up one of the heater pins, so don't do it
 	AnalogChannelNumber temperatureAdcChannel;
 	uint32_t highestMcuTemperature, lowestMcuTemperature;
 #endif
@@ -934,73 +935,14 @@ private:
 	time_t realTime;									// the current date/time, or zero if never set
 	uint32_t timeLastUpdatedMillis;						// the milliseconds counter when we last incremented the time
 
+	// CNC and laser support
+	float extrusionAncilliaryPwmValue;
+	PwmPort extrusionAncilliaryPwmPort;
+	PwmPort spindleForwardPort, spindleReversePort, laserPort;
+
 	// Direct pin manipulation
 	int8_t logicalPinModes[HighestLogicalPin + 1];		// what mode each logical pin is set to - would ideally be class PinMode not int8_t
 };
-
-/*static*/ inline void Platform::SetPinMode(Pin pin, PinMode mode)
-{
-#ifdef DUET_NG
-	if (pin >= DueXnExpansionStart)
-	{
-		DuetExpansion::SetPinMode(pin, mode);
-	}
-	else
-	{
-		pinMode(pin, mode);
-	}
-#else
-	pinMode(pin, mode);
-#endif
-}
-
-/*static*/ inline bool Platform::ReadPin(Pin pin)
-{
-#ifdef DUET_NG
-	if (pin >= DueXnExpansionStart)
-	{
-		return DuetExpansion::DigitalRead(pin);
-	}
-	else
-	{
-		return digitalRead(pin);
-	}
-#else
-	return digitalRead(pin);
-#endif
-}
-
-/*static*/ inline void Platform::WriteDigital(Pin pin, bool high)
-{
-#ifdef DUET_NG
-	if (pin >= DueXnExpansionStart)
-	{
-		DuetExpansion::DigitalWrite(pin, high);
-	}
-	else
-	{
-		digitalWrite(pin, high);
-	}
-#else
-	digitalWrite(pin, high);
-#endif
-}
-
-/*static*/ inline void Platform::WriteAnalog(Pin pin, float pwm, uint16_t freq)
-{
-#ifdef DUET_NG
-	if (pin >= DueXnExpansionStart)
-	{
-		DuetExpansion::AnalogOut(pin, pwm);
-	}
-	else
-	{
-		AnalogOut(pin, pwm, freq);
-	}
-#else
-	AnalogOut(pin, pwm, freq);
-#endif
-}
 
 // Where the htm etc files are
 
@@ -1091,7 +1033,7 @@ inline void Platform::SetInstantDv(size_t drive, float value)
 {
 #ifdef POLYPRINTER
 	if ( drive > 2 ) {
-		debugPrintf("Setting drive %d InstantDv to %f mm/sec\n", drive, value );
+		debugPrintf("Setting drive %d InstantDv to %f mm/sec\n", drive, (double)value );
 	}
 #endif
 	instantDvs[drive] = max<float>(value, 1.0);			// don't allow zero or negative values, they causes Move to loop indefinitely
@@ -1151,7 +1093,7 @@ inline float Platform::AxisTotalLength(size_t axis) const
 
 inline void Platform::SetExtrusionAncilliaryPwmValue(float v)
 {
-	extrusionAncilliaryPwmValue = v;
+	extrusionAncilliaryPwmValue = min<float>(v, 1.0);			// negative values are OK, they mean don't set the output
 }
 
 inline float Platform::GetExtrusionAncilliaryPwmValue() const
@@ -1161,12 +1103,12 @@ inline float Platform::GetExtrusionAncilliaryPwmValue() const
 
 inline void Platform::SetExtrusionAncilliaryPwmFrequency(float f)
 {
-	extrusionAncilliaryPwmFrequency = f;
+	extrusionAncilliaryPwmPort.SetFrequency(f);
 }
 
 inline float Platform::GetExtrusionAncilliaryPwmFrequency() const
 {
-	return extrusionAncilliaryPwmFrequency;
+	return extrusionAncilliaryPwmPort.GetFrequency();
 }
 
 // For the Duet we use the fan output for this
@@ -1177,8 +1119,7 @@ inline void Platform::ExtrudeOn()
 {
 	if (extrusionAncilliaryPwmValue > 0.0)
 	{
-		WriteAnalog(extrusionAncilliaryPwmFirmwarePin,
-					(extrusionAncilliaryPwmInvert) ? 1.0 - extrusionAncilliaryPwmValue : extrusionAncilliaryPwmValue, extrusionAncilliaryPwmFrequency);
+		extrusionAncilliaryPwmPort.WriteAnalog(extrusionAncilliaryPwmValue);
 	}
 }
 
@@ -1189,8 +1130,7 @@ inline void Platform::ExtrudeOff()
 {
 	if (extrusionAncilliaryPwmValue > 0.0)
 	{
-		WriteAnalog(extrusionAncilliaryPwmFirmwarePin,
-					(extrusionAncilliaryPwmInvert) ? 1.0 : 0.0, extrusionAncilliaryPwmFrequency);
+		extrusionAncilliaryPwmPort.WriteAnalog(0.0);
 	}
 }
 
@@ -1265,22 +1205,22 @@ inline uint16_t Platform::GetRawZProbeReading() const
 	{
 	case 4:
 		{
-			const bool b = ReadPin(endStopPins[E0_AXIS]);
+			const bool b = IoPort::ReadPin(endStopPins[E0_AXIS]);
 			return (b) ? 4000 : 0;
 		}
 
 	case 5:
-		return (ReadPin(zProbePin)) ? 4000 : 0;
+		return (IoPort::ReadPin(zProbePin)) ? 4000 : 0;
 
 	case 6:
 		{
-			const bool b = ReadPin(endStopPins[E0_AXIS + 1]);
+			const bool b = IoPort::ReadPin(endStopPins[E0_AXIS + 1]);
 			return (b) ? 4000 : 0;
 		}
 #ifdef POLYPRINTER
 	case ZProbeTypePoly :
 		// TODO: identify and set up the actual pin we use in production if we don't redefine this pin
-		return (ReadPin(zProbePin)) ? 4000 : 0;
+		return (IoPort::ReadPin(zProbePin)) ? 4000 : 0;
 #endif
 	default:
 		return min<uint16_t>(AnalogInReadChannel(zProbeAdcChannel), 4000);
@@ -1337,12 +1277,14 @@ inline OutputBuffer *Platform::GetAuxGCodeReply()
 	const PinDescription& pinDesc = g_APinDescription[STEP_PINS[driver]];
 #if defined(DUET_NG)
 	return pinDesc.ulPin;
+#elif defined(DUET_06_085)
+	return (pinDesc.pPort == PIOA) ? pinDesc.ulPin << 1 : pinDesc.ulPin;
 #elif defined(__RADDS__)
 	return (pinDesc.pPort == PIOC) ? pinDesc.ulPin << 1 : pinDesc.ulPin;
 #elif defined(__ALLIGATOR__)
 	return pinDesc.ulPin;
-#else	// Duet 06/085
-	return (pinDesc.pPort == PIOA) ? pinDesc.ulPin << 1 : pinDesc.ulPin;
+#else
+# error Unknown board
 #endif
 }
 
@@ -1353,6 +1295,10 @@ inline OutputBuffer *Platform::GetAuxGCodeReply()
 {
 #if defined(DUET_NG)
 	PIOD->PIO_ODSR = driverMap;				// on Duet WiFi all step pins are on port D
+#elif defined(DUET_06_085)
+	PIOD->PIO_ODSR = driverMap;
+	PIOC->PIO_ODSR = driverMap;
+	PIOA->PIO_ODSR = driverMap >> 1;		// do this last, it means the processor doesn't need to preserve the register containing driverMap
 #elif defined(__RADDS__)
 	PIOA->PIO_ODSR = driverMap;
 	PIOB->PIO_ODSR = driverMap;
@@ -1362,10 +1308,8 @@ inline OutputBuffer *Platform::GetAuxGCodeReply()
 	PIOB->PIO_ODSR = driverMap;
 	PIOD->PIO_ODSR = driverMap;
 	PIOC->PIO_ODSR = driverMap;
-#else	// Duet 06/085
-	PIOD->PIO_ODSR = driverMap;
-	PIOC->PIO_ODSR = driverMap;
-	PIOA->PIO_ODSR = driverMap >> 1;		// do this last, it means the processor doesn't need to preserve the register containing driverMap
+#else
+# error Unknown board
 #endif
 }
 
@@ -1376,6 +1320,10 @@ inline OutputBuffer *Platform::GetAuxGCodeReply()
 {
 #if defined(DUET_NG)
 	PIOD->PIO_ODSR = 0;						// on Duet WiFi all step pins are on port D
+#elif defined(DUET_06_085)
+	PIOD->PIO_ODSR = 0;
+	PIOC->PIO_ODSR = 0;
+	PIOA->PIO_ODSR = 0;
 #elif defined(__RADDS__)
 	PIOD->PIO_ODSR = 0;
 	PIOC->PIO_ODSR = 0;
@@ -1385,10 +1333,8 @@ inline OutputBuffer *Platform::GetAuxGCodeReply()
 	PIOD->PIO_ODSR = 0;
 	PIOC->PIO_ODSR = 0;
 	PIOB->PIO_ODSR = 0;
-#else	// Duet
-	PIOD->PIO_ODSR = 0;
-	PIOC->PIO_ODSR = 0;
-	PIOA->PIO_ODSR = 0;
+#else
+# error Unknown board
 #endif
 }
 

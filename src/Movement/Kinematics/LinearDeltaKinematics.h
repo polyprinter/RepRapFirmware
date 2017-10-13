@@ -26,10 +26,10 @@ public:
 	// Overridden base class functions. See Kinematics.h for descriptions.
 	const char *GetName(bool forStatusReport) const override;
 	bool Configure(unsigned int mCode, GCodeBuffer& gb, StringRef& reply, bool& error) override;
-	bool CartesianToMotorSteps(const float machinePos[], const float stepsPerMm[], size_t numVisibleAxes, size_t numTotalAxes, int32_t motorPos[]) const override;
+	bool CartesianToMotorSteps(const float machinePos[], const float stepsPerMm[], size_t numVisibleAxes, size_t numTotalAxes, int32_t motorPos[], bool allowModeChange) const override;
 	void MotorStepsToCartesian(const int32_t motorPos[], const float stepsPerMm[], size_t numVisibleAxes, size_t numTotalAxes, float machinePos[]) const override;
 	bool SupportsAutoCalibration() const override { return true; }
-	void DoAutoCalibration(size_t numFactors, const RandomProbePointSet& probePoints, StringRef& reply) override;
+	bool DoAutoCalibration(size_t numFactors, const RandomProbePointSet& probePoints, StringRef& reply) override;
 	void SetCalibrationDefaults() override { Init(); }
 	bool WriteCalibrationParameters(FileStore *f) const override;
 	float GetTiltCorrection(size_t axis) const override;
@@ -44,10 +44,7 @@ public:
 	const char* GetHomingFileName(AxesBitmap toBeHomed, AxesBitmap alreadyHomed, size_t numVisibleAxes, AxesBitmap& mustHomeFirst) const override;
 	bool QueryTerminateHomingMove(size_t axis) const override;
 	void OnHomingSwitchTriggered(size_t axis, bool highEnd, const float stepsPerMm[], DDA& dda) const override;
-
-#ifdef DUET_NG
 	bool WriteResumeSettings(FileStore *f) const override;
-#endif
 
     // Public functions specific to this class
 	float GetDiagonalSquared() const { return D2; }

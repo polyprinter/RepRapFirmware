@@ -1,6 +1,65 @@
 Summary of important changes in recent versions
 ===============================================
 
+Version 1.20beta1
+=================
+
+Upgrade notes:
+- If installing this release on a Duet WiFi, install DuetWiFiServer version 1.20 alpha first, available at https://github.com/dc42/DuetWiFiSocketServer/blob/master/Release/DuetWiFiServer.bin.
+- Recommended Duet Web Control version is 1.19.3
+- The 'set output on extrude' function (M571) no longer defaults to FAN0 output. If you use this feature, you must define the output pin explicitly using the P parameter at least once.
+
+New and changed features:
+- Added support for M3, M4, M5 and M450-M453
+- Added support for DHT11, DHT21 and DHT22 temperature/humidity sensors (thanks chrishamm)
+- Some additional events are now logged
+- The grid defined by M557 is now stored separately from the grid loaded by G29 S1 so that they don't overwrite each other
+- The resurrect.g file is no longer created or deleted during a simulated print
+- SCARA prints are simulated without segmentation so that the simulation runs much faster. In tests, the difference in the simulation time with/without segmentation was negligible.
+- The change to fast PID parameters is now made when the temperature is within 3C of the target instead of when within 1C
+- M408 S1/2/3 responses now include dummy values for the bed heater if there is no bed heater
+- The commands to resume printing that are written to resurrect.g now move the head to 2mm above the printing height, then sideways, then down
+
+Bug fixes:
+- If a Duet3D filament sensor was connected and congfigured but flashing an error code instead of sending filament data, the error recovery code running on the Duet caused short pauses in the print
+- On a delta printer if you created additonal axes, when you tried to home them it ran homedelta.g instead of e.g. homeu.g
+- On a delta printer with additional axes, you can now do XYZ moves as soon as the towers have been homed
+- Fixed a possible race condition if the time and date were set at midnight
+- The 4-leadscrew auto/4-screw manual bed levelling code didn't work properly
+- The P parameter was missing from G10 commands written to resurrect.g
+- Arm angle limits are now applied when converting Cartesian to SCARA coordinates
+- The correction limit is no longer applied when computing manual bed levelling screw corrections
+- SCARA arm mode changes are now only permitted in uncoordinated (G0) moves
+
+Version 1.20alpha4
+==================
+
+Upgrade notes from 1.19.2:
+- If installing this release on a Duet WiFi, install DuetWiFiServer version 1.20 alpha first, available at https://github.com/dc42/DuetWiFiSocketServer/blob/master/Release/DuetWiFiServer.bin.
+- Recommended Duet Web Control version is still 1.19
+
+New and changed features:
+- Added event logging, controlled by the M929 command
+- On the Duet WiFi the M552 command takes an optional SSID parameter, allowing you to connect to a specified SSID even if it is hidden
+- M572 command now allows multiple colon-separate D values
+- When M591 and G32 are used to produce manual bed levelling adjustments, the first screw defined in the M671 command is left alone. Previously the screw needing the smallest correction was left alone.
+- SCARA printers can now use the manual bed levelling assistant
+- The thermocouple type letter in the M305 command to configure a MAX31856-based thermocouple adapter may now be in lower case
+- Added protection against a dud command line containing letter M being interpreted as a M0 command
+- When doing a firmware upgrade, the message sent to the USB port now warns that the USB will be disconnected
+- A resurrect.g file is now created any time the print is paused. This allows for planned power down ands resume.
+
+Internal changes:
+- Upgraded compiler version
+- Changed to use the hardware floating point ABI on the SAM4
+- Simplified conditional directives that depend on the target hardware, by adding new #defines for supported features and a DUET_06_085 #define.
+
+Bug fixes:
+- When G29 was run on a SCARA printer, probe points could be incorrectly skipped and spurious "not reachable" messages generated
+- Pullup resistors are now enabled on endstop inputs 10 and 11 on the CONN_SD connector
+- Fixed duplicate error message when a gcode file is not found
+- Fixed reference to homing the towers of a SCARA printer in an error message
+
 Version 1.19.2
 ==============
 

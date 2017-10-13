@@ -108,9 +108,7 @@ public:
 	void SetAlert(const char *msg, const char *title, int mode, float timeout, AxesBitmap controls);
 	void ClearAlert();
 
-#ifdef DUET_NG
 	bool WriteToolSettings(FileStore *f) const;				// Save some resume information
-#endif
 
 	static uint32_t DoDivide(uint32_t a, uint32_t b);		// helper function for diagnostic tests
 	static uint32_t ReadDword(const char* p);				// helper function for diagnostic tests
@@ -142,8 +140,8 @@ private:
 
 	uint16_t ticksInSpinState;
 	Module spinningModule;
-	float fastLoop, slowLoop;
-	float lastTime;
+	uint32_t fastLoop, slowLoop;
+	uint32_t lastTime;
 
 	uint16_t debug;
 	bool stopped;

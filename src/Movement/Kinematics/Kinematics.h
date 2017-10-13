@@ -71,7 +71,7 @@ public:
 	// 'numAxes' is the number of machine axes to convert, which will always be at least 3
 	// 'motorPos' is the output vector of motor positions
 	// Return true if successful, false if we were unable to convert
-	virtual bool CartesianToMotorSteps(const float machinePos[], const float stepsPerMm[], size_t numVisibleAxes, size_t numTotalAxes, int32_t motorPos[]) const = 0;
+	virtual bool CartesianToMotorSteps(const float machinePos[], const float stepsPerMm[], size_t numVisibleAxes, size_t numTotalAxes, int32_t motorPos[], bool allowModeChange) const = 0;
 
 	// Convert motor positions (measured in steps from reference position) to Cartesian coordinates
 	// 'motorPos' is the input vector of motor positions
@@ -85,8 +85,9 @@ public:
 	virtual bool SupportsAutoCalibration() const { return false; }
 
 	// Perform auto calibration. Override this implementation in kinematics that support it. Caller already owns the movement lock.
-	virtual void DoAutoCalibration(size_t numFactors, const RandomProbePointSet& probePoints, StringRef& reply)
-	pre(SupportsAutoCalibration()) { }
+	// Return true if an error occurred.
+	virtual bool DoAutoCalibration(size_t numFactors, const RandomProbePointSet& probePoints, StringRef& reply)
+	pre(SupportsAutoCalibration()) { return false; }
 
 	// Set the default parameters that are changed by auto calibration back to their defaults.
 	// Do nothing if auto calibration is not supported.
@@ -145,10 +146,8 @@ public:
 	// This default is good for Cartesian and Core printers, but not deltas or SCARA
 	virtual AxesBitmap AxesAssumedHomed(AxesBitmap g92Axes) const { return g92Axes; }
 
-#ifdef DUET_NG
 	// Write any calibration data that we need to resume a print after power fail, returning true if successful. Override where necessary.
 	virtual bool WriteResumeSettings(FileStore *f) const { return true; }
-#endif
 
 	// Override this virtual destructor if your constructor allocates any dynamic memory
 	virtual ~Kinematics() { }
@@ -166,10 +165,7 @@ public:
 	float GetMinSegmentLength() const pre(UseSegmentation()) { return minSegmentLength; }
 
 protected:
-	// This constructor is used by derived classes that implement non-segmented linear motion
-	Kinematics(KinematicsType t);
-
-	// This constructor is used by derived classes that implement segmented linear motion
+	// Constructor. Pass segsPerSecond <= 0.0 to get non-segmented motion.
 	Kinematics(KinematicsType t, float segsPerSecond, float minSegLength, bool doUseRawG0);
 
 	// Apply the M208 limits to the Cartesian position that the user wants to move to for all axes from the specified one upwards

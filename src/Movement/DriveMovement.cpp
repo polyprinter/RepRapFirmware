@@ -171,7 +171,7 @@ void DriveMovement::PrepareExtruder(const DDA& dda, const PrepParams& params, bo
 	// First check whether there is any deceleration at all, otherwise we may get strange results because of rounding errors
 	if (dda.decelDistance * stepsPerMm < 0.5)		// if less than 1 deceleration step
 	{
-		totalSteps = (uint)max<int32_t>(netSteps, 0);
+		totalSteps = (uint32_t)max<int32_t>(netSteps, 0);
 		mp.cart.decelStartStep = reverseStartStep = netSteps + 1;
 		topSpeedTimesCdivAPlusDecelStartClocks = 0;
 		mp.cart.fourMaxStepDistanceMinusTwoDistanceToStopTimesCsquaredDivA = 0;
@@ -197,7 +197,7 @@ void DriveMovement::PrepareExtruder(const DDA& dda, const PrepParams& params, bo
 		if (reverseStartDistance >= dda.totalDistance)
 		{
 			// No reverse phase
-			totalSteps = (uint)max<int32_t>(netSteps, 0);
+			totalSteps = (uint32_t)max<int32_t>(netSteps, 0);
 			reverseStartStep = netSteps + 1;
 			mp.cart.fourMaxStepDistanceMinusTwoDistanceToStopTimesCsquaredDivA = 0;
 		}
@@ -217,7 +217,7 @@ void DriveMovement::PrepareExtruder(const DDA& dda, const PrepParams& params, bo
 			}
 			else
 			{
-				totalSteps = (uint)max<int32_t>(netSteps, 0);
+				totalSteps = (uint32_t)max<int32_t>(netSteps, 0);
 				reverseStartStep = totalSteps + 1;
 				mp.cart.fourMaxStepDistanceMinusTwoDistanceToStopTimesCsquaredDivA = 0;
 			}
@@ -279,7 +279,7 @@ void DriveMovement::PrepareExtruderWithLinearAdvance(const DDA& dda, const PrepP
 	// First check whether there is any deceleration at all, otherwise we may get strange results because of rounding errors
 	if (dda.decelDistance * stepsPerMm < 0.5)		// if less than 1 deceleration step
 	{
-		totalSteps = (uint)max<int32_t>(netSteps, 0);
+		totalSteps = (uint32_t)max<int32_t>(netSteps, 0);
 		mp.cart.decelStartStep = reverseStartStep = netSteps + 1;
 		topSpeedTimesCdivAPlusDecelStartClocks = 0;
 		mp.cart.fourMaxStepDistanceMinusTwoDistanceToStopTimesCsquaredDivA = 0;
@@ -305,7 +305,7 @@ void DriveMovement::PrepareExtruderWithLinearAdvance(const DDA& dda, const PrepP
 		if (reverseStartDistance >= dda.totalDistance)
 		{
 			// No reverse phase
-			totalSteps = (uint)max<int32_t>(netSteps, 0);
+			totalSteps = (uint32_t)max<int32_t>(netSteps, 0);
 			reverseStartStep = netSteps + 1;
 			mp.cart.fourMaxStepDistanceMinusTwoDistanceToStopTimesCsquaredDivA = 0;
 		}
@@ -328,14 +328,14 @@ void DriveMovement::PrepareExtruderWithLinearAdvance(const DDA& dda, const PrepP
 				if ( rootvalue < 0 )
 				{
 					// it going to barf!!!
-					debugPrintf("Error in Extruder deceleration - root val %ld\n", rootvalue );
+					debugPrintf("Error in Extruder deceleration - root val %lld\n", rootvalue );
 					DebugPrint('E', false );
 				}
 #endif
 			}
 			else
 			{
-				totalSteps = (uint)max<int32_t>(netSteps, 0);
+				totalSteps = (uint32_t)max<int32_t>(netSteps, 0);
 				reverseStartStep = totalSteps + 1;
 				mp.cart.fourMaxStepDistanceMinusTwoDistanceToStopTimesCsquaredDivA = 0;
 			}
@@ -355,7 +355,7 @@ void DriveMovement::PrepareExtruderWithVibration(const DDA& dda, const PrepParam
 	float cycleCount = expectedTime_SEC * zHomingParams.frequency_HZ;
 	mp.vibration.stepsPerHalfCycle = zHomingParams.amplitude_MM * stepsPerMm;		// we could possibly just as well specify this in steps instead of MM?
 	totalSteps = 2 * cycleCount * mp.vibration.stepsPerHalfCycle;
-	debugPrintf("vibration with %d phases per cycle, %f HZ\n", vibrationPhasesPerCycle, zHomingParams.frequency_HZ );
+	debugPrintf("vibration with %d phases per cycle, %f HZ\n", vibrationPhasesPerCycle, (double)zHomingParams.frequency_HZ );
 	mp.vibration.clocksPerPhase = DDA::stepClockRate / ( vibrationPhasesPerCycle * zHomingParams.frequency_HZ );
 	mp.vibration.phase = 0; // start things off
 	debugPrintf("Set up vibration with %d clks/phase and %d steps per half cycle\n", mp.vibration.clocksPerPhase, mp.vibration.stepsPerHalfCycle );
@@ -366,23 +366,23 @@ void DriveMovement::DebugPrint(char c, bool isDeltaMovement) const
 {
 	if (state != DMState::idle)
 	{
-		debugPrintf("DM%c%s dir=%c steps=%u next=%u rev=%u interval=%u sstcda=%u "
-					"acmadtcdts=%d tstcdapdsc=%u 2dtstc2diva=%" PRIu64 "\n",
+		debugPrintf("DM%c%s dir=%c steps=%" PRIu32 " next=%" PRIu32 " rev=%" PRIu32 " interval=%" PRIu32 " sstcda=%" PRIu32 " "
+					"acmadtcdts=%" PRIi32 " tstcdapdsc=%" PRIu32 " 2dtstc2diva=%" PRIu64 "\n",
 					c, (state == DMState::stepError) ? " ERR:" : ":", (direction) ? 'F' : 'B', totalSteps, nextStep, reverseStartStep, stepInterval, startSpeedTimesCdivA,
 					accelClocksMinusAccelDistanceTimesCdivTopSpeed, topSpeedTimesCdivAPlusDecelStartClocks, twoDistanceToStopTimesCsquaredDivA);
 
 		if (isDeltaMovement)
 		{
-			debugPrintf("hmz0sK=%d minusAaPlusBbTimesKs=%d dSquaredMinusAsquaredMinusBsquared=%" PRId64 "\n"
-						"2c2mmsdak=%u asdsk=%u dsdsk=%u mmstcdts=%u\n",
+			debugPrintf("hmz0sK=%" PRIi32 " minusAaPlusBbTimesKs=%" PRIi32 " dSquaredMinusAsquaredMinusBsquared=%" PRId64 "\n"
+						"2c2mmsdak=%" PRIu32 " asdsk=%" PRIu32 " dsdsk=%" PRIu32 " mmstcdts=%" PRIu32 "\n",
 						mp.delta.hmz0sK, mp.delta.minusAaPlusBbTimesKs, mp.delta.dSquaredMinusAsquaredMinusBsquaredTimesKsquaredSsquared,
 						mp.delta.twoCsquaredTimesMmPerStepDivAK, mp.delta.accelStopDsK, mp.delta.decelStartDsK, mp.delta.mmPerStepTimesCdivtopSpeedK
 						);
 		}
 		else
 		{
-			debugPrintf("accelStopStep=%u decelStartStep=%u 2CsqtMmPerStepDivA=%" PRIu64 "\n"
-						"mmPerStepTimesCdivtopSpeed=%u fmsdmtstdca2=%" PRId64 "\n",
+			debugPrintf("accelStopStep=%" PRIu32 " decelStartStep=%" PRIu32 " 2CsqtMmPerStepDivA=%" PRIu64 "\n"
+						"mmPerStepTimesCdivtopSpeed=%" PRIu32 " fmsdmtstdca2=%" PRId64 "\n",
 						mp.cart.accelStopStep, mp.cart.decelStartStep, mp.cart.twoCsquaredTimesMmPerStepDivA,
 						mp.cart.mmPerStepTimesCdivtopSpeed, mp.cart.fourMaxStepDistanceMinusTwoDistanceToStopTimesCsquaredDivA
 						);

@@ -24,10 +24,18 @@ GridDefinition::GridDefinition()
 	CheckValidity();		// will flag the grid as invalid
 }
 
-GridDefinition::GridDefinition(const float xRange[2], const float yRange[2], float pRadius, const float pSpacings[2])
-	: xMin(xRange[0]), xMax(xRange[1]), yMin(yRange[0]), yMax(yRange[1]), radius(pRadius), xSpacing(pSpacings[0]), ySpacing(pSpacings[1])
+// Set the grid parameters ands return true if it is now valid
+bool GridDefinition::Set(const float xRange[2], const float yRange[2], float pRadius, const float pSpacings[2])
 {
+	xMin = xRange[0];
+	xMax = xRange[1];
+	yMin = yRange[0];
+	yMax = yRange[1];
+	radius = pRadius;
+	xSpacing = pSpacings[0];
+	ySpacing = pSpacings[1];
 	CheckValidity();
+	return isValid;
 }
 
 // Set up internal variables and check validity of the grid.
@@ -66,14 +74,15 @@ bool GridDefinition::IsInRadius(float x, float y) const
 // Append the grid parameters to the end of a string
 void GridDefinition::PrintParameters(StringRef& s) const
 {
-	s.catf("X%.1f:%.1f, Y%.1f:%.1f, radius %.1f, X spacing %.1f, Y spacing %.1f, %d points", xMin, xMax, yMin, yMax, radius, xSpacing, ySpacing,NumPoints());
+	s.catf("X%.1f:%.1f, Y%.1f:%.1f, radius %.1f, X spacing %.1f, Y spacing %.1f, %" PRIu32 " points",
+		(double)xMin, (double)xMax, (double)yMin, (double)yMax, (double)radius, (double)xSpacing, (double)ySpacing, NumPoints());
 }
 
 // Write the parameter label line to a string
 void GridDefinition::WriteHeadingAndParameters(StringRef& s) const
 {
-	s.printf("%s\n%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%u,%u\n",
-				HeightMapLabelLines[ARRAY_UPB(HeightMapLabelLines)], xMin, xMax, yMin, yMax, radius, xSpacing, ySpacing, numX, numY);
+	s.printf("%s\n%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%" PRIi32 ",%" PRIi32 "\n",
+				HeightMapLabelLines[ARRAY_UPB(HeightMapLabelLines)], (double)xMin, (double)xMax, (double)yMin, (double)yMax, (double)radius, (double)xSpacing, (double)ySpacing, numX, numY);
 }
 
 // Check the parameter label line, returning -1 if not recognised, else the version we found
@@ -146,7 +155,7 @@ void GridDefinition::PrintError(float originalXrange, float originalYrange, Stri
 		const float area = originalXrange * originalYrange;
 		const float minSpacing = (totalRange + sqrtf(fsquare(totalRange) + 4.0 * (MaxGridProbePoints - 1) * area))/(2.0 * (MaxGridProbePoints - 1));
 		const float minXspacing = originalXrange/(MaxXGridPoints - 1);
-		r.catf("Too many grid points; suggest increase spacing to %.1fmm", max<float>(minSpacing, minXspacing));
+		r.catf("Too many grid points; suggest increase spacing to %.1fmm", (double)max<float>(minSpacing, minXspacing));
 	}
 	else
 	{
@@ -216,7 +225,7 @@ bool HeightMap::SaveToFile(FileStore *f) const
 	}
 	float mean, deviation;
 	(void)GetStatistics(mean, deviation);
-	buf.catf(", mean error %.3f, deviation %.3f\n", mean, deviation);
+	buf.catf(", mean error %.3f, deviation %.3f\n", (double)mean, (double)deviation);
 	if (!f->Write(buf.Pointer()))
 	{
 		return true;
@@ -242,7 +251,7 @@ bool HeightMap::SaveToFile(FileStore *f) const
 			}
 			if (IsHeightSet(index))
 			{
-				buf.catf("%7.3f%", gridHeights[index]);
+				buf.catf("%7.3f", (double)gridHeights[index]);
 			}
 			else
 			{
@@ -324,7 +333,7 @@ bool HeightMap::LoadFromFile(FileStore *f, StringRef& r)
 					const float f = strtod(p, &np);
 					if (np == p)
 					{
-						r.catf("number expected at line %u column %d", row + 3, (p - buffer) + 1);
+						r.catf("number expected at line %" PRIu32 " column %d", row + 3, (p - buffer) + 1);
 						return true;						// failed to read a number
 					}
 					SetGridHeight(col, row, f);
@@ -354,7 +363,7 @@ unsigned int HeightMap::GetStatistics(float& mean, float& deviation) const
 			++numProbed;
 			const double heightError = (double)gridHeights[i];
 			heightSum += heightError;
-			heightSquaredSum += fsquare(heightError);
+			heightSquaredSum += dsquare(heightError);
 		}
 	}
 	if (numProbed == 0)

@@ -8,7 +8,17 @@
 #include "StringRef.h"
 #include <cstring>
 #include <cstdio>
-#undef printf			// some idiot defined printf as a macro inside cstdio, which prevents us using it as a member function name
+
+// Need to define strnlen here because it isn't ISO standard
+size_t strnlen(const char *s, size_t n)
+{
+	size_t rslt = 0;
+	while (rslt < n && s[rslt] != 0)
+	{
+		++rslt;
+	}
+	return rslt;
+}
 
 //*************************************************************************************************
 // StringRef class member implementations
@@ -42,6 +52,16 @@ int StringRef::catf(const char *fmt, ...) const
 		int ret = vsnprintf(p + n, len - n, fmt, vargs);
 		va_end(vargs);
 		return ret + n;
+	}
+	return 0;
+}
+
+int StringRef::vcatf(const char *fmt, va_list vargs) const
+{
+	size_t n = strlen();
+	if (n + 1 < len)		// if room for at least 1 more character and a null
+	{
+		return vsnprintf(p + n, len - n, fmt, vargs) + n;
 	}
 	return 0;
 }

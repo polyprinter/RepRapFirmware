@@ -84,8 +84,8 @@ void Move::Init()
 	usingMesh = false;
 	useTaper = false;
 
-	longWait = reprap.GetPlatform().Time();
-	idleTimeout = DEFAULT_IDLE_TIMEOUT;
+	longWait = millis();
+	idleTimeout = DefaultIdleTimeout;
 	iState = IdleState::idle;
 	idleCount = 0;
 
@@ -272,7 +272,7 @@ void Move::Spin()
 				}
 				else
 				{
-					Platform::DisableStepInterrupt();					// should be disabled already because we weren't executing a move, but make sure
+					Platform::DisableStepInterrupt();				// should be disabled already because we weren't executing a move, but make sure
 					if (StartNextMove(Platform::GetInterruptClocks()))	// start the next move
 					{
 						Interrupt();
@@ -280,15 +280,18 @@ void Move::Spin()
 				}
 				iState = IdleState::busy;
 			}
-			else if (!simulationMode != 0 && iState == IdleState::busy && !reprap.GetGCodes().IsPaused() && idleTimeout > 0.0)
+			else if (simulationMode != 0)
 			{
-				lastMoveTime = reprap.GetPlatform().Time();			// record when we first noticed that the machine was idle
-				iState = IdleState::timing;
-			}
-			else if (!simulationMode != 0 && iState == IdleState::timing && reprap.GetPlatform().Time() - lastMoveTime >= idleTimeout)
-			{
-				reprap.GetPlatform().SetDriversIdle();					// put all drives in idle hold
-				iState = IdleState::idle;
+				if (iState == IdleState::busy && !reprap.GetGCodes().IsPaused())
+				{
+					lastMoveTime = millis();						// record when we first noticed that the machine was idle
+					iState = IdleState::timing;
+				}
+				else if (iState == IdleState::timing && millis() - lastMoveTime >= idleTimeout)
+				{
+					reprap.GetPlatform().SetDriversIdle();			// put all drives in idle hold
+					iState = IdleState::idle;
+				}
 			}
 		}
 	}
@@ -467,14 +470,14 @@ void Move::ClearPendingMoves()
 		}
 		while (dda != savedDdaRingAddPointer);
 		Platform& platform = reprap.GetPlatform();
-		platform.Message(GENERIC_MESSAGE, "ClearPendingMoves - freed rest of moves\n");
+		platform.Message(GenericMessage, "ClearPendingMoves - freed rest of moves\n");
 	}
 
 #ifdef TEST_CLEAR_MOVES_ASSUMPTIONS // TODO: this seems to always send the message - why?
 	if ( !reprap.GetMove()->AllMovesAreFinished() )
 	{
 		Platform * const platform = reprap.GetPlatform();
-		platform->Message(GENERIC_MESSAGE, "ClearPendingMoves does not end up with AllMovesAreFinished!\n");
+		platform->Message(GenericMessage, "ClearPendingMoves does not end up with AllMovesAreFinished!\n");
 	}
 #endif
 
@@ -556,12 +559,6 @@ bool Move::PausePrint(RestorePoint& rp)
 
 	InverseAxisAndBedTransform(rp.moveCoords, prevDda->GetXAxes(), prevDda->GetYAxes());	// we assume that xAxes hasn't changed between the moves
 
-	const size_t numTotalAxes = reprap.GetGCodes().GetTotalAxes();
-	for (size_t drive = numTotalAxes; drive < DRIVES; ++drive)
-	{
-		rp.moveCoords[drive] = 0.0;						// clear out extruder movement
-	}
-
 	dda = ddaRingAddPointer;
 	rp.feedRate = dda->GetRequestedSpeed();
 	rp.virtualExtruderPosition = dda->GetVirtualExtruderPosition();
@@ -571,13 +568,9 @@ bool Move::PausePrint(RestorePoint& rp)
 	rp.ioBits = dda->GetIoBits();
 #endif
 
-	// Free the DDAs for the moves we are going to skip, and work out how much extrusion they would have performed
+	// Free the DDAs for the moves we are going to skip
 	do
 	{
-		for (size_t drive = numTotalAxes; drive < DRIVES; ++drive)
-		{
-			rp.moveCoords[drive] += dda->GetEndCoordinate(drive, true);		// update the amount of extrusion we are going to skip
-		}
 		(void)dda->Free();
 		dda = dda->GetNext();
 		scheduledMoves--;
@@ -599,14 +592,14 @@ void Move::Diagnostics(MessageType mtype)
 {
 	Platform& p = reprap.GetPlatform();
 	p.Message(mtype, "=== Move ===\n");
-	p.MessageF(mtype, "MaxReps: %u, StepErrors: %u, FreeDm: %d, MinFreeDm %d, MaxWait: %ums, Underruns: %u, %u\n",
+	p.MessageF(mtype, "MaxReps: %" PRIu32 ", StepErrors: %u, FreeDm: %d, MinFreeDm %d, MaxWait: %" PRIu32 "ms, Underruns: %u, %u\n",
 						maxReps, stepErrors, DriveMovement::NumFree(), DriveMovement::MinFree(), longestGcodeWaitInterval, numLookaheadUnderruns, numPrepareUnderruns);
 	maxReps = 0;
 	numLookaheadUnderruns = numPrepareUnderruns = 0;
 	longestGcodeWaitInterval = 0;
 	DriveMovement::ResetMinFree();
 
-	reprap.GetPlatform().MessageF(mtype, "Scheduled moves: %u, completed moves: %u\n", scheduledMoves, completedMoves);
+	reprap.GetPlatform().MessageF(mtype, "Scheduled moves: %" PRIu32 ", completed moves: %" PRIu32 "\n", scheduledMoves, completedMoves);
 
 #if defined(__ALLIGATOR__)
 	// Motor Fault Diagnostic
@@ -632,7 +625,7 @@ void Move::Diagnostics(MessageType mtype)
 	// To keep the response short so that it doesn't get truncated when sending it via HTTP, we only show the first 5 bed probe points
 	for (size_t i = 0; i < 5; ++i)
 	{
-		p.MessageF(mtype, " %.3f", probePoints.GetZHeight(i));
+		p.MessageF(mtype, " %.3f", (double)probePoints.GetZHeight(i));
 	}
 	p.Message(mtype, "\n");
 
@@ -654,7 +647,7 @@ void Move::Diagnostics(MessageType mtype)
 	// For debugging
 	if (sqCount != 0)
 	{
-		p.AppendMessage(GENERIC_MESSAGE, "Average sqrt times %.2f, %.2f, count %u,  errors %u, last %" PRIu64 " %u %u\n",
+		p.AppendMessage(GenericMessage, "Average sqrt times %.2f, %.2f, count %u,  errors %u, last %" PRIu64 " %u %u\n",
 				(float)sqSum1/sqCount, (float)sqSum2/sqCount, sqCount, sqErrors, lastNum, lastRes1, lastRes2);
 		sqSum1 = sqSum2 = sqCount = sqErrors = 0;
 	}
@@ -680,13 +673,13 @@ void Move::SetPositions(const float move[DRIVES])
 	}
 	else
 	{
-		reprap.GetPlatform().Message(GENERIC_MESSAGE, "SetPositions called when DDA ring not empty\n");
+		reprap.GetPlatform().Message(ErrorMessage, "SetPositions called when DDA ring not empty\n");
 	}
 }
 
 void Move::EndPointToMachine(const float coords[], int32_t ep[], size_t numDrives) const
 {
-	if (CartesianToMotorSteps(coords, ep))
+	if (CartesianToMotorSteps(coords, ep, true))
 	{
 		const size_t numAxes = reprap.GetGCodes().GetTotalAxes();
 		for (size_t drive = numAxes; drive < numDrives; ++drive)
@@ -711,18 +704,19 @@ void Move::MotorStepsToCartesian(const int32_t motorPos[], size_t numVisibleAxes
 
 // Convert Cartesian coordinates to motor steps, axes only, returning true if successful.
 // Used to perform movement and G92 commands.
-bool Move::CartesianToMotorSteps(const float machinePos[MaxAxes], int32_t motorPos[MaxAxes]) const
+bool Move::CartesianToMotorSteps(const float machinePos[MaxAxes], int32_t motorPos[MaxAxes], bool allowModeChange) const
 {
-	const bool b = kinematics->CartesianToMotorSteps(machinePos, reprap.GetPlatform().GetDriveStepsPerUnit(), reprap.GetGCodes().GetVisibleAxes(), reprap.GetGCodes().GetTotalAxes(), motorPos);
+	const bool b = kinematics->CartesianToMotorSteps(machinePos, reprap.GetPlatform().GetDriveStepsPerUnit(),
+														reprap.GetGCodes().GetVisibleAxes(), reprap.GetGCodes().GetTotalAxes(), motorPos, allowModeChange);
 	if (reprap.Debug(moduleMove) && reprap.Debug(moduleDda))
 	{
 		if (b)
 		{
-			debugPrintf("Transformed %.2f %.2f %.2f to %d %d %d\n", machinePos[0], machinePos[1], machinePos[2], motorPos[0], motorPos[1], motorPos[2]);
+			debugPrintf("Transformed %.2f %.2f %.2f to %" PRIu32 " %" PRIu32 " %" PRIu32 "\n", (double)machinePos[0], (double)machinePos[1], (double)machinePos[2], motorPos[0], motorPos[1], motorPos[2]);
 		}
 		else
 		{
-			debugPrintf("Unable to transform %.2f %.2f %.2f\n", machinePos[0], machinePos[1], machinePos[2]);
+			debugPrintf("Unable to transform %.2f %.2f %.2f\n", (double)machinePos[0], (double)machinePos[1], (double)machinePos[2]);
 		}
 	}
 	return b;
@@ -818,7 +812,7 @@ void Move::BedTransform(float xyzPoint[MaxAxes], AxesBitmap xAxes, AxesBitmap yA
 						const float yCoord = xyzPoint[yAxis];
 						if (usingMesh)
 						{
-							zCorrection += grid.GetInterpolatedHeightError(xCoord, yCoord);
+							zCorrection += heightMap.GetInterpolatedHeightError(xCoord, yCoord);
 						}
 						else
 						{
@@ -860,7 +854,7 @@ void Move::InverseBedTransform(float xyzPoint[MaxAxes], AxesBitmap xAxes, AxesBi
 					const float yCoord = xyzPoint[yAxis];
 					if (usingMesh)
 					{
-						zCorrection += grid.GetInterpolatedHeightError(xCoord, yCoord);
+						zCorrection += heightMap.GetInterpolatedHeightError(xCoord, yCoord);
 					}
 					else
 					{
@@ -894,8 +888,8 @@ void Move::InverseBedTransform(float xyzPoint[MaxAxes], AxesBitmap xAxes, AxesBi
 void Move::SetIdentityTransform()
 {
 	probePoints.SetIdentity();
-	grid.ClearGridHeights();
-	grid.UseHeightMap(false);
+	heightMap.ClearGridHeights();
+	heightMap.UseHeightMap(false);
 	usingMesh = false;
 }
 
@@ -912,7 +906,7 @@ void Move::SetTaperHeight(float h)
 // Enable mesh bed compensation
 bool Move::UseMesh(bool b)
 {
-	usingMesh = grid.UseHeightMap(b);
+	usingMesh = heightMap.UseHeightMap(b);
 	return usingMesh;
 }
 
@@ -929,11 +923,12 @@ void Move::SetAxisCompensation(unsigned int axis, float tangent)
 	}
 }
 
-// Calibrate or set the bed equation after probing.
+// Calibrate or set the bed equation after probing, returning true if an error occurred
 // sParam is the value of the S parameter in the G30 command that provoked this call.
 // Caller already owns the GCode movement lock.
-void Move::FinishedBedProbing(int sParam, StringRef& reply)
+bool Move::FinishedBedProbing(int sParam, StringRef& reply)
 {
+	bool error = false;
 	const size_t numPoints = probePoints.NumberOfProbePoints();
 
 	if (sParam < 0)
@@ -943,7 +938,8 @@ void Move::FinishedBedProbing(int sParam, StringRef& reply)
 	}
 	else if (numPoints < (size_t)sParam)
 	{
-		reprap.GetPlatform().MessageF(GENERIC_MESSAGE, "Bed calibration error: %d factor calibration requested but only %d points provided\n", sParam, numPoints);
+		reply.printf("Bed calibration : %d factor calibration requested but only %d points provided\n", sParam, numPoints);
+		error = true;
 	}
 	else
 	{
@@ -959,21 +955,23 @@ void Move::FinishedBedProbing(int sParam, StringRef& reply)
 
 		if (!probePoints.GoodProbePoints(numPoints))
 		{
-			reply.cat("Compensation or calibration cancelled due to probing errors");
+			reply.copy("Compensation or calibration cancelled due to probing errors");
+			error = true;
 		}
 		else if (kinematics->SupportsAutoCalibration())
 		{
-			kinematics->DoAutoCalibration(sParam, probePoints, reply);
+			error = kinematics->DoAutoCalibration(sParam, probePoints, reply);
 		}
 		else
 		{
-			probePoints.SetProbedBedEquation(sParam, reply);
+			error = probePoints.SetProbedBedEquation(sParam, reply);
 		}
 	}
 
 	// Clear out the Z heights so that we don't re-use old points.
 	// This allows us to use different numbers of probe point on different occasions.
 	probePoints.ClearProbeHeights();
+	return error;
 }
 
 // Perform motor endpoint adjustment
@@ -1149,11 +1147,11 @@ void Move::ZProbeTriggered(DDA* hitDDA)
 }
 
 // Return the untransformed machine coordinates
-void Move::GetCurrentMachinePosition(float m[DRIVES], bool disableMotorMapping) const
+void Move::GetCurrentMachinePosition(float m[MaxAxes], bool disableMotorMapping) const
 {
 	DDA * const lastQueuedMove = ddaRingAddPointer->GetPrevious();
 	const size_t numAxes = reprap.GetGCodes().GetVisibleAxes();
-	for (size_t i = 0; i < DRIVES; i++)
+	for (size_t i = 0; i < MaxAxes; i++)
 	{
 		if (i < numAxes)
 		{
@@ -1181,7 +1179,7 @@ bool Move::IsExtruding() const
 }
 
 // Return the transformed machine coordinates
-void Move::GetCurrentUserPosition(float m[DRIVES], uint8_t moveType, AxesBitmap xAxes, AxesBitmap yAxes) const
+void Move::GetCurrentUserPosition(float m[MaxAxes], uint8_t moveType, AxesBitmap xAxes, AxesBitmap yAxes) const
 {
 	GetCurrentMachinePosition(m, IsRawMotorMove(moveType));
 	if (moveType == 0)
@@ -1270,7 +1268,7 @@ void Move::SetXYBedProbePoint(size_t index, float x, float y)
 {
 	if (index >= MaxProbePoints)
 	{
-		reprap.GetPlatform().Message(GENERIC_MESSAGE, "Z probe point index out of range.\n");
+		reprap.GetPlatform().Message(ErrorMessage, "Z probe point index out of range.\n");
 	}
 	else
 	{
@@ -1282,7 +1280,7 @@ void Move::SetZBedProbePoint(size_t index, float z, bool wasXyCorrected, bool wa
 {
 	if (index >= MaxProbePoints)
 	{
-		reprap.GetPlatform().Message(GENERIC_MESSAGE, "Z probe point Z index out of range.\n");
+		reprap.GetPlatform().Message(ErrorMessage, "Z probe point Z index out of range.\n");
 	}
 	else
 	{
@@ -1332,7 +1330,17 @@ void Move::AdjustLeadscrews(const floatc_t corrections[])
 	specialMoveAvailable = true;
 }
 
-#ifdef DUET_NG
+// Return the idle timeout in seconds
+float Move::IdleTimeout() const
+{
+	return (float)idleTimeout * 0.001;
+}
+
+// Set the idle timeout in seconds
+void Move::SetIdleTimeout(float timeout)
+{
+	idleTimeout = (uint32_t)lrintf(timeout * 1000.0);
+}
 
 // Write settings for resuming the print
 // The GCodes module deals with the head position so all we need worry about is the bed compensation
@@ -1341,8 +1349,6 @@ bool Move::WriteResumeSettings(FileStore *f) const
 {
 	return kinematics->WriteResumeSettings(f) && (!usingMesh || f->Write("G29 S1\n"));
 }
-
-#endif
 
 // For debugging
 void Move::PrintCurrentDda() const

@@ -13,7 +13,7 @@
 #include "Movement/DDA.h"
 
 ScaraKinematics::ScaraKinematics()
-	: Kinematics(KinematicsType::scara, DefaultSegmentsPerSecond, DefaultMinSegmentSize, true),
+	: ZLeadscrewKinematics(KinematicsType::scara, DefaultSegmentsPerSecond, DefaultMinSegmentSize, true),
 	  proximalArmLength(DefaultProximalArmLength), distalArmLength(DefaultDistalArmLength), xOffset(0.0), yOffset(0.0)
 {
 	thetaLimits[0] = DefaultMinTheta;
@@ -32,7 +32,7 @@ const char *ScaraKinematics::GetName(bool forStatusReport) const
 
 // Convert Cartesian coordinates to motor coordinates
 // In the following, theta is the proximal arm angle relative to the X axis, psi is the distal arm angle relative to the proximal arm
-bool ScaraKinematics::CartesianToMotorSteps(const float machinePos[], const float stepsPerMm[], size_t numVisibleAxes, size_t numTotalAxes, int32_t motorPos[]) const
+bool ScaraKinematics::CartesianToMotorSteps(const float machinePos[], const float stepsPerMm[], size_t numVisibleAxes, size_t numTotalAxes, int32_t motorPos[], bool allowModeChange) const
 {
 	// No need to limit x,y to reachable positions here, we already did that in class GCodes
 	const float x = machinePos[X_AXIS] + xOffset;
@@ -56,11 +56,11 @@ bool ScaraKinematics::CartesianToMotorSteps(const float machinePos[], const floa
 	bool switchedMode = false;
 	for (;;)
 	{
-		if (isDefaultArmMode)
+		if (isDefaultArmMode != switchedMode)
 		{
 			// The following equations choose arm mode 0 i.e. distal arm rotated anticlockwise relative to proximal arm
 			theta = atan2f(SCARA_K1 * y - SCARA_K2 * x, SCARA_K1 * x + SCARA_K2 * y);
-			if (theta >= thetaLimits[0])
+			if (theta >= thetaLimits[0] && theta <= thetaLimits[1] && psi >= phiLimits[0] && psi <= phiLimits[1])
 			{
 				break;
 			}
@@ -69,7 +69,7 @@ bool ScaraKinematics::CartesianToMotorSteps(const float machinePos[], const floa
 		{
 			// The following equations choose arm mode 1 i.e. distal arm rotated clockwise relative to proximal arm
 			theta = atan2f(SCARA_K1 * y + SCARA_K2 * x, SCARA_K1 * x - SCARA_K2 * y);
-			if (theta <= thetaLimits[1])
+			if (theta >= thetaLimits[0] && theta <= thetaLimits[1] && psi >= phiLimits[0] && psi <= phiLimits[1])
 			{
 				psi = -psi;
 				break;
@@ -80,8 +80,13 @@ bool ScaraKinematics::CartesianToMotorSteps(const float machinePos[], const floa
 		{
 			return false;		// not reachable
 		}
-		isDefaultArmMode = !isDefaultArmMode;
 		switchedMode = true;
+	}
+
+	// Now that we know we are going to do the move, update the arm mode
+	if (switchedMode)
+	{
+		isDefaultArmMode = !isDefaultArmMode;
 	}
 
 //debugPrintf("psi = %.2f, theta = %.2f\n", psi * RadiansToDegrees, theta * RadiansToDegrees);
@@ -153,17 +158,17 @@ bool ScaraKinematics::Configure(unsigned int mCode, GCodeBuffer& gb, StringRef& 
 		{
 			reply.printf("Printer mode is Scara with proximal arm %.2fmm range %.1f to %.1f" DEGREE_SYMBOL
 							", distal arm %.2fmm range %.1f to %.1f" DEGREE_SYMBOL ", crosstalk %.1f:%.1f:%.1f, bed origin (%.1f, %.1f), segments/sec %d, min. segment length %.2f",
-							proximalArmLength, thetaLimits[0], thetaLimits[1],
-							distalArmLength, phiLimits[0], phiLimits[1],
-							crosstalk[0], crosstalk[1], crosstalk[2],
-							xOffset, yOffset,
-							(int)segmentsPerSecond, minSegmentLength);
+							(double)proximalArmLength, (double)thetaLimits[0], (double)thetaLimits[1],
+							(double)distalArmLength, (double)phiLimits[0], (double)phiLimits[1],
+							(double)crosstalk[0], (double)crosstalk[1], (double)crosstalk[2],
+							(double)xOffset, (double)yOffset,
+							(int)segmentsPerSecond, (double)minSegmentLength);
 		}
 		return seen;
 	}
 	else
 	{
-		return Kinematics::Configure(mCode, gb, reply, error);
+		return ZLeadscrewKinematics::Configure(mCode, gb, reply, error);
 	}
 }
 
@@ -172,8 +177,8 @@ bool ScaraKinematics::Configure(unsigned int mCode, GCodeBuffer& gb, StringRef& 
 bool ScaraKinematics::IsReachable(float x, float y) const
 {
 	// TODO The following isn't quite right, in particular it doesn't take account of the maximum arm travel
-    const float r = sqrtf(fsquare(x) + fsquare(y));
-    return r >= minRadius && r <= maxRadius && x > 0.0;
+    const float r = sqrtf(fsquare(x + xOffset) + fsquare(y + yOffset));
+    return r >= minRadius && r <= maxRadius && (x + xOffset) > 0.0;
 }
 
 // Limit the Cartesian position that the user wants to move to

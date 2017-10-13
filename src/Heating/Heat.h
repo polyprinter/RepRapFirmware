@@ -128,9 +128,10 @@ public:
 		return lastStandbyTools[heater];
 	}
 
+	bool WriteBedAndChamberTempSettings(FileStore *f) const;	// Save some resume information
+
 #ifdef DUET_NG
 	void SuspendHeaters(bool sus);								// Suspend the heaters to conserve power
-	bool WriteBedAndChamberTempSettings(FileStore *f) const;	// Save some resume information
 #endif
 
 private:
@@ -147,7 +148,7 @@ private:
 	TemperatureSensor *virtualHeaterSensors[MaxVirtualHeaters];	// Sensors for virtual heaters
 
 	uint32_t lastTime;											// The last time our Spin() was called
-	float longWait;												// Long time for things that happen occasionally
+	uint32_t longWait;											// Long time for things that happen occasionally
 
 	bool active;												// Are we active?
 	bool coldExtrude;											// Is cold extrusion allowed?

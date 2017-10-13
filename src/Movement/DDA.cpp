@@ -11,12 +11,12 @@
 #include "Move.h"
 #include "Kinematics/LinearDeltaKinematics.h"		// for DELTA_AXES
 
-//#ifdef DUET_NG
-# define DDA_MOVE_DEBUG	(1)
-//#else
+#ifdef DUET_NG
+# define DDA_MOVE_DEBUG	(0)
+#else
 // On the wired Duets we don't have enough RAM to support this
-//# define DDA_MOVE_DEBUG	(0)
-//#endif
+# define DDA_MOVE_DEBUG	(0)
+#endif
 
 #if DDA_MOVE_DEBUG
 // Structure to hold the essential parameters of a move, for debugging
@@ -51,10 +51,10 @@ static size_t savedMovePointer = 0;
 	for (size_t i = 0; i < NumSavedMoves; ++i)
 	{
 		const MoveParameters& m = savedMoves[movePointer];
-		movePointer = (movePointer + 1) % NumSavedMoves;
 		if ( m.isUsed() ) {
 			reprap.GetPlatform().MessageF(DEBUG_MESSAGE, "%f,%f,%f,%f,%f,%f\n", m.accelDistance, m.steadyDistance, m.decelDistance, m.startSpeed, m.topSpeed, m.endSpeed);
 		}
+		movePointer = (movePointer + 1) % NumSavedMoves;
 	}
 }
 
@@ -333,7 +333,7 @@ void DDA::DebugPrintVector(const char *name, const float *vec, size_t len) const
 	debugPrintf("%s=", name);
 	for (size_t i = 0; i < len; ++i)
 	{
-		debugPrintf("%c%f", ((i == 0) ? '[' : ' '), vec[i]);
+		debugPrintf("%c%f", ((i == 0) ? '[' : ' '), (double)vec[i]);
 	}
 	debugPrintf("]");
 }
@@ -353,12 +353,12 @@ void DDA::DebugPrint() const
 		DebugPrintVector(" end", endCoordinates, numAxes);
 	}
 
-	debugPrintf(" d=%f", totalDistance);
+	debugPrintf(" d=%f", (double)totalDistance);
 	DebugPrintVector(" vec", directionVector, 5);
 	debugPrintf("\na=%f reqv=%f topv=%f startv=%f endv=%f\n"
-				"daccel=%f ddecel=%f cks=%u\n",
-				acceleration, requestedSpeed, topSpeed, startSpeed, endSpeed,
-				accelDistance, decelDistance, clocksNeeded);
+				"daccel=%f ddecel=%f cks=%" PRIu32 "\n",
+				(double)acceleration, (double)requestedSpeed, (double)topSpeed, (double)startSpeed, (double)endSpeed,
+				(double)accelDistance, (double)decelDistance, clocksNeeded);
 	for (size_t axis = 0; axis < numAxes; ++axis)
 	{
 		if (pddm[axis] != nullptr)
@@ -411,7 +411,7 @@ bool DDA::Init(GCodes::RawMove &nextMove, bool doMotorMapping)
 	const Move& move = reprap.GetMove();
 	if (doMotorMapping)
 	{
-		if (!move.CartesianToMotorSteps(nextMove.coords, endPoint))		// transform the axis coordinates if on a delta or CoreXY printer
+		if (!move.CartesianToMotorSteps(nextMove.coords, endPoint, !nextMove.isCoordinated))		// transform the axis coordinates if on a delta or CoreXY printer
 		{
 			return false;												// throw away the move if it couldn't be transformed
 		}
@@ -2219,12 +2219,12 @@ void DDA::Prepare(uint8_t simMode)
 					{
 						// The distance to reversal is the solution to a quadratic equation. One root corresponds to the carriages being below the bed,
 						// the other root corresponds to the carriages being above the bed.
-						const float drev = ((directionVector[Z_AXIS] * sqrt(a2b2D2 - fsquare(A * directionVector[Y_AXIS] - B * directionVector[X_AXIS])))
+						const float drev = ((directionVector[Z_AXIS] * sqrtf(a2b2D2 - fsquare(A * directionVector[Y_AXIS] - B * directionVector[X_AXIS])))
 											- aAplusbB)/a2plusb2;
 						if (drev > 0.0 && drev < totalDistance)		// if the reversal point is within range
 						{
 							// Calculate how many steps we need to move up before reversing
-							const float hrev = directionVector[Z_AXIS] * drev + sqrt(dSquaredMinusAsquaredMinusBsquared - 2 * drev * aAplusbB - a2plusb2 * fsquare(drev));
+							const float hrev = directionVector[Z_AXIS] * drev + sqrtf(dSquaredMinusAsquaredMinusBsquared - 2 * drev * aAplusbB - a2plusb2 * fsquare(drev));
 							const int32_t numStepsUp = (int32_t)((hrev - h0MinusZ0) * stepsPerMm);
 
 							// We may be almost at the peak height already, in which case we don't really have a reversal.
