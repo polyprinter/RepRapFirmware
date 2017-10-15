@@ -60,9 +60,16 @@ constexpr Pin AdditionalIoExpansionStart = 220;		// Pin numbers 220-235 are on t
 
 // DRIVES
 constexpr Pin GlobalTmcEnablePin = 38;				// The pin that drives ENN of all TMC2660 drivers on production boards (on pre-production boards they are grounded)
+#ifdef POLYPRINTER
+// we use a daughterboard that swaps X vs Y
+constexpr Pin ENABLE_PINS[DRIVES] = { 78, 42, 41, 49, 57, 87, 88, 89, 90, 31, 82, 60 };
+constexpr Pin STEP_PINS[DRIVES] = { 70, 72, 71, 69, 68, 66, 65, 64, 67, 91, 84, 85 };
+constexpr Pin DIRECTION_PINS[DRIVES] = { 75, 77, 76, 01, 73, 92, 86, 80, 81, 32, 83, 25 };
+#else
 constexpr Pin ENABLE_PINS[DRIVES] = { 78, 41, 42, 49, 57, 87, 88, 89, 90, 31, 82, 60 };
 constexpr Pin STEP_PINS[DRIVES] = { 70, 71, 72, 69, 68, 66, 65, 64, 67, 91, 84, 85 };
 constexpr Pin DIRECTION_PINS[DRIVES] = { 75, 76, 77, 01, 73, 92, 86, 80, 81, 32, 83, 25 };
+#endif
 
 constexpr Pin DueX_SG = 96;							// DueX stallguard detect pin = PE0 (was E2_STOP)
 constexpr Pin DueX_INT = 17;						// DueX interrupt pin = PA17 (was E6_STOP)

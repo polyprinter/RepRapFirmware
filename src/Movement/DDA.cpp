@@ -2555,6 +2555,7 @@ void DDA::CheckEndstops(Platform& platform)
 		}
 	}
 #endif
+#ifdef POLYPRINTER
 	// if the bits are set, then a check resulting in an active state is supposed to stop the movement.
 	// this particular check is not necessarily what's used to detect errors while printing But it could.
 	if ( platform.GetBedContactExists() != EndStopHit::noStop )
@@ -2566,6 +2567,7 @@ void DDA::CheckEndstops(Platform& platform)
 		reprap.GetMove().HitLowStop( 1 << BED_CONTACT_ENDSTOP_NUM );  // doesn't zero anything
 		return;
 	}
+#ifdef USE_BED_CONTACT_ENDSTOP
 	else if ( platform.GetNutSwitchActive() != EndStopHit::noStop )
 	{
 		MoveAborted();
@@ -2573,7 +2575,8 @@ void DDA::CheckEndstops(Platform& platform)
 		reprap.GetMove().HitLowStop( 1 << NUT_SWITCH_ENDSTOP_NUM );  // doesn't zero anything
 		return;
 	}
-
+#endif
+#endif
 	const size_t numAxes = reprap.GetGCodes().GetTotalAxes();
 	for (size_t drive = 0; drive < numAxes; ++drive)
 	{

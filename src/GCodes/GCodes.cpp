@@ -1491,7 +1491,7 @@ void GCodes::EndSimulation(GCodeBuffer *gb)
 	reprap.GetMove().SetNewPosition(simulationRestorePoint.moveCoords, true);
 }
 
-
+#ifdef POLYPRINTER
 // Check for any problems that need attention
 // Typically, bed contact, nut switch activation, other meaningful events
 // that are not well-served by Triggers need to be handled here
@@ -1500,6 +1500,7 @@ bool GCodes::CheckErrorConditions( TriggerInputsBitmap currentEndstopStates, Tri
 {
 	if ( ! platform.SuppressingSpecialErrorChecks() )
 	{
+#ifdef USE_BED_CONTACT_ENDSTOP
 		if ( platform.GetBedContactExists() != EndStopHit::noStop )
 		{
 			// there is bed contact
@@ -1511,7 +1512,7 @@ bool GCodes::CheckErrorConditions( TriggerInputsBitmap currentEndstopStates, Tri
 			}
 			return true;
 		}
-
+#endif
 		if ( platform.GetNutSwitchActive() != EndStopHit::noStop )
 		{
 			// there is an active Nut Switch on the loose
@@ -1535,7 +1536,7 @@ bool GCodes::CheckErrorConditions( TriggerInputsBitmap currentEndstopStates, Tri
 
 	return false; // no error detected
 }
-
+#endif
 
 // Check for and execute triggers
 void GCodes::CheckTriggers()
@@ -1567,10 +1568,12 @@ void GCodes::CheckTriggers()
 		ClearBit(triggersPending, lowestTriggerPending);			// clear the trigger
 		DoEmergencyStop();
 	}
+#ifdef POLYPRINTER
 	else if ( CheckErrorConditions( lastEndstopStates, risen, fallen ) )
 	{
 		// should already be handled, but we avoid any further trigger checking
 	}
+#endif
 	//else if (lowestTriggerPending == PRINT_ABORT_TRIGGER_NUM)
 	//{
 	//	triggersPending &= ~(1u << lowestTriggerPending);			// clear the trigger
