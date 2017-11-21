@@ -46,8 +46,8 @@ constexpr float ROOM_TEMPERATURE = 21.0;				// Celsius
 
 // Timeouts
 constexpr uint32_t LongTime = 300000;					// Milliseconds (5 minutes)
-constexpr uint32_t MinimumWarningInterval = 4000;		// Milliseconds
 constexpr uint32_t FanCheckInterval = 500;				// Milliseconds
+constexpr uint32_t MinimumWarningInterval = 4000;		// Milliseconds, must be at least as long as FanCheckInterval
 constexpr uint32_t LogFlushInterval = 15000;			// Milliseconds
 constexpr uint32_t DriverCoolingTimeout = 4000;			// Milliseconds
 constexpr float DefaultMessageTimeout = 10.0;			// How long a message is displayed by default, in seconds
@@ -73,11 +73,12 @@ constexpr float HOT_ENOUGH_TO_RETRACT = 90.0;			// Celsius
 
 constexpr uint8_t MAX_BAD_TEMPERATURE_COUNT = 4;		// Number of bad temperature samples permitted before a heater fault is reported
 constexpr float BAD_LOW_TEMPERATURE = -10.0;			// Celsius
-constexpr float DefaultExtruderTemperatureLimit = 288.0; // Celsius - E3D say to tighten the hot end at 285C
+constexpr float DefaultExtruderTemperatureLimit = 290.0; // Celsius - E3D say to tighten the hot end at 285C
 constexpr float DefaultBedTemperatureLimit = 125.0;		// Celsius
 constexpr float HOT_END_FAN_TEMPERATURE = 45.0;			// Temperature at which a thermostatic hot end fan comes on
 constexpr float ThermostatHysteresis = 1.0;				// How much hysteresis we use to prevent noise turning fans on/off too often
 constexpr float BAD_ERROR_TEMPERATURE = 2000.0;			// Must exceed any reasonable 5temperature limit including DEFAULT_TEMPERATURE_LIMIT
+constexpr uint32_t DefaultHeaterFaultTimeout = 10 * 60 * 1000;	// How long we wait (in milliseconds) for user intervention after a heater fault before shutting down
 
 // Heating model default parameters. For the chamber heater, we use the same values as for the bed heater.
 // These parameters are about right for an E3Dv6 hot end with 30W heater.
@@ -137,16 +138,18 @@ constexpr unsigned int DefaultPinWritePwmFreq = 500;	// default PWM frequency fo
 //     Using single-precision maths and up to 9-factor calibration: (9 + 5) * 4 bytes per point
 //     Using double-precision maths and up to 9-factor calibration: (9 + 5) * 8 bytes per point
 //   So 32 points using double precision arithmetic need 3584 bytes of stack space.
-#ifdef DUET_NG
+#if SAM4E || SAM4S
 constexpr size_t MaxGridProbePoints = 441;				// 441 allows us to probe e.g. 400x400 at 20mm intervals
 constexpr size_t MaxXGridPoints = 41;					// Maximum number of grid points in one X row
 constexpr size_t MaxProbePoints = 32;					// Maximum number of G30 probe points
 constexpr size_t MaxDeltaCalibrationPoints = 32;		// Should a power of 2 for speed
-#else
+#elif SAM3XA
 constexpr size_t MaxGridProbePoints = 121;				// 121 allows us to probe 200x200 at 20mm intervals
 constexpr size_t MaxXGridPoints = 21;					// Maximum number of grid points in one X row
 constexpr size_t MaxProbePoints = 32;					// Maximum number of G30 probe points
 constexpr size_t MaxDeltaCalibrationPoints = 32;		// Should a power of 2 for speed
+#else
+# error
 #endif
 
 const float DefaultGridSpacing = 20.0;				// Default bed probing grid spacing in mm
@@ -181,14 +184,16 @@ constexpr size_t FILENAME_LENGTH = 100;
 constexpr size_t MaxHeaterNameLength = 20;				// Maximum number of characters in a heater name
 
 // Output buffer lengths
-#ifdef DUET_NG
+#if SAM4E || SAM4S
 constexpr uint16_t OUTPUT_BUFFER_SIZE = 256;			// How many bytes does each OutputBuffer hold?
 constexpr size_t OUTPUT_BUFFER_COUNT = 32;				// How many OutputBuffer instances do we have?
 constexpr size_t RESERVED_OUTPUT_BUFFERS = 1;			// Number of reserved output buffers after long responses. Must be enough for an HTTP header
-#else
+#elif SAM3XA
 constexpr uint16_t OUTPUT_BUFFER_SIZE = 128;			// How many bytes does each OutputBuffer hold?
 constexpr size_t OUTPUT_BUFFER_COUNT = 32;				// How many OutputBuffer instances do we have?
 constexpr size_t RESERVED_OUTPUT_BUFFERS = 2;			// Number of reserved output buffers after long responses. Must be enough for an HTTP header
+#else
+# error
 #endif
 
 // Move system

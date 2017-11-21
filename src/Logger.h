@@ -22,7 +22,7 @@ public:
 	void Stop(time_t time);
 	void LogMessage(time_t time, const char *message);
 	void LogMessage(time_t time, OutputBuffer *buf);
-	void Flush();
+	void Flush(bool forced);
 	bool IsActive() const { return logFile.IsLive(); }
 
 private:
@@ -30,6 +30,8 @@ private:
 	void InternalLogMessage(time_t time, const char *message);
 
 	FileData logFile;
+	uint32_t lastFlushTime;
+	FilePosition lastFlushFileSize;
 	bool dirty;
 	bool inLogger;
 };

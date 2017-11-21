@@ -10,8 +10,11 @@
 #include "CpuTemperatureSensor.h"
 #endif
 
-#ifdef DUET_NG
+#if SUPPORT_DHT_SENSOR
 #include "DhtSensor.h"
+#endif
+
+#if HAS_SMART_DRIVERS
 #include "TmcDriverTemperatureSensor.h"
 #endif
 
@@ -103,7 +106,7 @@ TemperatureSensor *TemperatureSensor::Create(unsigned int channel)
 	{
 		ts = new CurrentLoopTemperatureSensor(channel);
 	}
-#ifdef DUET_NG
+#if SUPPORT_DHT_SENSOR
 	else if (channel == DhtTemperatureChannel || channel == DhtHumidityChannel)
 	{
 		ts = new DhtSensor(channel);
@@ -115,7 +118,7 @@ TemperatureSensor *TemperatureSensor::Create(unsigned int channel)
 		ts = new CpuTemperatureSensor(channel);
 	}
 #endif
-#ifdef DUET_NG
+#if HAS_SMART_DRIVERS
 	else if (channel >= FirstTmcDriversSenseChannel && channel < FirstTmcDriversSenseChannel + 2)
 	{
 		ts = new TmcDriverTemperatureSensor(channel);

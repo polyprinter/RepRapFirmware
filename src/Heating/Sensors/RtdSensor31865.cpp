@@ -33,60 +33,40 @@ const uint32_t MinimumReadInterval = 100;		// minimum interval between reads, in
 const uint8_t DefaultCr0 = 0b11000011;
 const uint8_t Cr0ReadMask = 0b11011101;		// bits 1 and 5 auto clear, so ignore the value read
 
-// Table of temperature vs. MAX31865 result for PT100 thermistor, from the MAX31865 datasheet
-struct TempTableEntry
-{
-	int16_t temperature;
-	uint16_t adcReading;
-};
+const uint16_t DefaultRef = 400;
 
-static const TempTableEntry tempTable[] =
+//	 pt100rtd list of resistances v temperature
+//
+//	DIN 43760 / IEC 751 resistance values (ohms) were multiplied by 100 and
+//	converted to 16 bit unsigned integers with no loss of accuracy.
+//
+//	Examples:
+//	1852 represents 18.52 ohms and corresponds to a temperature of -200C.
+//	10000 ==> 100.00 ohms @   0C
+//	13851 ==> 138.51 ohms @ 100C
+
+const float CelsiusMin = -100.0;					// starting temperature of the temp table below
+const float CelsiusInterval = 10.0;
+
+static const uint16_t tempTable[] =
 {
-	{-30,	7227},
-	{-20,	7550},
-	{-10,	7871},
-	{0,		8192},
-	{10,	8512},
-	{20,	8830},
-	{30,	9148},
-	{40,	9465},
-	{50,	9781},
-	{60,	10096},
-	{70,	10410},
-	{80,	10723},
-	{90,	11035},
-	{100,	11346},
-	{110,	11657},
-	{120,	11966},
-	{130,	12274},
-	{140,	12582},
-	{150,	12888},
-	{160,	13194},
-	{170,	13498},
-	{180,	13802},
-	{190,	14104},
-	{200,	14406},
-	{225,	15156},
-	{250,	15901},
-	{275,	16639},
-	{300,	17371},
-	{325,	18098},
-	{350,	18818},
-	{375,	19533},
-	{400,	20242},
-	{425,	20945},
-	{450,	21642},
-	{475,	22333},
-	{500,	23018},
-	{525,	23697},
-	{550,	24370}
+	6026,  6430,  6833,  7233,  7633,  8031,  8427,  8822,  9216,  9609,
+	10000, 10390, 10779, 11167, 11554, 11940, 12324, 12708, 13090, 13471,
+	13851, 14229, 14607, 14983, 15358, 15733, 16105, 16477, 16848, 17217,
+	17586, 17953, 18319, 18684, 19047, 19410, 19771, 20131, 20490, 20848,
+	21205, 21561, 21915, 22268, 22621, 22972, 23321, 23670, 24018, 24364,
+	24709, 25053, 25396, 25738, 26078, 26418, 26756, 27093, 27429, 27764,
+	28098, 28430, 28762, 29092, 29421, 29749, 30075, 30401, 30725, 31048,
+	31371, 31692, 32012, 32330, 32648, 32964, 33279, 33593, 33906, 34218,
+	34528, 34838, 35146, 35453, 35759, 36064, 36367, 36670, 36971, 37271,
+	37570, 37868, 38165, 38460, 38755, 39048
 };
 
 const size_t NumTempTableEntries = sizeof(tempTable)/sizeof(tempTable[0]);
 
 RtdSensor31865::RtdSensor31865(unsigned int channel)
 	: SpiTemperatureSensor(channel, "PT100 (MAX31865)", channel - FirstRtdChannel, MAX31865_SpiMode, MAX31865_Frequency),
-	  cr0(DefaultCr0)
+	  rref(DefaultRef), cr0(DefaultCr0)
 {
 }
 
@@ -110,10 +90,29 @@ bool RtdSensor31865::Configure(unsigned int mCode, unsigned int heater, GCodeBuf
 			}
 		}
 
+		if (gb.Seen('W'))
+		{
+			seen = true;
+			if (gb.GetUIValue() == 3) 
+			{
+				cr0 |= 0x10;		// 3 wire configuration
+			} 
+			else 
+			{
+				cr0 &= ~0x10;		// 2 or 4 wire configuration
+			}
+		}
+
+		if (gb.Seen('R'))
+		{
+			seen = true;
+			rref = (uint16_t)gb.GetUIValue();
+		}
+
 		if (!seen && !gb.Seen('X'))
 		{
 			CopyBasicHeaterDetails(heater, reply);
-			reply.catf(", reject %dHz", (cr0 & 0x01) ? 50 : 60);
+			reply.catf(", %s wires, reject %dHz, reference resistor %u ohms", (cr0 & 0x10) ? "3" : "2/4", (cr0 & 0x01) ? 50 : 60, (unsigned int)rref);
 		}
 	}
 	return false;
@@ -206,18 +205,18 @@ TemperatureError RtdSensor31865::GetTemperature(float& t)
 			}
 			else
 			{
-				const uint16_t adcVal = (rawVal >> 1) & 0x7FFF;
+				const uint16_t ohmsx100 = (uint16_t)((((rawVal >> 1) & 0x7FFF) * rref * 100) >> 15);
 
 				// Formally-verified binary search routine, adapted from one of the eCv examples
 				size_t low = 0u, high = NumTempTableEntries;
 				while (high > low)
 				keep(low <= high; high <= NumTempTableEntries)
-				keep(low == 0u || tempTable[low - 1u].adcReading < adcVal)
-				keep(high == NumTempTableEntries || adcVal <= tempTable[high].adcReading)
+				keep(low == 0u || tempTable[low - 1u] < ohmsx100)
+				keep(high == NumTempTableEntries || ohmsx100 <= tempTable[high])
 				decrease(high - low)
 				{
 					size_t mid = (high - low)/2u + low;			// get the mid point, avoiding arithmetic overflow
-					if (adcVal <= tempTable[mid].adcReading)
+					if (ohmsx100 <= tempTable[mid])
 					{
 						high = mid;
 					}
@@ -227,8 +226,8 @@ TemperatureError RtdSensor31865::GetTemperature(float& t)
 					}
 				}
 				assert(low <= NumTempTableEntries);
-				assert(low == 0 || tempTable[low - 1] < adcVal);
-				assert(low == NumTempTableEntries || adcVal <= tempTable[low]);
+				assert(low == 0 || tempTable[low - 1] < ohmsx100);
+				assert(low == NumTempTableEntries || ohmsx100 <= tempTable[low]);
 
 				if (low == 0)									// if off the bottom of the table
 				{
@@ -240,10 +239,11 @@ TemperatureError RtdSensor31865::GetTemperature(float& t)
 				}
 				else
 				{
-					const float interpolationFraction = (float)(adcVal - tempTable[low - 1].adcReading)/(float)(tempTable[low].adcReading - tempTable[low - 1].adcReading);
-					t = lastTemperature = ((float)(tempTable[low].temperature - tempTable[low - 1].temperature) * interpolationFraction)
-							+ (float)tempTable[low - 1].temperature;
-					//debugPrintf("raw %u low %u interp %f temp %f\n", adcVal, low, interpolationFraction, *t);
+					const float temperatureFraction = (float)(ohmsx100 - tempTable[low - 1])/(float)(tempTable[low] - tempTable[low - 1]);
+
+					t = lastTemperature = CelsiusInterval * (low - 1 + temperatureFraction) + CelsiusMin;
+
+					//debugPrintf("raw %f low %u temp %f\n", ohmsx100, low, t);
 					lastResult = TemperatureError::success;
 				}
 			}

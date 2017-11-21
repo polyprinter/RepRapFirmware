@@ -523,18 +523,16 @@ void FtpResponder::ProcessLine()
 			if (StringEquals(type, "I"))
 			{
 				outBuf->copy("200 Switching to Binary mode.\r\n");
-				Commit(ResponderState::reading);
 			}
 			else if (StringEquals(type, "A"))
 			{
 				outBuf->copy("200 Switching to ASCII mode.\r\n");
-				Commit(ResponderState::reading);
 			}
 			else
 			{
 				outBuf->copy("500 Unknown command.\r\n");
-				Commit(ResponderState::reading);
 			}
+			Commit(ResponderState::reading);
 		}
 		// enter passive mode mode
 		else if (StringEquals(clientMessage, "PASV"))
@@ -560,7 +558,7 @@ void FtpResponder::ProcessLine()
 			Commit(ResponderState::waitingForPasvPort);
 		}
 		// PASV commands are not supported in this state
-		else if (StringEquals(clientMessage, "LIST") || StringStartsWith(clientMessage, "RETR") || StringStartsWith(clientMessage, "STOR"))
+		else if (StringStartsWith(clientMessage, "LIST") || StringStartsWith(clientMessage, "RETR") || StringStartsWith(clientMessage, "STOR"))
 		{
 			outBuf->copy("425 Use PASV first.\r\n");
 			Commit(ResponderState::reading);
@@ -671,7 +669,7 @@ void FtpResponder::ProcessLine()
 
 	case ResponderState::pasvPortOpened:
 		// list directory entries
-		if (StringEquals(clientMessage, "LIST"))
+		if (StringStartsWith(clientMessage, "LIST"))
 		{
 			// send announcement via ftp main port
 			outBuf->copy("150 Here comes the directory listing.\r\n");
@@ -692,6 +690,24 @@ void FtpResponder::ProcessLine()
 							timeInfo->tm_mday, timeInfo->tm_year + 1900, fileInfo.fileName);
 				} while (massStorage->FindNext(fileInfo));
 			}
+		}
+		// switch transfer mode (sends response, but doesn't have any effects)
+		else if (StringStartsWith(clientMessage, "TYPE"))
+		{
+			const char *type = GetParameter("TYPE");
+			if (StringEquals(type, "I"))
+			{
+				outBuf->copy("200 Switching to Binary mode.\r\n");
+			}
+			else if (StringEquals(type, "A"))
+			{
+				outBuf->copy("200 Switching to ASCII mode.\r\n");
+			}
+			else
+			{
+				outBuf->copy("500 Unknown command.\r\n");
+			}
+			Commit(ResponderState::pasvPortOpened);
 		}
 		// upload a file
 		else if (StringStartsWith(clientMessage, "STOR"))
@@ -803,38 +819,39 @@ void FtpResponder::ChangeDirectory(const char *newDirectory)
 		{
 			SafeStrncpy(combinedPath, newDirectory, ARRAY_SIZE(combinedPath));
 		}
-		else							// Relative path
+		else if (StringEquals(newDirectory, "."))
 		{
-			if (StringEquals(newDirectory, ".."))	// Go up
+			SafeStrncpy(combinedPath, currentDirectory, ARRAY_SIZE(combinedPath));
+		}
+		else if (StringEquals(newDirectory, ".."))	// Go up
+		{
+			// Check if we're already at the root directory
+			if (StringEquals(currentDirectory, "/"))
 			{
-				// Check if we're already at the root directory
-				if (StringEquals(currentDirectory, "/"))
-				{
-					outBuf->copy("550 Failed to change directory.\r\n");
-					Commit(responderState);
-					return;
-				}
+				outBuf->copy("550 Failed to change directory.\r\n");
+				Commit(responderState);
+				return;
+			}
 
-				// No - find the parent directory
-				SafeStrncpy(combinedPath, currentDirectory, ARRAY_SIZE(combinedPath));
-				for(int i = strlen(combinedPath) - 2; i >= 0; i--)
-				{
-					if (combinedPath[i] == '/')
-					{
-						combinedPath[i + 1] = 0;
-						break;
-					}
-				}
-			}
-			else									// Go to child directory
+			// No - find the parent directory
+			SafeStrncpy(combinedPath, currentDirectory, ARRAY_SIZE(combinedPath));
+			for(int i = strlen(combinedPath) - 2; i >= 0; i--)
 			{
-				SafeStrncpy(combinedPath, currentDirectory, ARRAY_SIZE(combinedPath));
-				if (!StringEndsWith(combinedPath, "/") && strlen(combinedPath) > 1)
+				if (combinedPath[i] == '/')
 				{
-					SafeStrncat(combinedPath, "/", ARRAY_SIZE(combinedPath));
+					combinedPath[i + 1] = 0;
+					break;
 				}
-				SafeStrncat(combinedPath, newDirectory, ARRAY_SIZE(combinedPath));
 			}
+		}
+		else									// Go to child directory
+		{
+			SafeStrncpy(combinedPath, currentDirectory, ARRAY_SIZE(combinedPath));
+			if (!StringEndsWith(combinedPath, "/") && strlen(combinedPath) > 1)
+			{
+				SafeStrncat(combinedPath, "/", ARRAY_SIZE(combinedPath));
+			}
+			SafeStrncat(combinedPath, newDirectory, ARRAY_SIZE(combinedPath));
 		}
 
 		// Make sure the new path does not end with a slash, else FatFs won't be able to see the directory

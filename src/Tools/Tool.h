@@ -47,9 +47,9 @@ public:
 	static Tool *Create(int toolNumber, const char *name, long d[], size_t dCount, long h[], size_t hCount, AxesBitmap xMap, AxesBitmap yMap, FansBitmap fanMap, StringRef& reply);
 	static void Delete(Tool *t);
 
-	const float *GetOffsets() const;
-	void SetOffsets(const float offs[MaxAxes]);
-	void SetOffset(size_t axis, float offs) pre(axis < MaxAxes);
+	float GetOffset(size_t axis) const pre(axis < MaxAxes);
+	void SetOffset(size_t axis, float offs, bool byProbing) pre(axis < MaxAxes);
+	AxesBitmap GetAxisOffsetsProbed() const { return axisOffsetsProbed; }
 	size_t DriveCount() const;
 	int Drive(size_t driveNumber) const;
 	bool ToolCanDrive(bool extrude);
@@ -63,7 +63,7 @@ public:
 	const float* GetMix() const;
 	float MaxFeedrate() const;
 	float InstantDv() const;
-	void Print(StringRef& reply);
+	void Print(StringRef& reply) const;
 	AxesBitmap GetXAxisMap() const { return xMapping; }
 	AxesBitmap GetYAxisMap() const { return yMapping; }
 	FansBitmap GetFanMapping() const { return fanMapping; }
@@ -75,7 +75,7 @@ public:
 	friend class RepRap;
 
 protected:
-	void Activate(Tool* currentlyActive);
+	void Activate();
 	void Standby();
 	void FlagTemperatureFault(int8_t dudHeater);
 	void ClearTemperatureFault(int8_t wasDudHeater);
@@ -99,6 +99,7 @@ private:
 	float standbyTemperatures[Heaters];
 	size_t heaterCount;
 	float offset[MaxAxes];
+	AxesBitmap axisOffsetsProbed;
 	AxesBitmap xMapping, yMapping;
 	FansBitmap fanMapping;
 	Filament *filament;
@@ -144,14 +145,9 @@ inline size_t Tool::DriveCount() const
 	return driveCount;
 }
 
-inline const float *Tool::GetOffsets() const
+inline float Tool::GetOffset(size_t axis) const
 {
-	return offset;
-}
-
-inline void Tool::SetOffset(size_t axis, float offs)
-{
-	offset[axis] = offs;
+	return offset[axis];
 }
 
 #endif /* TOOL_H_ */

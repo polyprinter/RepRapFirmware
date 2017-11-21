@@ -7,6 +7,9 @@
 #define HAS_LWIP_NETWORKING		1
 #define HAS_CPU_TEMP_SENSOR		1
 #define HAS_HIGH_SPEED_SD		0
+#define HAS_SMART_DRIVERS		0
+#define HAS_VOLTAGE_MONITOR		0
+#define ACTIVE_LOW_HEAT_ON		0
 
 const size_t NumFirmwareUpdateModules = 1;
 #define IAP_UPDATE_FILE "iapalligator.bin"
@@ -16,7 +19,10 @@ const size_t NumFirmwareUpdateModules = 1;
 #define DEFAULT_BOARD_TYPE BoardType::Alligator_2
 
 #define SUPPORT_INKJET		0					// set nonzero to support inkjet control
+#define SUPPORT_ROLAND		0					// set nonzero to support Roland mill
 #define SUPPORT_SCANNER		0					// set nonzero to support FreeLSS scanners
+#define SUPPORT_IOBITS		0					// set to support P parameter in G0/G1 commands
+#define SUPPORT_DHT_SENSOR	0					// set nonzero to support DHT temperature/humidity sensors
 
 // The physical capabilities of the machine
 
@@ -40,7 +46,7 @@ const size_t NUM_SERIAL_CHANNELS = 3;			// The number of serial IO channels (USB
 #define SERIAL_AUX_DEVICE Serial
 #define SERIAL_AUX2_DEVICE Serial1
 
-// The numbers of entries in each array must correspond with the values of DRIVES, AXES, or HEATERS. Set values to -1 to flag unavailability.
+// The numbers of entries in each array must correspond with the values of DRIVES, AXES, or HEATERS. Set values to NoPin to flag unavailability.
 // DRIVES
 const Pin ENABLE_PINS[DRIVES] = { 24, NoPin, NoPin, NoPin, NoPin, NoPin, NoPin };
 const Pin STEP_PINS[DRIVES] = { X16, X14, X1, 5, 28, 11, X9 };
@@ -65,7 +71,6 @@ const size_t MaxSpiDac = 2;
 const Pin SPI_DAC_CS[MaxSpiDac] = { 53, 6 };
 
 // HEATERS
-const bool HEAT_ON = true;												// Not inverted heater for Alligator
 const Pin TEMP_SENSE_PINS[Heaters] = HEATERS_(1, 0, 2, 3, 4, f, g, h);	// Analogue pin numbers
 
 // h1,h2,h3,h4: X2,8,9,X8 is hardware PWM

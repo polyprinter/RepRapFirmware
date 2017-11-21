@@ -19,14 +19,14 @@
 #define USE_DMAC	1		// use general DMA controller
 
 #if USE_PDC
-#include "pdc.h"
+#include "pds/pdc.h"
 #endif
 
 #if USE_DMAC
-#include "dmac.h"
+#include "dmac/dmac.h"
 #endif
 
-#include "matrix.h"
+#include "matrix/matrix.h"
 
 const uint32_t WifiResponseTimeoutMillis = 200;
 const uint32_t WiFiWaitReadyMillis = 100;
@@ -104,7 +104,7 @@ static inline void DisableEspInterrupt()
 
 Network::Network(Platform& p) : platform(p), nextResponderToPoll(nullptr), uploader(nullptr), currentSocket(0), ftpDataPort(0),
 		state(NetworkState::disabled), requestedMode(WiFiState::disabled), currentMode(WiFiState::disabled), activated(false),
-		espStatusChanged(false), spiTxUnderruns(0), spiRxOverruns(0)
+		espStatusChanged(false), spiTxUnderruns(0), spiRxOverruns(0), serialRunning(false)
 {
 	for (size_t i = 0; i < NumProtocols; ++i)
 	{
@@ -358,7 +358,7 @@ void Network::Start()
 	delay(50);
 
 	// Release the reset on the ESP8266
-	digitalWrite(EspResetPin, HIGH);
+	StartWiFi();
 
 	// Give it time to sample GPIO0 and GPIO15
 	// GPIO0 has to be held high for sufficient time:
@@ -376,6 +376,7 @@ void Network::Start()
 	// The ESP takes about 300ms before it starts talking to us, so don't wait for it here, do that in Spin()
 	spiTxUnderruns = spiRxOverruns = 0;
 	reconnectCount = 0;
+	transferAlreadyPendingCount = readyTimeoutCount = responseTimeoutCount = 0;
 
 	lastTickMillis = millis();
 	state = NetworkState::starting1;
@@ -556,15 +557,6 @@ void Network::Spin(bool full)
 				}
 			}
 		}
-		else if (currentMode == requestedMode && (currentMode == WiFiState::connected || currentMode == WiFiState::runningAsAccessPoint))
-		{
-			sockets[currentSocket].Poll(full);
-			++currentSocket;
-			if (currentSocket == NumTcpSockets)
-			{
-				currentSocket = 0;
-			}
-		}
 		break;
 
 	case NetworkState::changingMode:
@@ -608,8 +600,40 @@ void Network::Spin(bool full)
 		break;
 	}
 
+	// Check for debug info received from the WiFi module
+	if (serialRunning)
+	{
+		while (!debugPrintPending && Serial1.available() != 0)
+		{
+			const char c = (char)Serial1.read();
+			if (c == '\n')
+			{
+				debugPrintPending = true;
+			}
+			else if (c != '\r')
+			{
+				const size_t len = debugMessageBuffer.cat(c);
+				if (len == debugMessageBuffer.MaxLength())
+				{
+					debugPrintPending = true;
+				}
+			}
+		}
+	}
+
 	if (full)
 	{
+		// Check for debug info received from the WiFi module
+		if (debugPrintPending)
+		{
+			if (reprap.Debug(moduleWiFi))
+			{
+				debugPrintf("WiFi: %s\n", debugMessageBuffer.Pointer());
+			}
+			debugMessageBuffer.Clear();
+			debugPrintPending = false;
+		}
+
 		platform.ClassReport(longWait);
 	}
 }
@@ -651,10 +675,13 @@ void Network::Diagnostics(MessageType mtype)
 {
 	platform.MessageF(mtype, "Network state is %s\n", TranslateNetworkState());
 	platform.MessageF(mtype, "WiFi module is %s\n", TranslateWiFiState(currentMode));
+	platform.MessageF(mtype, "Failed messages: pending %u, notready %u, noresp %u\n", transferAlreadyPendingCount, readyTimeoutCount, responseTimeoutCount);
+
 #if 0
 	// The underrun/overrun counters don't work at present
 	platform.MessageF(mtype, "SPI underruns %u, overruns %u\n", spiTxUnderruns, spiRxOverruns);
 #endif
+
 	if (state != NetworkState::disabled && state != NetworkState::starting1 && state != NetworkState::starting2)
 	{
 		Receiver<NetworkStatusResponse> status;
@@ -675,7 +702,8 @@ void Network::Diagnostics(MessageType mtype)
 
 			if (currentMode == WiFiState::connected)
 			{
-				platform.MessageF(mtype, "WiFi signal strength %ddBm\nReconnections %u\n", (int)r.rssi, reconnectCount);
+				const char* const sleepMode = (r.sleepMode == 1) ? "none" : (r.sleepMode == 2) ? "light" : (r.sleepMode == 3) ? "modem" : "unknown";
+				platform.MessageF(mtype, "WiFi signal strength %ddBm, reconnections %u, sleep mode %s\n", (int)r.rssi, reconnectCount, sleepMode);
 			}
 			else if (currentMode == WiFiState::runningAsAccessPoint)
 			{
@@ -1192,6 +1220,7 @@ int32_t Network::SendCommand(NetworkCommand cmd, SocketNumber socketNum, uint8_t
 		{
 			debugPrintf("ResponseBusy\n");
 		}
+		++transferAlreadyPendingCount;
 		return ResponseBusy;
 	}
 
@@ -1206,6 +1235,7 @@ int32_t Network::SendCommand(NetworkCommand cmd, SocketNumber socketNum, uint8_t
 				{
 					debugPrintf("ResponseBusy\n");
 				}
+				++readyTimeoutCount;
 				return ResponseBusy;
 			}
 		}
@@ -1255,6 +1285,7 @@ int32_t Network::SendCommand(NetworkCommand cmd, SocketNumber socketNum, uint8_t
 				}
 				transferPending = false;
 				spi_dma_disable();
+				++responseTimeoutCount;
 				return ResponseTimeout;
 			}
 		}
@@ -1366,6 +1397,17 @@ void Network::SpiInterrupt()
 	}
 }
 
+// Start the ESP
+void Network::StartWiFi()
+{
+	digitalWrite(EspResetPin, HIGH);
+	ConfigurePin(g_APinDescription[APINS_UART1]);				// connect the pins to UART1
+	Serial1.begin(WiFiBaudRate);								// initialise the UART, to receive debug info
+	debugMessageBuffer.Clear();
+	serialRunning = true;
+	debugPrintPending = false;
+}
+
 // Reset the ESP8266 and leave held in reset
 void Network::ResetWiFi()
 {
@@ -1373,6 +1415,12 @@ void Network::ResetWiFi()
 	pinMode(APIN_UART1_TXD, INPUT_PULLUP);						// just enable pullups on TxD and RxD pins for now to avoid floating pins
 	pinMode(APIN_UART1_RXD, INPUT_PULLUP);
 	currentMode = WiFiState::disabled;
+
+	if (serialRunning)
+	{
+		Serial1.end();
+		serialRunning = false;
+	}
 }
 
 // Reset the ESP8266 to take commands from the UART or from external input. The caller must wait for the reset to complete after calling this.
@@ -1383,6 +1431,12 @@ void Network::ResetWiFi()
 // 0		0		1		SD card boot (not used in on Duet)
 void Network::ResetWiFiForUpload(bool external)
 {
+	if (serialRunning)
+	{
+		Serial1.end();
+		serialRunning = false;
+	}
+
 	// Make sure the ESP8266 is in the reset state
 	pinMode(EspResetPin, OUTPUT_LOW);
 

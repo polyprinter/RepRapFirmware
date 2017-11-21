@@ -63,6 +63,7 @@ public:
 	void SelectTool(int toolNumber, bool simulating);
 	void StandbyTool(int toolNumber);
 	Tool* GetCurrentTool() const;
+	int GetCurrentToolNumber() const;
 	Tool* GetTool(int toolNumber) const;
 	Tool* GetCurrentOrDefaultTool() const;
 	const Tool* GetFirstTool() const { return toolList; }				// Return the lowest-numbered tool
@@ -91,7 +92,7 @@ public:
 #endif
 
 	void Tick();
-	uint16_t GetTicksInSpinState() const;
+	bool SpinTimeoutImminent() const;
 	bool IsStopped() const;
 
 	uint16_t GetExtrudersInUse() const;
@@ -108,7 +109,10 @@ public:
 	void SetAlert(const char *msg, const char *title, int mode, float timeout, AxesBitmap controls);
 	void ClearAlert();
 
-	bool WriteToolSettings(FileStore *f) const;				// Save some resume information
+	bool WriteToolSettings(FileStore *f) const;				// save some information for the resume file
+	bool WriteToolParameters(FileStore *f) const;			// save some information in config-override.g
+
+	void ReportInternalError(const char *file, const char *func, int line) const;	// Report an internal error
 
 	static uint32_t DoDivide(uint32_t a, uint32_t b);		// helper function for diagnostic tests
 	static uint32_t ReadDword(const char* p);				// helper function for diagnostic tests
@@ -117,6 +121,9 @@ private:
 	static void EncodeString(StringRef& response, const char* src, size_t spaceToLeave, bool allowControlChars = false, char prefix = 0);
 
 	char GetStatusCharacter() const;
+
+	static constexpr uint32_t MaxTicksInSpinState = 20000;	// timeout before we reset the processor
+	static constexpr uint32_t HighTicksInSpinState = 16000;	// how long before we warn that timeout is approaching
 
 	Platform* platform;
 	Network* network;
@@ -143,7 +150,7 @@ private:
 	uint32_t fastLoop, slowLoop;
 	uint32_t lastTime;
 
-	uint16_t debug;
+	uint32_t debug;
 	bool stopped;
 	bool active;
 	bool resetting;
@@ -182,7 +189,8 @@ inline Tool* RepRap::GetCurrentTool() const { return currentTool; }
 inline uint16_t RepRap::GetExtrudersInUse() const { return activeExtruders; }
 inline uint16_t RepRap::GetToolHeatersInUse() const { return activeToolHeaters; }
 inline bool RepRap::IsStopped() const { return stopped; }
-inline uint16_t RepRap::GetTicksInSpinState() const { return ticksInSpinState; }
+
+#define INTERNAL_ERROR do { reprap.ReportInternalError((__FILE__), (__func__), (__LINE__)); } while(0)
 
 #endif
 

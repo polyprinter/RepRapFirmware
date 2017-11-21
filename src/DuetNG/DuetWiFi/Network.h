@@ -74,8 +74,9 @@ public:
 	// The remaining functions are specific to the WiFi version
 	WifiFirmwareUploader& GetWifiUploader() { return *uploader; }
 
+	void StartWiFi();
 	void ResetWiFi();
-	static void ResetWiFiForUpload(bool external);
+	void ResetWiFiForUpload(bool external);
 
 	const char *GetWiFiServerVersion() const { return wiFiServerVersion; }
 
@@ -158,8 +159,16 @@ private:
 	unsigned int spiTxUnderruns;
 	unsigned int spiRxOverruns;
 	unsigned int reconnectCount;
+	unsigned int transferAlreadyPendingCount;
+	unsigned int readyTimeoutCount;
+	unsigned int responseTimeoutCount;
 
 	char wiFiServerVersion[16];
+
+	// For processing debug messages from the WiFi module
+	bool serialRunning;
+	bool debugPrintPending;
+	String<100> debugMessageBuffer;
 };
 
 #endif

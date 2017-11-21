@@ -378,7 +378,7 @@ bool ProtocolInterpreter::StartUpload(FileStore *file, const char *fileName)
 	if (file != nullptr)
 	{
 		fileBeingUploaded.Set(file);
-		strncpy(filenameBeingUploaded, fileName, ARRAY_SIZE(filenameBeingUploaded));
+		SafeStrncpy(filenameBeingUploaded, fileName, ARRAY_SIZE(filenameBeingUploaded));
 		filenameBeingUploaded[ARRAY_UPB(filenameBeingUploaded)] = 0;
 
 		uploadState = uploadOK;
@@ -617,7 +617,7 @@ void Webserver::HttpInterpreter::DoFastUpload()
 
 		// Grab a copy of the filename and finish this upload
 		char filename[FILENAME_LENGTH];
-		strncpy(filename, filenameBeingUploaded, FILENAME_LENGTH);
+		SafeStrncpy(filename, filenameBeingUploaded, FILENAME_LENGTH);
 		FinishUpload(postFileLength);
 
 		// Update the file timestamp if it was specified before
@@ -825,16 +825,20 @@ void Webserver::HttpInterpreter::SendJsonResponse(const char* command)
 		{
 			const char *configPath = platform->GetMassStorage()->CombineName(platform->GetSysDir(), platform->GetConfigFile());
 			char fileName[FILENAME_LENGTH];
-			strncpy(fileName, configPath, FILENAME_LENGTH);
+			SafeStrncpy(fileName, configPath, FILENAME_LENGTH);
 
 			SendFile(fileName, false);
 			return;
 		}
 
-		if (StringEquals(command, "download") && StringEquals(qualifiers[0].key, "name"))
+		if (StringEquals(command, "download"))
 		{
-			SendFile(qualifiers[0].value, false);
-			return;
+			const char* const filename = GetKeyValue("name");
+			if (filename != nullptr)
+			{
+				SendFile(filename, false);
+				return;
+			}
 		}
 	}
 
@@ -905,11 +909,12 @@ void Webserver::HttpInterpreter::GetJsonResponse(const char* request, OutputBuff
 			if (Authenticate())
 			{
 				// See if we can update the current RTC date and time
-				if (numQualKeys > 1 && StringEquals(qualifiers[1].key, "time") && !platform->IsDateTimeSet())
+				const char* const timeString = GetKeyValue("time");
+				if (timeString != nullptr && !platform->IsDateTimeSet())
 				{
 					struct tm timeInfo;
 					memset(&timeInfo, 0, sizeof(timeInfo));
-					if (strptime(qualifiers[1].value, "%Y-%m-%dT%H:%M:%S", &timeInfo) != nullptr)
+					if (strptime(timeString, "%Y-%m-%dT%H:%M:%S", &timeInfo) != nullptr)
 					{
 						time_t newTime = mktime(&timeInfo);
 						platform->SetDateTime(newTime);
@@ -973,7 +978,7 @@ void Webserver::HttpInterpreter::GetJsonResponse(const char* request, OutputBuff
 	}
 	else if (StringEquals(request, "delete") && GetKeyValue("name") != nullptr)
 	{
-		bool ok = platform->GetMassStorage()->Delete(FS_PREFIX, GetKeyValue("name"));
+		const bool ok = platform->GetMassStorage()->Delete(FS_PREFIX, GetKeyValue("name"));
 		response->printf("{\"err\":%d}", (ok) ? 0 : 1);
 	}
 	else if (StringEquals(request, "filelist") && GetKeyValue("dir") != nullptr)
@@ -1006,7 +1011,7 @@ void Webserver::HttpInterpreter::GetJsonResponse(const char* request, OutputBuff
 			if (nameVal != nullptr)
 			{
 				// Regular rr_fileinfo?name=xxx call
-				strncpy(filenameBeingProcessed, nameVal, ARRAY_SIZE(filenameBeingProcessed));
+				SafeStrncpy(filenameBeingProcessed, nameVal, ARRAY_SIZE(filenameBeingProcessed));
 				filenameBeingProcessed[ARRAY_UPB(filenameBeingProcessed)] = 0;
 			}
 			else
@@ -1026,17 +1031,22 @@ void Webserver::HttpInterpreter::GetJsonResponse(const char* request, OutputBuff
 		bool success = false;
 		if (oldVal != nullptr && newVal != nullptr)
 		{
-			success = platform->GetMassStorage()->Rename(oldVal, newVal);
+			MassStorage * const ms = platform->GetMassStorage();
+			if (StringEquals(GetKeyValue("deleteexisting"), "yes") && ms->FileExists(oldVal) && ms->FileExists(newVal))
+			{
+				ms->Delete(nullptr, newVal, true);
+			}
+			success = ms->Rename(oldVal, newVal);
 		}
 		response->printf("{\"err\":%d}", (success) ? 0 : 1);
 	}
 	else if (StringEquals(request, "mkdir"))
 	{
-		const char* dirVal = GetKeyValue("dir");
+		const char* const dirVal = GetKeyValue("dir");
 		bool success = false;
 		if (dirVal != nullptr)
 		{
-			success = (platform->GetMassStorage()->MakeDirectory(dirVal));
+			success = platform->GetMassStorage()->MakeDirectory(dirVal);
 		}
 		response->printf("{\"err\":%d}", (success) ? 0 : 1);
 	}
@@ -1527,7 +1537,8 @@ bool Webserver::HttpInterpreter::ProcessMessage()
 								  || (commandWords[1][0] == '/' && StringEquals(commandWords[1] + 1, KO_START "upload"));
 		if (isUploadRequest)
 		{
-			if (numQualKeys > 0 && StringEquals(qualifiers[0].key, "name"))
+			const char* const filename = GetKeyValue("name");
+			if (filename != nullptr)
 			{
 				// We cannot upload more than one file at once
 				if (IsUploading())
@@ -1537,7 +1548,7 @@ bool Webserver::HttpInterpreter::ProcessMessage()
 
 				// See how many bytes we expect to read
 				bool contentLengthFound = false;
-				for(size_t i=0; i<numHeaderKeys; i++)
+				for (size_t i = 0; i < numHeaderKeys; i++)
 				{
 					if (StringEquals(headers[i].key, "Content-Length"))
 					{
@@ -1554,18 +1565,19 @@ bool Webserver::HttpInterpreter::ProcessMessage()
 				}
 
 				// Start a new file upload
-				FileStore *file = platform->GetFileStore(FS_PREFIX, qualifiers[0].value, OpenMode::write);
-				if (!StartUpload(file, qualifiers[0].value))
+				FileStore *file = platform->GetFileStore(FS_PREFIX, filename, OpenMode::write);
+				if (!StartUpload(file, filename))
 				{
 					return RejectMessage("could not start file upload");
 				}
 
 				// Try to get the last modified file date and time
-				if (numQualKeys > 1 && StringEquals(qualifiers[1].key, "time"))
+				const char* const lastModifiedString = GetKeyValue("time");
+				if (lastModifiedString != nullptr)
 				{
 					struct tm timeInfo;
 					memset(&timeInfo, 0, sizeof(timeInfo));
-					if (strptime(qualifiers[1].value, "%Y-%m-%dT%H:%M:%S", &timeInfo) != nullptr)
+					if (strptime(lastModifiedString, "%Y-%m-%dT%H:%M:%S", &timeInfo) != nullptr)
 					{
 						fileLastModified  = mktime(&timeInfo);
 					}
@@ -1581,7 +1593,7 @@ bool Webserver::HttpInterpreter::ProcessMessage()
 
 				if (reprap.Debug(moduleWebserver))
 				{
-					platform->MessageF(UsbMessage, "Start uploading file %s length %lu\n", qualifiers[0].value, postFileLength);
+					platform->MessageF(UsbMessage, "Start uploading file %s length %lu\n", filename, postFileLength);
 				}
 				uploadedBytes = 0;
 
@@ -2114,7 +2126,7 @@ void Webserver::FtpInterpreter::ProcessLine()
 				if (filename[0] != '/')
 				{
 					const char *temp = platform->GetMassStorage()->CombineName(currentDir, filename);
-					strncpy(filename, temp, FILENAME_LENGTH);
+					SafeStrncpy(filename, temp, FILENAME_LENGTH);
 					filename[FILENAME_LENGTH - 1] = 0;
 				}
 
@@ -2131,7 +2143,7 @@ void Webserver::FtpInterpreter::ProcessLine()
 			{
 				// Copy origin path to temp oldFilename and read new path
 				char oldFilename[FILENAME_LENGTH];
-				strncpy(oldFilename, filename, FILENAME_LENGTH);
+				SafeStrncpy(oldFilename, filename, FILENAME_LENGTH);
 				oldFilename[FILENAME_LENGTH - 1] = 0;
 				ReadFilename(4);
 
@@ -2182,7 +2194,7 @@ void Webserver::FtpInterpreter::ProcessLine()
 			network->SaveFTPConnection();
 
 			// list directory entries
-			if (StringEquals(clientMessage, "LIST"))
+			if (StringStartsWith(clientMessage, "LIST"))
 			{
 				if (network->AcquireDataTransaction())
 				{
@@ -2215,6 +2227,26 @@ void Webserver::FtpInterpreter::ProcessLine()
 					network->CloseDataPort();
 					state = authenticated;
 				}
+			}
+			// switch transfer mode (sends response, but doesn't have any effects)
+			else if (StringStartsWith(clientMessage, "TYPE"))
+			{
+				for (size_t i = 4; i < clientPointer; i++)
+				{
+					if (clientMessage[i] == 'I')
+					{
+						SendReply(200, "Switching to Binary mode.");
+						break;
+					}
+
+					if (clientMessage[i] == 'A')
+					{
+						SendReply(200, "Switching to ASCII mode.");
+						break;
+					}
+				}
+
+				SendReply(500, "Unknown command.");
 			}
 			// upload a file
 			else if (StringStartsWith(clientMessage, "STOR"))
@@ -2275,7 +2307,6 @@ void Webserver::FtpInterpreter::ProcessLine()
 				network->CloseDataPort();
 				state = authenticated;
 			}
-
 			break;
 
 		case doingPasvIO:
@@ -2300,7 +2331,6 @@ void Webserver::FtpInterpreter::ProcessLine()
 				network->CloseDataPort();
 				state = authenticated;
 			}
-
 			break;
 	}
 }
@@ -2362,41 +2392,42 @@ void Webserver::FtpInterpreter::ChangeDirectory(const char *newDirectory)
 		/* Prepare the new directory path */
 		if (newDirectory[0] == '/') // absolute path
 		{
-			strncpy(combinedPath, newDirectory, FILENAME_LENGTH);
+			SafeStrncpy(combinedPath, newDirectory, FILENAME_LENGTH);
 			combinedPath[FILENAME_LENGTH - 1] = 0;
 		}
-		else // relative path
+		else if (StringEquals(newDirectory, "."))
 		{
-			if (StringEquals(newDirectory, "..")) // go up
+			SafeStrncpy(combinedPath, currentDir, ARRAY_SIZE(combinedPath));
+		}
+		else if (StringEquals(newDirectory, "..")) // go up
+		{
+			if (StringEquals(currentDir, "/"))
 			{
-				if (StringEquals(currentDir, "/"))
+				// we're already at the root, so we can't go up any more
+				SendReply(550, "Failed to change directory.");
+				return;
+			}
+			else
+			{
+				SafeStrncpy(combinedPath, currentDir, FILENAME_LENGTH);
+				for(int i=strlen(combinedPath) -2; i>=0; i--)
 				{
-					// we're already at the root, so we can't go up any more
-					SendReply(550, "Failed to change directory.");
-					return;
-				}
-				else
-				{
-					strncpy(combinedPath, currentDir, FILENAME_LENGTH);
-					for(int i=strlen(combinedPath) -2; i>=0; i--)
+					if (combinedPath[i] == '/')
 					{
-						if (combinedPath[i] == '/')
-						{
-							combinedPath[i +1] = 0;
-							break;
-						}
+						combinedPath[i +1] = 0;
+						break;
 					}
 				}
 			}
-			else // go to child directory
+		}
+		else // go to child directory
+		{
+			SafeStrncpy(combinedPath, currentDir, FILENAME_LENGTH);
+			if (strlen(currentDir) > 1)
 			{
-				strncpy(combinedPath, currentDir, FILENAME_LENGTH);
-				if (strlen(currentDir) > 1)
-				{
-					strncat(combinedPath, "/", FILENAME_LENGTH - strlen(combinedPath) - 1);
-				}
-				strncat(combinedPath, newDirectory, FILENAME_LENGTH - strlen(combinedPath) - 1);
+				SafeStrncat(combinedPath, "/", FILENAME_LENGTH);
 			}
+			SafeStrncat(combinedPath, newDirectory, FILENAME_LENGTH);
 		}
 
 		/* Make sure the new path does not end with a '/', because FatFs won't see the directory otherwise */
@@ -2408,7 +2439,7 @@ void Webserver::FtpInterpreter::ChangeDirectory(const char *newDirectory)
 		/* Verify path and change it */
 		if (platform->GetMassStorage()->DirectoryExists(combinedPath))
 		{
-			strncpy(currentDir, combinedPath, FILENAME_LENGTH);
+			SafeStrncpy(currentDir, combinedPath, FILENAME_LENGTH);
 			SendReply(250, "Directory successfully changed.");
 		}
 		else

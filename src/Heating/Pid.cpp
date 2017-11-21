@@ -31,6 +31,11 @@ float PID::tuningPeakTemperature;			// the peak temperature reached, averaged ov
 uint32_t PID::tuningHeatingTime;			// how long we had the heating on for
 uint32_t PID::tuningPeakDelay;				// how many milliseconds the temperature continues to rise after turning the heater off
 
+#if HAS_VOLTAGE_MONITOR
+unsigned int voltageSamplesTaken;			// how many readings we accumulated
+float tuningVoltageAccumulator;				// sum of the voltage readings we take during the heating phase
+#endif
+
 // Member functions and constructors
 
 PID::PID(Platform& p, int8_t h) : platform(p), heater(h), mode(HeaterMode::off)
@@ -47,7 +52,7 @@ void PID::Init(float pGain, float pTc, float pTd, float tempLimit, bool usePid)
 	temperatureLimit = tempLimit;
 	maxTempExcursion = DefaultMaxTempExcursion;
 	maxHeatingFaultTime = DefaultMaxHeatingFaultTime;
-	model.SetParameters(pGain, pTc, pTd, 1.0, tempLimit, usePid);
+	model.SetParameters(pGain, pTc, pTd, 1.0, tempLimit, 0.0, usePid);
 	Reset();
 
 	if (model.IsEnabled())
@@ -74,16 +79,16 @@ void PID::Reset()
 	averagePWM = lastPwm = 0.0;
 	heatingFaultCount = 0;
 	temperature = BAD_ERROR_TEMPERATURE;
-#ifdef DUET_NG
+#if HAS_VOLTAGE_MONITOR
 	suspended = false;
 #endif
 }
 
 // Set the process model
-bool PID::SetModel(float gain, float tc, float td, float maxPwm, bool usePid)
+bool PID::SetModel(float gain, float tc, float td, float maxPwm, float voltage, bool usePid)
 {
 	const float temperatureLimit = reprap.GetHeat().GetTemperatureLimit(heater);
-	const bool rslt = model.SetParameters(gain, tc, td, maxPwm, temperatureLimit, usePid);
+	const bool rslt = model.SetParameters(gain, tc, td, maxPwm, temperatureLimit, voltage, usePid);
 	if (rslt)
 	{
 #if defined(DUET_06_085)
@@ -192,16 +197,16 @@ void PID::Spin()
 {
 	if (model.IsEnabled())
 	{
-#ifdef DUET_NG
+		// Read the temperature even if the heater is suspended
+		const TemperatureError err = ReadTemperature();
+
+#if HAS_VOLTAGE_MONITOR
 		if (suspended)
 		{
 			SetHeater(0.0);
 			return;
 		}
 #endif
-		// Read the temperature
-		const TemperatureError err = ReadTemperature();
-
 		// Handle any temperature reading error and calculate the temperature rate of change, if possible
 		if (err != TemperatureError::success)
 		{
@@ -220,6 +225,7 @@ void PID::Spin()
 						tuningTempReadings = nullptr;
 					}
 					mode = HeaterMode::fault;
+					reprap.GetGCodes().HandleHeaterFault(heater);
 					platform.MessageF(ErrorMessage, "Temperature reading fault on heater %d: %s\n", heater, TemperatureErrorString(err));
 					reprap.FlagTemperatureFault(heater);
 				}
@@ -271,7 +277,7 @@ void PID::Spin()
 							{
 								SetHeater(0.0);					// do this here just to be sure
 								mode = HeaterMode::fault;
-								reprap.GetGCodes().CancelPrint(false, false);
+								reprap.GetGCodes().HandleHeaterFault(heater);
 								platform.MessageF(ErrorMessage,
 											"Heating fault on heater %d, temperature rising much more slowly than the expected %.1f" DEGREE_SYMBOL "C/sec\n",
 											heater, (double)expectedRate);
@@ -298,7 +304,7 @@ void PID::Spin()
 					{
 						SetHeater(0.0);					// do this here just to be sure
 						mode = HeaterMode::fault;
-						reprap.GetGCodes().CancelPrint(false, false);
+						reprap.GetGCodes().HandleHeaterFault(heater);
 						platform.MessageF(ErrorMessage, "Heating fault on heater %d, temperature excursion exceeded %.1f" DEGREE_SYMBOL "C\n",
 											heater, (double)maxTempExcursion);
 					}
@@ -360,15 +366,33 @@ void PID::Spin()
 					}
 					else
 					{
+#if 1	// try normal PWM instead, because it looks like the modified PWM may be causing undershoot on initial heating
+						const float errorToUse = error;
+#else
 						// In the following we use a modified PID when the temperature is a long way off target.
 						// During initial heating or cooling, the D term represents expected overshoot, which we don't want to add to the I accumulator.
 						// When we are in load mode, the I term is much larger and the D term doesn't represent overshoot, so use normal PID.
 						const float errorToUse = (inLoadMode || model.ArePidParametersOverridden()) ? error : errorMinusDterm;
+#endif
 						iAccumulator = constrain<float>
 										(iAccumulator + (errorToUse * params.kP * params.recipTi * platform.HeatSampleInterval() * MillisToSeconds),
 											0.0, model.GetMaxPwm());
 						lastPwm = constrain<float>(pPlusD + iAccumulator, 0.0, model.GetMaxPwm());
 					}
+#if HAS_VOLTAGE_MONITOR
+					// Scale the PID based on the current voltage vs. the calibration voltage
+					if (lastPwm < 1.0 && model.GetVoltage() >= 10.0)				// if heater is not fully on and we know the voltage we tuned the heater at
+					{
+						if (!reprap.GetHeat().IsBedOrChamberHeater(heater))
+						{
+							const float currentVoltage = platform.GetCurrentPowerVoltage();
+							if (currentVoltage >= 10.0)				// if we have a sensible reading
+							{
+								lastPwm = min<float>(lastPwm * fsquare(model.GetVoltage()/currentVoltage), 1.0);	// adjust the PWM by the square of the voltage ratio
+							}
+						}
+					}
+#endif
 				}
 				else
 				{
@@ -451,9 +475,12 @@ void PID::Standby()
 
 void PID::ResetFault()
 {
-	mode = HeaterMode::off;
-	SwitchOff();
 	badTemperatureCount = 0;
+	if (mode == HeaterMode::fault)
+	{
+		mode = HeaterMode::off;
+		SwitchOff();
+	}
 }
 
 float PID::GetAveragePWM() const
@@ -502,7 +529,7 @@ void PID::StartAutoTune(float targetTemp, float maxPwm, StringRef& reply)
 			tuningTempReadings = new float[MaxTuningTempReadings];
 			tuningTempReadings[0] = temperature;
 			tuningReadingInterval = platform.HeatSampleInterval();
-			tuningPwm = min<float>(maxPwm, model.GetMaxPwm());
+			tuningPwm = maxPwm;
 			tuningTargetTemp = targetTemp;
 			reply.printf("Auto tuning heater %d using target temperature %.1f" DEGREE_SYMBOL "C and PWM %.2f - do not leave printer unattended", heater, (double)targetTemp, (double)maxPwm);
 		}
@@ -614,6 +641,10 @@ void PID::DoTuningStep()
 		{
 			// Starting temperature is stable, so move on
 			tuningReadingsTaken = 1;
+#if HAS_VOLTAGE_MONITOR
+			tuningVoltageAccumulator = 0.0;
+			voltageSamplesTaken = 0;
+#endif
 			tuningTempReadings[0] = tuningStartTemp = temperature;
 			timeSetHeating = tuningPhaseStartTime = millis();
 			lastPwm = tuningPwm;										// turn on heater at specified power
@@ -633,7 +664,7 @@ void PID::DoTuningStep()
 	case HeaterMode::tuning1:
 		// Heating up
 		{
-			const bool isBedOrChamberHeater = (heater == reprap.GetHeat().GetBedHeater() || heater == reprap.GetHeat().GetChamberHeater());
+			const bool isBedOrChamberHeater = reprap.GetHeat().IsBedOrChamberHeater(heater);
 			const uint32_t heatingTime = millis() - tuningPhaseStartTime;
 			const float extraTimeAllowed = (isBedOrChamberHeater) ? 60.0 : 30.0;
 			if (heatingTime > (uint32_t)((model.GetDeadTime() + extraTimeAllowed) * SecondsToMillis) && (temperature - tuningStartTemp) < 3.0)
@@ -649,6 +680,10 @@ void PID::DoTuningStep()
 				break;
 			}
 
+#if HAS_VOLTAGE_MONITOR
+			tuningVoltageAccumulator += platform.GetCurrentPowerVoltage();
+			++voltageSamplesTaken;
+#endif
 			if (temperature >= tuningTargetTemp)							// if reached target
 			{
 				tuningHeatingTime = heatingTime;
@@ -832,7 +867,13 @@ void PID::CalculateModel()
 	//const float td = (float)(tuningPeakDelay + 500) * 0.00065;		// take the dead time as 65% of the delay to peak rounded up to a half second
 	const float td = tc * logf((gain + tuningStartTemp - tuningHeaterOffTemp)/(gain + tuningStartTemp - tuningPeakTemperature)) * 1.3;
 
-	tuned = SetModel(gain, tc, td, tuningPwm, true);
+	tuned = SetModel(gain, tc, td, tuningPwm,
+#if HAS_VOLTAGE_MONITOR
+						tuningVoltageAccumulator/voltageSamplesTaken,
+#else
+						0.0,
+#endif
+		true);
 	if (tuned)
 	{
 		platform.MessageF(LoggedGenericMessage,
@@ -861,7 +902,7 @@ void PID::DisplayBuffer(const char *intro)
 	}
 }
 
-#ifdef DUET_NG
+#if HAS_VOLTAGE_MONITOR
 
 // Suspend the heater to conserve power, or resume it
 void PID::Suspend(bool sus)

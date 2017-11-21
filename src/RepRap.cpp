@@ -170,63 +170,63 @@ void RepRap::Spin()
 	if(!active)
 		return;
 
-	spinningModule = modulePlatform;
 	ticksInSpinState = 0;
+	spinningModule = modulePlatform;
 	platform->Spin();
 
-	spinningModule = moduleNetwork;
 	ticksInSpinState = 0;
+	spinningModule = moduleNetwork;
 	network->Spin(true);
 
+	ticksInSpinState = 0;
 	spinningModule = moduleWebserver;
-	ticksInSpinState = 0;
 
-	spinningModule = moduleGcodes;
 	ticksInSpinState = 0;
+	spinningModule = moduleGcodes;
 	gCodes->Spin();
 
-	spinningModule = moduleMove;
 	ticksInSpinState = 0;
+	spinningModule = moduleMove;
 	move->Spin();
 
-	spinningModule = moduleHeat;
 	ticksInSpinState = 0;
+	spinningModule = moduleHeat;
 	heat->Spin();
 
 #if SUPPORT_ROLAND
-	spinningModule = moduleRoland;
 	ticksInSpinState = 0;
+	spinningModule = moduleRoland;
 	roland->Spin();
 #endif
 
 #if SUPPORT_SCANNER
-	spinningModule = moduleScanner;
 	ticksInSpinState = 0;
+	spinningModule = moduleScanner;
 	scanner->Spin();
 #endif
 
 #if SUPPORT_IOBITS
-	spinningModule = modulePortControl;
 	ticksInSpinState = 0;
+	spinningModule = modulePortControl;
 	portControl->Spin(true);
 #endif
 
-	spinningModule = modulePrintMonitor;
 	ticksInSpinState = 0;
+	spinningModule = modulePrintMonitor;
 	printMonitor->Spin();
 
 #ifdef DUET_NG
-	spinningModule = moduleDuetExpansion;
 	ticksInSpinState = 0;
+	spinningModule = moduleDuetExpansion;
 	DuetExpansion::Spin(true);
 #endif
 
-	spinningModule = moduleFilamentSensors;
 	ticksInSpinState = 0;
+	spinningModule = moduleFilamentSensors;
 	FilamentSensor::Spin(true);
 
-	spinningModule = noModule;
 	ticksInSpinState = 0;
+	spinningModule = noModule;
 
 	// Check if we need to display a cold extrusion warning
 	const uint32_t now = millis();
@@ -335,13 +335,16 @@ void RepRap::FastStop()
 
 void RepRap::SetDebug(Module m, bool enable)
 {
-	if (enable)
+	if (m < numModules)
 	{
-		debug |= (1 << m);
-	}
-	else
-	{
-		debug &= ~(1 << m);
+		if (enable)
+		{
+			debug |= (1u << m);
+		}
+		else
+		{
+			debug &= ~(1u << m);
+		}
 	}
 	PrintDebug();
 }
@@ -353,30 +356,24 @@ void RepRap::SetDebug(bool enable)
 
 void RepRap::PrintDebug()
 {
-	if (debug != 0)
+	platform->Message(GenericMessage, "Debugging enabled for modules:");
+	for (size_t i = 0; i < numModules; i++)
 	{
-		platform->Message(GenericMessage, "Debugging enabled for modules:");
-		for (size_t i = 0; i < numModules; i++)
+		if ((debug & (1u << i)) != 0)
 		{
-			if ((debug & (1 << i)) != 0)
-			{
-				platform->MessageF(GenericMessage, " %s(%u)", moduleName[i], i);
-			}
+			platform->MessageF(GenericMessage, " %s(%u)", moduleName[i], i);
 		}
-		platform->Message(GenericMessage, "\nDebugging disabled for modules:");
-		for (size_t i = 0; i < numModules; i++)
-		{
-			if ((debug & (1 << i)) == 0)
-			{
-				platform->MessageF(GenericMessage, " %s(%u)", moduleName[i], i);
-			}
-		}
-		platform->Message(GenericMessage, "\n");
 	}
-	else
+
+	platform->Message(GenericMessage, "\nDebugging disabled for modules:");
+	for (size_t i = 0; i < numModules; i++)
 	{
-		platform->Message(GenericMessage, "Debugging disabled\n");
+		if ((debug & (1u << i)) == 0)
+		{
+			platform->MessageF(GenericMessage, " %s(%u)", moduleName[i], i);
+		}
 	}
+	platform->Message(GenericMessage, "\n");
 }
 
 // Add a tool.
@@ -412,7 +409,7 @@ void RepRap::DeleteTool(Tool* tool)
 	// Switch off any associated heater and remove heater references
 	for (size_t i = 0; i < tool->HeaterCount(); i++)
 	{
-		reprap.GetHeat().SwitchOff(tool->Heater(i));
+		heat->SwitchOff(tool->Heater(i));
 	}
 
 	// Purge any references to this tool
@@ -437,35 +434,27 @@ void RepRap::DeleteTool(Tool* tool)
 	platform->UpdateConfiguredHeaters();
 }
 
+// Select the specified tool, putting the existing current tool into standby
 void RepRap::SelectTool(int toolNumber, bool simulating)
 {
-	Tool* tool = toolList;
-
-	while(tool != nullptr)
+	Tool* const newTool = GetTool(toolNumber);
+	if (!simulating)
 	{
-		if (tool->Number() == toolNumber)
+		if (currentTool != nullptr && currentTool != newTool)
 		{
-			if (!simulating)
-			{
-				tool->Activate(currentTool);
-			}
-			currentTool = tool;
-			return;
+			currentTool->Standby();
 		}
-		tool = tool->Next();
+		if (newTool != nullptr)
+		{
+			newTool->Activate();
+		}
 	}
-
-	// Selecting a non-existent tool is valid.  It sets them all to standby.
-	if (currentTool != nullptr && !simulating)
-	{
-		StandbyTool(currentTool->Number());
-	}
-	currentTool = nullptr;
+	currentTool = newTool;
 }
 
 void RepRap::PrintTool(int toolNumber, StringRef& reply) const
 {
-	Tool* tool = GetTool(toolNumber);
+	const Tool* const tool = GetTool(toolNumber);
 	if (tool != nullptr)
 	{
 		tool->Print(reply);
@@ -478,7 +467,7 @@ void RepRap::PrintTool(int toolNumber, StringRef& reply) const
 
 void RepRap::StandbyTool(int toolNumber)
 {
-	Tool* tool = GetTool(toolNumber);
+	Tool* const tool = GetTool(toolNumber);
 	if (tool != nullptr)
 	{
 		tool->Standby();
@@ -507,6 +496,12 @@ Tool* RepRap::GetTool(int toolNumber) const
 	return nullptr; // Not an error
 }
 
+// Return the current tool number, or -1 if no tool selected
+int RepRap::GetCurrentToolNumber() const
+{
+	return (currentTool == nullptr) ? -1 : currentTool->Number();
+}
+
 // Get the current tool, or failing that the default tool. May return nullptr if we can't
 // Called when a M104 or M109 command doesn't specify a tool number.
 Tool* RepRap::GetCurrentOrDefaultTool() const
@@ -530,9 +525,9 @@ void RepRap::SetToolVariables(int toolNumber, const float* standbyTemperatures, 
 
 bool RepRap::IsHeaterAssignedToTool(int8_t heater) const
 {
-	for(Tool *tool = toolList; tool != nullptr; tool = tool->Next())
+	for (Tool *tool = toolList; tool != nullptr; tool = tool->Next())
 	{
-		for(size_t i = 0; i < tool->HeaterCount(); i++)
+		for (size_t i = 0; i < tool->HeaterCount(); i++)
 		{
 			if (tool->Heater(i) == heater)
 			{
@@ -561,7 +556,7 @@ void RepRap::Tick()
 	{
 		platform->Tick();
 		++ticksInSpinState;
-		if (ticksInSpinState >= 20000)	// if we stall for 20 seconds, save diagnostic data and reset
+		if (ticksInSpinState >= MaxTicksInSpinState)	// if we stall for 20 seconds, save diagnostic data and reset
 		{
 			resetting = true;
 			for(size_t i = 0; i < Heaters; i++)
@@ -579,6 +574,12 @@ void RepRap::Tick()
 			platform->SoftwareReset((uint16_t)SoftwareResetReason::stuckInSpin, stackPtr + 5);
 		}
 	}
+}
+
+// Return true if we are close to timeout
+bool RepRap::SpinTimeoutImminent() const
+{
+	return ticksInSpinState >= HighTicksInSpinState;
 }
 
 // Get the JSON status response for the web server (or later for the M105 command).
@@ -600,7 +601,7 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 	response->printf("{\"status\":\"%c\",\"coords\":{", ch);
 
 	// Coordinates
-	const size_t numAxes = reprap.GetGCodes().GetVisibleAxes();
+	const size_t numAxes = gCodes->GetVisibleAxes();
 	{
 		float liveCoordinates[DRIVES];
 #if SUPPORT_ROLAND
@@ -616,10 +617,9 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 
 		if (currentTool != nullptr)
 		{
-			const float *offset = currentTool->GetOffsets();
 			for (size_t i = 0; i < numAxes; ++i)
 			{
-				liveCoordinates[i] += offset[i];
+				liveCoordinates[i] += currentTool->GetOffset(i);
 			}
 		}
 
@@ -651,16 +651,15 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 		ch = '[';
 		for (size_t axis = 0; axis < numAxes; axis++)
 		{
-			// Coordinates may be NaNs, for example when delta or SCARA homing fails. Replace any NaNs by 999.9 to prevent JSON parsing errors.
+			// Coordinates may be NaNs, for example when delta or SCARA homing fails. Replace any NaNs or infinities by 9999.9 to prevent JSON parsing errors.
 			const float coord = liveCoordinates[axis];
-			response->catf("%c%.3f", ch, (double)((std::isnan(coord) || std::isinf(coord)) ? 999.9 : coord));
+			response->catf("%c%.3f", ch, (double)((std::isnan(coord) || std::isinf(coord)) ? 9999.9 : coord));
 			ch = ',';
 		}
 	}
 
 	// Current tool number
-	const int toolNumber = (currentTool == nullptr) ? -1 : currentTool->Number();
-	response->catf("]},\"currentTool\":%d", toolNumber);
+	response->catf("]},\"currentTool\":%d", GetCurrentToolNumber());
 
 	// Output notifications
 	{
@@ -950,7 +949,7 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 		response->catf(",\"endstops\":%" PRIu32, endstops);
 
 		// Firmware name, machine geometry and number of axes
-		response->catf(",\"firmwareName\":\"%s\",\"geometry\":\"%s\",\"axes\":%u", FIRMWARE_NAME, move->GetGeometryString(), numAxes);
+		response->catf(",\"firmwareName\":\"%s\",\"geometry\":\"%s\",\"axes\":%u,\"axisNames\":\"%s\"", FIRMWARE_NAME, move->GetGeometryString(), numAxes, gCodes->GetAxisLetters());
 
 		// Total and mounted volumes
 		size_t mountedCards = 0;
@@ -1073,7 +1072,7 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 		}
 #endif
 
-#ifdef DUET_NG
+#if HAS_VOLTAGE_MONITOR
 		// Power in voltages
 		{
 			float minV, currV, maxV;
@@ -1158,7 +1157,7 @@ OutputBuffer *RepRap::GetConfigResponse()
 		return nullptr;
 	}
 
-	const size_t numAxes = reprap.GetGCodes().GetVisibleAxes();
+	const size_t numAxes = gCodes->GetVisibleAxes();
 
 	// Axis minima
 	response->copy("{\"axisMins\":");
@@ -1309,16 +1308,14 @@ OutputBuffer *RepRap::GetLegacyStatusResponse(uint8_t type, int seq)
 	response->cat("]");
 
 	// Send XYZ positions
-	const size_t numAxes = reprap.GetGCodes().GetVisibleAxes();
+	const size_t numAxes = gCodes->GetVisibleAxes();
 	float liveCoordinates[DRIVES];
-	reprap.GetMove().LiveCoordinates(liveCoordinates, GetCurrentXAxes(), GetCurrentYAxes());
-	const Tool* const currentTool = reprap.GetCurrentTool();
+	move->LiveCoordinates(liveCoordinates, GetCurrentXAxes(), GetCurrentYAxes());
 	if (currentTool != nullptr)
 	{
-		const float *offset = currentTool->GetOffsets();
 		for (size_t i = 0; i < numAxes; ++i)
 		{
-			liveCoordinates[i] += offset[i];
+			liveCoordinates[i] += currentTool->GetOffset(i);
 		}
 	}
 	response->catf(",\"pos\":");		// announce the XYZ position
@@ -1332,7 +1329,7 @@ OutputBuffer *RepRap::GetLegacyStatusResponse(uint8_t type, int seq)
 	// Send the speed and extruder override factors
 	response->catf("],\"sfactor\":%.2f,\"efactor\":", (double)(gCodes->GetSpeedFactor() * 100.0));
 	ch = '[';
-	for (size_t i = 0; i < reprap.GetExtrudersInUse(); ++i)
+	for (size_t i = 0; i < GetExtrudersInUse(); ++i)
 	{
 		response->catf("%c%.2f", ch, (double)(gCodes->GetExtrusionFactor(i) * 100.0));
 		ch = ',';
@@ -1343,8 +1340,7 @@ OutputBuffer *RepRap::GetLegacyStatusResponse(uint8_t type, int seq)
 	response->catf(",\"babystep\":%.03f", (double)(gCodes->GetBabyStepOffset()));
 
 	// Send the current tool number
-	const int toolNumber = (currentTool == nullptr) ? 0 : currentTool->Number();
-	response->catf(",\"tool\":%d", toolNumber);
+	response->catf(",\"tool\":%d", GetCurrentToolNumber());
 
 	// Send the Z probe value
 	const int v0 = platform->GetZProbeReading();
@@ -1428,8 +1424,8 @@ OutputBuffer *RepRap::GetLegacyStatusResponse(uint8_t type, int seq)
 	else if (type == 3)
 	{
 		// Add the static fields
-		response->catf(",\"geometry\":\"%s\",\"axes\":%u,\"volumes\":%u,\"numTools\":%u,\"myName\":",
-						move->GetGeometryString(), numAxes, NumSdCards, GetNumberOfContiguousTools());
+		response->catf(",\"geometry\":\"%s\",\"axes\":%u,\"axisNames\":\"%s\",\"volumes\":%u,\"numTools\":%u,\"myName\":",
+						move->GetGeometryString(), numAxes, gCodes->GetAxisLetters(), NumSdCards, GetNumberOfContiguousTools());
 		response->EncodeString(myName, ARRAY_SIZE(myName), false);
 		response->cat(",\"firmwareName\":");
 		response->EncodeString(FIRMWARE_NAME, strlen(FIRMWARE_NAME), false);
@@ -1734,7 +1730,7 @@ void RepRap::FlagTemperatureFault(int8_t dudHeater)
 
 void RepRap::ClearTemperatureFault(int8_t wasDudHeater)
 {
-	reprap.GetHeat().ResetFault(wasDudHeater);
+	heat->ResetFault(wasDudHeater);
 	if (toolList != nullptr)
 	{
 		toolList->ClearTemperatureFault(wasDudHeater);
@@ -1775,6 +1771,39 @@ bool RepRap::WriteToolSettings(FileStore *f) const
 	return ok;
 }
 
+// Save some information in config-override.g
+bool RepRap::WriteToolParameters(FileStore *f) const
+{
+	bool ok = true, written = false;
+	for (const Tool *t = toolList; ok && t != nullptr; t = t->Next())
+	{
+		const AxesBitmap axesProbed = t->GetAxisOffsetsProbed();
+		if (axesProbed != 0)
+		{
+			if (written)
+			{
+				scratchString.Clear();
+			}
+			else
+			{
+				scratchString.copy("; Probed tool offsets\n");
+				written = true;
+			}
+			scratchString.catf("G10 P%d", t->Number());
+			for (size_t axis = 0; axis < MaxAxes; ++axis)
+			{
+				if (IsBitSet(axesProbed, axis))
+				{
+					scratchString.catf(" %c%.2f", gCodes->GetAxisLetters()[axis], (double)(t->GetOffset(axis)));
+				}
+			}
+			scratchString.cat('\n');
+			ok = f->Write(scratchString.Pointer());
+		}
+	}
+	return ok;
+}
+
 // Helper function for diagnostic tests in Platform.cpp, to cause a deliberate divide-by-zero
 /*static*/ uint32_t RepRap::DoDivide(uint32_t a, uint32_t b)
 {
@@ -1785,6 +1814,12 @@ bool RepRap::WriteToolSettings(FileStore *f) const
 /*static*/ uint32_t RepRap::ReadDword(const char* p)
 {
 	return *reinterpret_cast<const uint32_t*>(p);
+}
+
+// Report an internal error
+void RepRap::ReportInternalError(const char *file, const char *func, int line) const
+{
+	platform->MessageF(ErrorMessage, "Internal Error in %s at %s(%d)\n", func, file, line);
 }
 
 // End

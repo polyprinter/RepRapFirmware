@@ -49,7 +49,6 @@ Licence: GPL
 #include "Storage/MassStorage.h"	// must be after Pins.h because it needs NumSdCards defined
 #include "MessageType.h"
 #include "ZProbeProgrammer.h"
-#include "Logger.h"
 
 #if defined(DUET_NG)
 # include "DueXn.h"
@@ -96,14 +95,7 @@ const float AXIS_MAXIMA[MaxAxes] = AXES_(230.0, 230.0, 230.0, 0.0, 0.0, 0.0, 0.0
 
 const float Z_PROBE_STOP_HEIGHT = 0.7;							// Millimetres
 const unsigned int Z_PROBE_AVERAGE_READINGS = 8;				// We average this number of readings with IR on, and the same number with IR off
-
-#if defined DUET_06_085
-const int Z_PROBE_AD_VALUE = 400;								// Default for the Z probe - should be overwritten by experiment
-const uint32_t Z_PROBE_AXES = (1 << X_AXIS) | (1 << Z_AXIS);	// Axes for which the Z-probe is normally used
-#else
 const int Z_PROBE_AD_VALUE = 500;								// Default for the Z probe - should be overwritten by experiment
-const uint32_t Z_PROBE_AXES = (1 << Z_AXIS);					// Axes for which the Z-probe is normally used
-#endif
 
 #ifdef POLYPRINTER
 const int ZProbeTypePoly = 99;									// Z probe type for experimental probe
@@ -111,7 +103,7 @@ const int ZProbeTypePoly = 99;									// Z probe type for experimental probe
 
 // HEATERS - The bed is assumed to be the at index 0
 
-// Define the number of temperature readings we average for each thermistor. This should be a power of 2 and at least 4 ** AD_OVERSAMPLE_BITS.
+// Define the number of temperature readings we average for each thermistor. This should be a power of 2 and at least 4 ^ AD_OVERSAMPLE_BITS.
 // Keep THERMISTOR_AVERAGE_READINGS * NUM_HEATERS * 2ms no greater than HEAT_SAMPLE_TIME or the PIDs won't work well.
 const unsigned int ThermistorAverageReadings = 32;
 
@@ -151,15 +143,24 @@ enum class EndStopHit
   noStop = 0,		// no endstop hit
   lowHit = 1,		// low switch hit, or Z-probe in use and above threshold
   highHit = 2,		// high stop hit
-  lowNear = 3		// approaching Z-probe threshold
+  nearStop = 3		// approaching Z-probe threshold
 };
 
-// The values of the following enumeration must tally with the definitions for the M574 command
-enum class EndStopType
+// The values of the following enumeration must tally with the X,Y,... parameters for the M574 command
+enum class EndStopPosition
 {
 	noEndStop = 0,
 	lowEndStop = 1,
 	highEndStop = 2
+};
+
+// Type of an endstop input - values must tally with the M574 command S parameter
+enum class EndStopInputType
+{
+	activeLow = 0,
+	activeHigh = 1,
+	zProbe = 2,
+	motorStall = 3
 };
 
 /***************************************************************************************************/
@@ -377,8 +378,8 @@ public:
 
 	// Timing
   
-	static uint32_t GetInterruptClocks();					// Get the interrupt clock count
-	static bool ScheduleStepInterrupt(uint32_t tim);		// Schedule an interrupt at the specified clock count, or return true if it has passed already
+	static uint32_t GetInterruptClocks() __attribute__ ((hot));					// Get the interrupt clock count
+	static bool ScheduleStepInterrupt(uint32_t tim) __attribute__ ((hot));		// Schedule an interrupt at the specified clock count, or return true if it has passed already
 	static void DisableStepInterrupt();						// Make sure we get no step interrupts
 	static bool ScheduleSoftTimerInterrupt(uint32_t tim);	// Schedule an interrupt at the specified clock count, or return true if it has passed already
 	static void DisableSoftTimerInterrupt();				// Make sure we get no software timer interrupts
@@ -446,7 +447,7 @@ public:
 	void SetDirection(size_t drive, bool direction);
 	void SetDirectionValue(size_t driver, bool dVal);
 	bool GetDirectionValue(size_t driver) const;
-	void SetEnableValue(size_t driver, bool eVal);
+	void SetEnableValue(size_t driver, int8_t eVal);
 	bool GetEnableValue(size_t driver) const;
 	void EnableDriver(size_t driver);
 	void DisableDriver(size_t driver);
@@ -454,8 +455,8 @@ public:
 	void DisableDrive(size_t drive);
 	void DisableAllDrives();
 	void SetDriversIdle();
-	void SetMotorCurrent(size_t drive, float current, bool isPercent);
-	float GetMotorCurrent(size_t drive, bool isPercent) const;
+	void SetMotorCurrent(size_t drive, float current, int code);
+	float GetMotorCurrent(size_t drive, int code) const;
 	void SetIdleCurrentFactor(float f);
 	float GetIdleCurrentFactor() const
 		{ return idleCurrentFactor; }
@@ -488,17 +489,17 @@ public:
 	void SetInstantDv(size_t drive, float value);
 	EndStopHit Stopped(size_t drive) const;
 	float AxisMaximum(size_t axis) const;
-	void SetAxisMaximum(size_t axis, float value);
+	void SetAxisMaximum(size_t axis, float value, bool byProbing);
 	float AxisMinimum(size_t axis) const;
-	void SetAxisMinimum(size_t axis, float value);
+	void SetAxisMinimum(size_t axis, float value, bool byProbing);
 	float AxisTotalLength(size_t axis) const;
 	float GetPressureAdvance(size_t drive) const;
 	void SetPressureAdvance(size_t extruder, float factor);
 
-	void SetEndStopConfiguration(size_t axis, EndStopType endstopType, bool logicLevel)
+	void SetEndStopConfiguration(size_t axis, EndStopPosition endstopPos, EndStopInputType inputType)
 	pre(axis < MaxAxes);
 
-	void GetEndStopConfiguration(size_t axis, EndStopType& endstopType, bool& logicLevel) const
+	void GetEndStopConfiguration(size_t axis, EndStopPosition& endstopPos, EndStopInputType& inputType) const
 	pre(axis < MaxAxes);
 
 	uint32_t GetAllEndstopStates() const;
@@ -527,13 +528,11 @@ public:
 	int GetZProbeSecondaryValues(int& v1, int& v2);
 	void SetZProbeType(int iZ);
 	int GetZProbeType() const { return zProbeType; }
-	void SetZProbeAxes(AxesBitmap axes);
-	AxesBitmap GetZProbeAxes() const { return zProbeAxes; }
 	const ZProbeParameters& GetZProbeParameters(int32_t probeType) const;
 	const ZProbeParameters& GetCurrentZProbeParameters() const { return GetZProbeParameters(zProbeType); }
 	void SetZProbeParameters(int32_t probeType, const struct ZProbeParameters& params);
 	bool HomingZWithProbe() const;
-	bool WriteZProbeParameters(FileStore *f) const;
+	bool WritePlatformParameters(FileStore *f) const;
 	void SetProbing(bool isProbing);
 	bool ProgramZProbe(GCodeBuffer& gb, StringRef& reply);
 	void SetZProbeModState(bool b) const;
@@ -585,7 +584,7 @@ public:
 
 	// Flash operations
 	void UpdateFirmware();
-	bool CheckFirmwareUpdatePrerequisites();
+	bool CheckFirmwareUpdatePrerequisites(StringRef& reply);
 
 	// AUX device
 	void Beep(int freq, int ms);
@@ -605,16 +604,24 @@ public:
 	// MCU temperature
 #if HAS_CPU_TEMP_SENSOR
 	void GetMcuTemperatures(float& minT, float& currT, float& maxT) const;
-#endif
 	void SetMcuTemperatureAdjust(float v) { mcuTemperatureAdjust = v; }
 	float GetMcuTemperatureAdjust() const { return mcuTemperatureAdjust; }
+#endif
 
-#ifdef DUET_NG
+#if HAS_VOLTAGE_MONITOR
 	// Power in voltage
 	void GetPowerVoltages(float& minV, float& currV, float& maxV) const;
+	float GetCurrentPowerVoltage() const;
+	bool IsPowerOk() const;
+	void DisableAutoSave();
+	void EnableAutoSave(float saveVoltage, float resumeVoltage);
+	bool GetAutoSaveSettings(float& saveVoltage, float&resumeVoltage);
+#endif
+
+#if HAS_SMART_DRIVERS
 	float GetTmcDriversTemperature(unsigned int board) const;
 	void DriverCoolingFansOn(uint32_t driverChannelsMonitored);
-	bool ConfigureAutoSave(GCodeBuffer& gb, StringRef& reply);
+	bool ConfigureStallDetection(GCodeBuffer& gb, StringRef& reply);
 #endif
 
 	// User I/O and servo support
@@ -650,6 +657,8 @@ public:
 	void SetLaserPwmFrequency(float freq);
 	float GetLaserPwmFrequency() const { return laserPort.GetFrequency(); }
 
+	static uint8_t softwareResetDebugInfo;			// extra info for debugging
+
 //-------------------------------------------------------------------------------------------------------
   
 private:
@@ -660,8 +669,9 @@ private:
 	void ResetChannel(size_t chan);					// re-initialise a serial channel
 	float AdcReadingToCpuTemperature(uint32_t reading) const;
 
-#ifdef DUET_NG
-	void ReportDrivers(uint16_t whichDrivers, const char* text, bool& reported);
+#if HAS_SMART_DRIVERS
+	void ReportDrivers(DriversBitmap whichDrivers, const char* text, bool& reported);
+	bool AnyMotorStalled(size_t drive) const pre(drive < DRIVES);
 #endif
 
 	// These are the structures used to hold our non-volatile data.
@@ -708,8 +718,8 @@ private:
 		}
 	};
 
-#if SAM4E
-	static_assert(SoftwareResetData::numberOfSlots * sizeof(SoftwareResetData) <= 512, "Can't fit software reset data in SAM4E user signature area");
+#if SAM4E || SAM4S
+	static_assert(SoftwareResetData::numberOfSlots * sizeof(SoftwareResetData) <= 512, "Can't fit software reset data in SAM4 user signature area");
 #else
 	static_assert(SoftwareResetData::numberOfSlots * sizeof(SoftwareResetData) <= FLASH_DATA_LENGTH, "NVData too large");
 #endif
@@ -721,14 +731,12 @@ private:
 
 	// Logging
 	Logger *logger;
-	uint32_t lastLogFlushTime;
 
 	// Z probes
 	ZProbeParameters switchZProbeParameters;		// Z probe values for the switch Z-probe
 	ZProbeParameters irZProbeParameters;			// Z probe values for the IR sensor
 	ZProbeParameters alternateZProbeParameters;		// Z probe values for the alternate sensor
 	int zProbeType;									// the type of Z probe we are currently using
-	AxesBitmap zProbeAxes;							// Z probe is used for these axes (bitmap)
 
 	byte ipAddress[4];
 	byte netMask[4];
@@ -737,8 +745,10 @@ private:
 	Compatibility compatibility;
 
 	BoardType board;
+
 #ifdef DUET_NG
 	ExpansionBoardType expansionBoard;
+	bool vssaSenseWorking;
 #endif
 
 	uint32_t longWait;
@@ -751,16 +761,16 @@ private:
 
 	// DRIVES
 
-	void SetDriverCurrent(size_t driver, float current, bool isPercent);
+	void SetDriverCurrent(size_t driver, float current, int code);
 	void UpdateMotorCurrent(size_t driver);
 	void SetDriverDirection(uint8_t driver, bool direction)
 	pre(driver < DRIVES);
 
-	static uint32_t CalcDriverBitmap(size_t driver);			// calculate the step bit for this driver
+	static uint32_t CalcDriverBitmap(size_t driver);	// calculate the step bit(s) for this driver
 
 	volatile DriverStatus driverState[DRIVES];
 	bool directions[DRIVES];
-	bool enableValues[DRIVES];
+	int8_t enableValues[DRIVES];
 	Pin endStopPins[DRIVES];
 	float maxFeedrates[DRIVES];
 	float accelerations[DRIVES];
@@ -771,6 +781,9 @@ private:
 	float pressureAdvance[MaxExtruders];
 	float motorCurrents[DRIVES];					// the normal motor current for each stepper driver
 	float motorCurrentFraction[DRIVES];				// the percentages of normal motor current that each driver is set to
+#if HAS_SMART_DRIVERS
+	float motorStandstillCurrentFraction[DRIVES];
+#endif
 	AxisDriversConfig axisDrivers[MaxAxes];			// the driver numbers assigned to each axis
 	uint8_t extruderDrivers[MaxExtruders];			// the driver number assigned to each extruder
 	uint32_t driveDriverBits[2 * DRIVES];			// the bitmap of driver port bits for each axis or extruder, followed by the raw versions
@@ -778,9 +791,20 @@ private:
 	uint32_t slowDrivers;							// bitmap of driver port bits that need extended step pulse timing
 	float idleCurrentFactor;
 
-#if defined(DUET_NG)
-	size_t numTMC2660Drivers;						// the number of TMC2660 drivers we have, the remaining are simple enable/step/dir drivers
-#elif defined(DUET_06_085)
+#if HAS_SMART_DRIVERS
+	size_t numSmartDrivers;						// the number of TMC2660 drivers we have, the remaining are simple enable/step/dir drivers
+	DriversBitmap logOnStallDrivers, pauseOnStallDrivers, rehomeOnStallDrivers;
+	DriversBitmap temperatureShutdownDrivers, temperatureWarningDrivers, shortToGroundDrivers, openLoadDrivers, stalledDrivers;
+	DriversBitmap stalledDriversToLog, stalledDriversToPause, stalledDriversToRehome;
+	uint8_t nextDriveToPoll;
+	bool driversPowered;
+	bool onBoardDriversFanRunning;						// true if a fan is running to cool the on-board drivers
+	bool offBoardDriversFanRunning;						// true if a fan is running to cool the drivers on the DueX
+	uint32_t onBoardDriversFanStartMillis;				// how many times we have suppressed a temperature warning
+	uint32_t offBoardDriversFanStartMillis;				// how many times we have suppressed a temperature warning
+#endif
+
+#if defined(DUET_06_085)
 	// Digipots
 	MCP4461 mcpDuet;
 	MCP4461 mcpExpansion;
@@ -802,10 +826,14 @@ private:
 	volatile ZProbeAveragingFilter zProbeOnFilter;					// Z probe readings we took with the IR turned on
 	volatile ZProbeAveragingFilter zProbeOffFilter;					// Z probe readings we took with the IR turned off
 
-	// Thermistors
+	// Thermistors and temperature monitoring
 	volatile ThermistorAveragingFilter thermistorFilters[Heaters];	// bed and extruder thermistor readings
+
 #if HAS_CPU_TEMP_SENSOR
 	volatile ThermistorAveragingFilter cpuTemperatureFilter;		// MCU temperature readings
+	AnalogChannelNumber temperatureAdcChannel;
+	uint32_t highestMcuTemperature, lowestMcuTemperature;
+	float mcuTemperatureAdjust;
 #endif
 
 	void InitZProbe();
@@ -816,9 +844,12 @@ private:
 
 	float axisMaxima[MaxAxes];
 	float axisMinima[MaxAxes];
-	EndStopType endStopType[MaxAxes];
-	bool endStopLogicLevel[MaxAxes];
-  
+	AxesBitmap axisMinimaProbed, axisMaximaProbed;
+	EndStopPosition endStopPos[MaxAxes];
+	EndStopInputType endStopInputType[MaxAxes];
+
+	static bool WriteAxisLimits(FileStore *f, AxesBitmap axesProbed, const float limits[MaxAxes], int sParam);
+
 	// Heaters - bed is assumed to be the first
 
 	Pin tempSensePins[Heaters];
@@ -897,39 +928,25 @@ private:
 	float filamentWidth;
 	float nozzleDiameter;
 
-	// Temperature and power monitoring
-#if HAS_CPU_TEMP_SENSOR		// reading temperature on the RADDS messes up one of the heater pins, so don't do it
-	AnalogChannelNumber temperatureAdcChannel;
-	uint32_t highestMcuTemperature, lowestMcuTemperature;
-#endif
-	float mcuTemperatureAdjust;
-
-#ifdef DUET_NG
+	// Power monitoring
+#if HAS_VOLTAGE_MONITOR
 	AnalogChannelNumber vInMonitorAdcChannel;
 	volatile uint16_t currentVin, highestVin, lowestVin;
-	uint32_t numUnderVoltageEvents;
-	volatile uint32_t numOverVoltageEvents;
-	uint32_t lastWarningMillis;							// When we last sent a warning message about a Vssa short
-	uint16_t temperatureShutdownDrivers, temperatureWarningDrivers, shortToGroundDrivers, openLoadDrivers;
-	uint8_t nextDriveToPoll;
-	bool driversPowered;
-	bool vssaSenseWorking;
-	bool onBoardDriversFanRunning;						// true if a fan is running to cool the on-board drivers
-	bool offBoardDriversFanRunning;						// true if a fan is running to cool the drivers on the DueX
-	uint32_t onBoardDriversFanStartMillis;				// how many times we have suppressed a temperature warning
-	uint32_t offBoardDriversFanStartMillis;				// how many times we have suppressed a temperature warning
-	uint16_t autoShutdownReading, autoPauseReading, autoResumeReading;
+	uint16_t autoPauseReading, autoResumeReading;
+	uint32_t numUnderVoltageEvents, previousUnderVoltageEvents;
+	volatile uint32_t numOverVoltageEvents, previousOverVoltageEvents;
 	bool autoSaveEnabled;
 
 	enum class AutoSaveState : uint8_t
 	{
 		starting = 0,
 		normal,
-		autoPaused,
-		autoShutdown
+		autoPaused
 	};
 	AutoSaveState autoSaveState;
 #endif
+
+	uint32_t lastWarningMillis;							// When we last sent a warning message
 
 	// RTC
 	time_t realTime;									// the current date/time, or zero if never set
@@ -1055,12 +1072,6 @@ inline void Platform::SetDriverDirection(uint8_t driver, bool direction)
 	digitalWrite(DIRECTION_PINS[driver], d);
 }
 
-inline void Platform::SetEnableValue(size_t driver, bool eVal)
-{
-	enableValues[driver] = eVal;
-	DisableDriver(driver);				// disable the drive, because the enable polarity may have been wrong before
-}
-
 inline bool Platform::GetEnableValue(size_t driver) const
 {
 	return enableValues[driver];
@@ -1071,19 +1082,9 @@ inline float Platform::AxisMaximum(size_t axis) const
 	return axisMaxima[axis];
 }
 
-inline void Platform::SetAxisMaximum(size_t axis, float value)
-{
-	axisMaxima[axis] = value;
-}
-
 inline float Platform::AxisMinimum(size_t axis) const
 {
 	return axisMinima[axis];
-}
-
-inline void Platform::SetAxisMinimum(size_t axis, float value)
-{
-	axisMinima[axis] = value;
 }
 
 inline float Platform::AxisTotalLength(size_t axis) const
@@ -1180,18 +1181,6 @@ inline float Platform::GetPressureAdvance(size_t extruder) const
 	return (extruder < MaxExtruders) ? pressureAdvance[extruder] : 0.0;
 }
 
-inline void Platform::SetEndStopConfiguration(size_t axis, EndStopType esType, bool logicLevel)
-{
-	endStopType[axis] = esType;
-	endStopLogicLevel[axis] = logicLevel;
-}
-
-inline void Platform::GetEndStopConfiguration(size_t axis, EndStopType& esType, bool& logicLevel) const
-{
-	esType = endStopType[axis];
-	logicLevel = endStopLogicLevel[axis];
-}
-
 // Get the interrupt clock count
 /*static*/ inline uint32_t Platform::GetInterruptClocks()
 {
@@ -1259,7 +1248,7 @@ inline OutputBuffer *Platform::GetAuxGCodeReply()
 	return temp;
 }
 
-// *** These next two functions must use the same bit assignments in the drivers bitmap ***
+// *** These next three functions must use the same bit assignments in the drivers bitmap ***
 // The bitmaps are organised like this:
 // Duet WiFi:
 //	All step pins are on port D, so the bitmap is just the map of bits in port D.
@@ -1270,6 +1259,8 @@ inline OutputBuffer *Platform::GetAuxGCodeReply()
 // RADDS:
 //  Step pins are PA2,9,12,15 PB16,19 PC3,12 PD6
 //	PC12 clashes with PA12 so we shift PC3,12 left one bit
+// Alligator:
+//  Pins on ports B,C,D are used but the bit numbers are all different, so we use their actual positions
 
 // Calculate the step bit for a driver. This doesn't need to be fast.
 /*static*/ inline uint32_t Platform::CalcDriverBitmap(size_t driver)

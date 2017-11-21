@@ -71,7 +71,7 @@ void MassStorage::Init()
 	// Try to mount the first SD card only
 	char replyBuffer[100];
 	StringRef reply(replyBuffer, ARRAY_SIZE(replyBuffer));
-	do { } while (!Mount(0, reply, false));
+	do { } while (Mount(0, reply, false) == GCodeResult::notFinished);
 	if (reply.strlen() != 0)
 	{
 		delay(3000);		// Wait a few seconds so users have a chance to see this
@@ -86,7 +86,7 @@ FileWriteBuffer *MassStorage::AllocateWriteBuffer()
 		return nullptr;
 	}
 
-	FileWriteBuffer *buffer = freeWriteBuffers;
+	FileWriteBuffer * const buffer = freeWriteBuffers;
 	freeWriteBuffers = buffer->Next();
 	buffer->SetNext(nullptr);
 	return buffer;
@@ -224,9 +224,9 @@ const char* MassStorage::GetMonthName(const uint8_t month)
 // Delete a file or directory
 bool MassStorage::Delete(const char* directory, const char* fileName, bool silent)
 {
-	const char* location = (directory != nullptr)
-							? platform->GetMassStorage()->CombineName(directory, fileName)
-								: fileName;
+	const char* const location = (directory != nullptr)
+									? platform->GetMassStorage()->CombineName(directory, fileName)
+									: fileName;
 	if (f_unlink(location) != FR_OK)
 	{
 		if (!silent)
@@ -241,7 +241,7 @@ bool MassStorage::Delete(const char* directory, const char* fileName, bool silen
 // Create a new directory
 bool MassStorage::MakeDirectory(const char *parentDir, const char *dirName)
 {
-	const char* location = platform->GetMassStorage()->CombineName(parentDir, dirName);
+	const char* const location = platform->GetMassStorage()->CombineName(parentDir, dirName);
 	if (f_mkdir(location) != FR_OK)
 	{
 		platform->MessageF(ErrorMessage, "Failed to create directory %s\n", location);
@@ -288,9 +288,9 @@ bool MassStorage::FileExists(const char *file) const
 
 bool MassStorage::FileExists(const char *directory, const char *fileName) const
 {
-	const char *location = (directory != nullptr)
-							? platform->GetMassStorage()->CombineName(directory, fileName)
-							: fileName;
+	const char * const location = (directory != nullptr)
+									? platform->GetMassStorage()->CombineName(directory, fileName)
+									: fileName;
 	return FileExists(location);
 }
 
@@ -310,9 +310,9 @@ bool MassStorage::DirectoryExists(const char* directory, const char* subDirector
 // Return the last modified time of a file, or zero if failure
 time_t MassStorage::GetLastModifiedTime(const char* directory, const char *fileName) const
 {
-	const char *location = (directory != nullptr)
-							? platform->GetMassStorage()->CombineName(directory, fileName)
-							: fileName;
+	const char * const location = (directory != nullptr)
+									? platform->GetMassStorage()->CombineName(directory, fileName)
+									: fileName;
 	FILINFO fil;
 	fil.lfname = nullptr;
 	if (f_stat(location, &fil) == FR_OK)
@@ -324,9 +324,9 @@ time_t MassStorage::GetLastModifiedTime(const char* directory, const char *fileN
 
 bool MassStorage::SetLastModifiedTime(const char* directory, const char *fileName, time_t time)
 {
-	const char *location = (directory != nullptr)
-							? platform->GetMassStorage()->CombineName(directory, fileName)
-							: fileName;
+	const char * const location = (directory != nullptr)
+									? platform->GetMassStorage()->CombineName(directory, fileName)
+									: fileName;
 	const struct tm * const timeInfo = gmtime(&time);
 	FILINFO fno;
     fno.fdate = (WORD)(((timeInfo->tm_year - 80) * 512U) | (timeInfo->tm_mon + 1) * 32U | timeInfo->tm_mday);
@@ -342,19 +342,19 @@ bool MassStorage::SetLastModifiedTime(const char* directory, const char *fileNam
 // Mount the specified SD card, returning true if done, false if needs to be called again.
 // If an error occurs, return true with the error message in 'reply'.
 // This may only be called to mount one card at a time.
-bool MassStorage::Mount(size_t card, StringRef& reply, bool reportSuccess)
+GCodeResult MassStorage::Mount(size_t card, StringRef& reply, bool reportSuccess)
 {
 	if (card >= NumSdCards)
 	{
 		reply.copy("SD card number out of range");
-		return true;
+		return GCodeResult::error;
 	}
 
 	if (isMounted[card] && platform->AnyFileOpen(&fileSystems[card]))
 	{
 		// Don't re-mount the card if any files are open on it
 		reply.copy("SD card has open file(s)");
-		return true;
+		return GCodeResult::error;
 	}
 
 	static bool mounting = false;
@@ -374,58 +374,57 @@ bool MassStorage::Mount(size_t card, StringRef& reply, bool reportSuccess)
 	if (err != SD_MMC_OK && millis() - startTime < 5000)
 	{
 		delay(2);
-		return false;
+		return GCodeResult::notFinished;
 	}
 
 	mounting = false;
 	if (err != SD_MMC_OK)
 	{
 		reply.printf("Cannot initialise SD card %u: %s", card, TranslateCardError(err));
+		return GCodeResult::error;
 	}
-	else
+
+	// Mount the file systems
+	memset(&fileSystems[card], 0, sizeof(FATFS));					// f_mount doesn't initialise the file structure, we must do it ourselves
+	FRESULT mounted = f_mount(card, &fileSystems[card]);
+	if (mounted != FR_OK)
 	{
-		// Mount the file systems
-		memset(&fileSystems[card], 0, sizeof(FATFS));					// f_mount doesn't initialise the file structure, we must do it ourselves
-		FRESULT mounted = f_mount(card, &fileSystems[card]);
-		if (mounted != FR_OK)
+		reply.printf("Cannot mount SD card %u: code %d", card, mounted);
+		return GCodeResult::error;
+	}
+
+	isMounted[card] = true;
+	if (reportSuccess)
+	{
+		float capacity = sd_mmc_get_capacity(card)/1024;		// get capacity and convert to Mbytes
+		const char* capUnits;
+		if (capacity >= 1024.0)
 		{
-			reply.printf("Cannot mount SD card %u: code %d", card, mounted);
+			capacity /= 1024.0;
+			capUnits = "Gb";
 		}
 		else
 		{
-			isMounted[card] = true;
-			if (reportSuccess)
-			{
-				float capacity = sd_mmc_get_capacity(card)/1024;		// get capacity and convert to Mbytes
-				const char* capUnits;
-				if (capacity >= 1024.0)
-				{
-					capacity /= 1024.0;
-					capUnits = "Gb";
-				}
-				else
-				{
-					capUnits = "Mb";
-				}
-				reply.printf("%s card mounted in slot %u, capacity %.2f%s", TranslateCardType(sd_mmc_get_type(card)), card, (double)capacity, capUnits);
-			}
-			else
-			{
-				reply.Clear();
-			}
+			capUnits = "Mb";
 		}
+		reply.printf("%s card mounted in slot %u, capacity %.2f%s", TranslateCardType(sd_mmc_get_type(card)), card, (double)capacity, capUnits);
 	}
-	return true;
+	else
+	{
+		reply.Clear();
+	}
+
+	return GCodeResult::ok;
 }
 
 // Unmount the specified SD card, returning true if done, false if needs to be called again.
 // If an error occurs, return true with the error message in 'reply'.
-bool MassStorage::Unmount(size_t card, StringRef& reply)
+GCodeResult MassStorage::Unmount(size_t card, StringRef& reply)
 {
 	if (card >= NumSdCards)
 	{
 		reply.copy("SD card number out of range");
-		return true;
+		return GCodeResult::error;
 	}
 
 	platform->InvalidateFiles(&fileSystems[card]);
@@ -433,7 +432,7 @@ bool MassStorage::Unmount(size_t card, StringRef& reply)
 	sd_mmc_unmount(card);
 	isMounted[card] = false;
 	reply.Clear();
-	return true;
+	return GCodeResult::ok;
 }
 
 // Check if the drive referenced in the specified path is mounted. Return true if it is.

@@ -23,6 +23,10 @@ Licence: GPL
 #include "RepRap.h"
 #include "Sensors/TemperatureSensor.h"
 
+#if SUPPORT_DHT_SENSOR
+# include "Sensors/DhtSensor.h"
+#endif
+
 Heat::Heat(Platform& p)
 	: platform(p), active(false), coldExtrude(false), bedHeater(DefaultBedHeater), chamberHeater(DefaultChamberHeater), heaterBeingTuned(-1), lastHeaterTuned(-1)
 {
@@ -41,11 +45,11 @@ void Heat::ResetHeaterModels()
 		{
 			if ((int)heater == DefaultBedHeater || (int)heater == DefaultChamberHeater)
 			{
-				pids[heater]->SetModel(DefaultBedHeaterGain, DefaultBedHeaterTimeConstant, DefaultBedHeaterDeadTime, 1.0, false);
+				pids[heater]->SetModel(DefaultBedHeaterGain, DefaultBedHeaterTimeConstant, DefaultBedHeaterDeadTime, 1.0, 0.0, false);
 			}
 			else
 			{
-				pids[heater]->SetModel(DefaultHotEndHeaterGain, DefaultHotEndHeaterTimeConstant, DefaultHotEndHeaterDeadTime, 1.0, true);
+				pids[heater]->SetModel(DefaultHotEndHeaterGain, DefaultHotEndHeaterTimeConstant, DefaultHotEndHeaterDeadTime, 1.0, 0.0, true);
 			}
 		}
 	}
@@ -105,7 +109,7 @@ void Heat::Init()
 	virtualHeaterSensors[0] = TemperatureSensor::Create(CpuTemperatureSenseChannel);
 	virtualHeaterSensors[0]->SetHeaterName("MCU");				// name this virtual heater so that it appears in DWC
 #endif
-#ifdef DUET_NG
+#if HAS_SMART_DRIVERS
 	virtualHeaterSensors[1] = TemperatureSensor::Create(FirstTmcDriversSenseChannel);
 	virtualHeaterSensors[2] = TemperatureSensor::Create(FirstTmcDriversSenseChannel + 1);
 #endif
@@ -146,6 +150,11 @@ void Heat::Spin()
 				heaterBeingTuned = -1;
 			}
 		}
+
+#if SUPPORT_DHT_SENSOR
+		// If the DHT temperature sensor is active, it needs to be spinned too
+		DhtSensor::Spin();
+#endif
 	}
 	platform.ClassReport(longWait);
 }
@@ -275,11 +284,14 @@ void Heat::SwitchOff(int8_t heater)
 	}
 }
 
-void Heat::SwitchOffAll()
+void Heat::SwitchOffAll(bool includingChamberAndBed)
 {
-	for (PID *p : pids)
+	for (int heater = 0; heater < (int)Heaters; ++heater)
 	{
-		p->SwitchOff();
+		if (includingChamberAndBed || (heater != bedHeater && heater != chamberHeater))
+		{
+			pids[heater]->SwitchOff();
+		}
 	}
 }
 
@@ -310,7 +322,7 @@ uint32_t Heat::GetLastSampleTime(size_t heater) const
 	return pids[heater]->GetLastSampleTime();
 }
 
-bool Heat::UseSlowPwm(int8_t heater) const
+bool Heat::IsBedOrChamberHeater(int8_t heater) const
 {
 	return heater == bedHeater || heater == chamberHeater;
 }
@@ -488,7 +500,7 @@ float Heat::GetTemperature(size_t heater, TemperatureError& err)
 	return t;
 }
 
-#ifdef DUET_NG
+#if HAS_VOLTAGE_MONITOR
 
 // Suspend the heaters to conserve power
 void Heat::SuspendHeaters(bool sus)

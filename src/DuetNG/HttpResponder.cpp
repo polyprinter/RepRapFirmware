@@ -67,21 +67,15 @@ bool HttpResponder::Spin()
 	case ResponderState::reading:
 		{
 			bool readSomething = false;
-			for (;;)
+			char c;
+			while (skt->ReadChar(c))
 			{
-				char c;
-				if (skt->ReadChar(c))
+				if (CharFromClient(c))
 				{
-					if (CharFromClient(c))
-					{
-						return true;
-					}
-					readSomething = true;
+					timer = millis();		// restart the timeout
+					return true;
 				}
-				else
-				{
-					break;
-				}
+				readSomething = true;
 			}
 
 			// Here when we were not able to read a character but we didn't receive a finished message
@@ -462,21 +456,21 @@ bool HttpResponder::GetJsonResponse(const char* request, OutputBuffer *&response
 			}
 		}
 
-		// See if we can update the current RTC date and time
-		if (numQualKeys > 1 && StringEquals(qualifiers[1].key, "time") && !GetPlatform().IsDateTimeSet())
-		{
-			struct tm timeInfo;
-			memset(&timeInfo, 0, sizeof(timeInfo));
-			if (strptime(qualifiers[1].value, "%Y-%m-%dT%H:%M:%S", &timeInfo) != nullptr)
-			{
-				time_t newTime = mktime(&timeInfo);
-				GetPlatform().SetDateTime(newTime);
-			}
-		}
-
 		// Client has been logged in
 		response->printf("{\"err\":0,\"sessionTimeout\":%" PRIu32 ",\"boardType\":\"%s\"}", HttpSessionTimeout, GetPlatform().GetBoardString());
 		reprap.GetPlatform().MessageF(LogMessage, "HTTP client %s login succeeded\n", IP4String(GetRemoteIP()).c_str());
+
+		// See if we can update the current RTC date and time
+		const char* const timeString = GetKeyValue("time");
+		if (timeString != nullptr && !GetPlatform().IsDateTimeSet())
+		{
+			struct tm timeInfo;
+			memset(&timeInfo, 0, sizeof(timeInfo));
+			if (strptime(timeString, "%Y-%m-%dT%H:%M:%S", &timeInfo) != nullptr)
+			{
+				GetPlatform().SetDateTime(mktime(&timeInfo));
+			}
+		}
 	}
 	else if (!CheckAuthenticated())
 	{
@@ -522,7 +516,7 @@ bool HttpResponder::GetJsonResponse(const char* request, OutputBuffer *&response
 	}
 	else if (StringEquals(request, "delete") && GetKeyValue("name") != nullptr)
 	{
-		bool ok = GetPlatform().GetMassStorage()->Delete(FS_PREFIX, GetKeyValue("name"));
+		const bool ok = GetPlatform().GetMassStorage()->Delete(FS_PREFIX, GetKeyValue("name"));
 		response->printf("{\"err\":%d}", (ok) ? 0 : 1);
 	}
 	else if (StringEquals(request, "filelist") && GetKeyValue("dir") != nullptr)
@@ -565,17 +559,22 @@ bool HttpResponder::GetJsonResponse(const char* request, OutputBuffer *&response
 		bool success = false;
 		if (oldVal != nullptr && newVal != nullptr)
 		{
-			success = GetPlatform().GetMassStorage()->Rename(oldVal, newVal);
+			MassStorage * const ms = GetPlatform().GetMassStorage();
+			if (StringEquals(GetKeyValue("deleteexisting"), "yes") && ms->FileExists(oldVal) && ms->FileExists(newVal))
+			{
+				ms->Delete(nullptr, newVal, true);
+			}
+			success = ms->Rename(oldVal, newVal);
 		}
 		response->printf("{\"err\":%d}", (success) ? 0 : 1);
 	}
 	else if (StringEquals(request, "mkdir"))
 	{
-		const char* dirVal = GetKeyValue("dir");
+		const char* const dirVal = GetKeyValue("dir");
 		bool success = false;
 		if (dirVal != nullptr)
 		{
-			success = (GetPlatform().GetMassStorage()->MakeDirectory(dirVal));
+			success = GetPlatform().GetMassStorage()->MakeDirectory(dirVal);
 		}
 		response->printf("{\"err\":%d}", (success) ? 0 : 1);
 	}
@@ -876,10 +875,14 @@ void HttpResponder::SendJsonResponse(const char* command)
 			return;
 		}
 
-		if (StringEquals(command, "download") && StringEquals(qualifiers[0].key, "name"))
+		if (StringEquals(command, "download"))
 		{
-			SendFile(qualifiers[0].value, false);
-			return;
+			const char* const filename = GetKeyValue("name");
+			if (filename != nullptr)
+			{
+				SendFile(filename, false);
+				return;
+			}
 		}
 	}
 
@@ -996,7 +999,8 @@ void HttpResponder::ProcessMessage()
 								  || (commandWords[1][0] == '/' && StringEquals(commandWords[1] + 1, KO_START "upload"));
 		if (isUploadRequest)
 		{
-			if (numQualKeys > 0 && StringEquals(qualifiers[0].key, "name"))
+			const char* const filename = GetKeyValue("name");
+			if (filename != nullptr)
 			{
 				// See how many bytes we expect to read
 				bool contentLengthFound = false;
@@ -1018,21 +1022,22 @@ void HttpResponder::ProcessMessage()
 				}
 
 				// Start a new file upload
-				FileStore *file = GetPlatform().GetFileStore(FS_PREFIX, qualifiers[0].value, OpenMode::write);
+				FileStore *file = GetPlatform().GetFileStore(FS_PREFIX, filename, OpenMode::write);
 				if (file == nullptr)
 				{
 					RejectMessage("could not create file");
 					return;
 
 				}
-				StartUpload(file, qualifiers[0].value);
+				StartUpload(file, filename);
 
 				// Try to get the last modified file date and time
-				if (numQualKeys > 1 && StringEquals(qualifiers[1].key, "time"))
+				const char* const lastModifiedString = GetKeyValue("time");
+				if (lastModifiedString != nullptr)
 				{
 					struct tm timeInfo;
 					memset(&timeInfo, 0, sizeof(timeInfo));
-					if (strptime(qualifiers[1].value, "%Y-%m-%dT%H:%M:%S", &timeInfo) != nullptr)
+					if (strptime(lastModifiedString, "%Y-%m-%dT%H:%M:%S", &timeInfo) != nullptr)
 					{
 						fileLastModified  = mktime(&timeInfo);
 					}
@@ -1048,7 +1053,7 @@ void HttpResponder::ProcessMessage()
 
 				if (reprap.Debug(moduleWebserver))
 				{
-					GetPlatform().MessageF(UsbMessage, "Start uploading file %s length %lu\n", qualifiers[0].value, postFileLength);
+					GetPlatform().MessageF(UsbMessage, "Start uploading file %s length %lu\n", filename, postFileLength);
 				}
 				uploadedBytes = 0;
 
@@ -1165,6 +1170,16 @@ void HttpResponder::CancelUpload()
 		}
 	}
 	NetworkResponder::CancelUpload();
+}
+
+// This overrides the version in class NetworkResponder
+void HttpResponder::SendData()
+{
+	NetworkResponder::SendData();
+	if (responderState == ResponderState::reading)
+	{
+		timer = millis();				// restart the timer
+	}
 }
 
 void HttpResponder::Diagnostics(MessageType mt) const

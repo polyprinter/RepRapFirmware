@@ -1,6 +1,145 @@
 Summary of important changes in recent versions
 ===============================================
 
+
+Version 1.20beta8
+=================
+
+Upgrade notes:
+- Recommended DuetWiFiServer.bin version is 1.20beta9. I recommend you install it twice because the first installation often leaves the WiFi not working. So after installing it the first time, send M997 S1 to install it again from the DuetWiFiServer.bin file that has been left on the SD card.
+- Recommended DuetWebControl version is 1.19.3
+- The compensation of extruder power for supply voltage will only take effect after you re-run tuning on your extruder heater(s) and save the resulting heater model
+- See also the notes for earlier 1.20beta versions
+
+New features:
+- T R1 activates the tool that was active at the last pause
+- M915 R2 and R3 actions are now implemented
+- Duet WiFi and Duet Ethernet: Extruder heater PWM values are now compensated for supply voltage
+- Duet WiFi only: M587 and M589 without parameters now report the IP addresses etc. as well as the SSID (needs DuetWiFiServer 1.20beta9)
+- When sensorless homing is used on a CoreXY printer, both X and Y motors are monitored for stalling when homing X or Y. Similarly for CoreXYU (both X and Y or U and V are monitored).
+- When using a segmented kinematics such as SCARA, or when long moves are segmented due to mesh bed compensation, segmented moves can be paused between segments
+- M562 with no parameters now clears all heater faults
+- New debugging module 14 added to report debugging message from the WiFi module to USB. Use M111 S1 P14 to activate it. Needs DuetWiFiServer 1.20beta9.
+- When a heater fault occurs, the print is now paused and all heaters are turned off except bed amnd chamber heaters. After a timeout period (currently fixed at 10 minutes), the print is cancelled, all remaining heaters are turned off, and the firmware attempts to turn the power off as if M81 had been received.
+- Under voltage and over voltage events are now logged
+- Overheating drivers are now logged
+- M81 power off commands are now logged
+- When a T command is sent and the current tool does not change, the firmware now makes sure that the tool heaters are turned on, in case they had been turned off explicitly e.g. due to upgrading WiFi firmware. This was supposed to be implemented in beta 7 but was not working.
+
+Bug fixes:
+- Workaround for SX1509B chip problem: if an analog write was performed to a pin on an SX1509B device, subsequent digital writes and pinMode calls didn't work
+- When a print was resumed after power failure, the amount of extrusion during the initial partial move was incorrect
+
+Version 1.20beta7
+=================
+
+Upgrade notes:
+- Recommended DuetWiFiServer.bin version is 1.20beta8
+- Recommended DuetWebControl version is 1.19.3
+- If you have a SCARA printer with nonzero crosstalk parameters (C parameters in the M669 command), you may need to adjust the crosstalk values
+
+New features:
+- String parameters (e.g. filenames) can optionally be enclosed in double quote characters, in all GCode commands for which double quote characters are not compulsory
+- Added deleteexisting=yes option in http move command
+- When a T command is sent and the current tool does not change, the firmware now makes sure that the tool heaters are turned on, in case they had been turned off explicitly e.g. due to upgrading WiFi firmware
+- SCARA kinematics crosstalk parameters now relate the movement units, not the number of motor steps
+- When executing macros, non-movement commands are now synchronised to movement commands even if they are not normally synchronised for that GCode command source
+
+Bug fixes
+- The determination of whether a print is in the process of pausing did not take account of all possible gcode sources
+- M0 and M1 commands no longer turn off heaters and drives when in simulation mode
+- SCARA printer homing didn't take account of the crosstalk parameters
+- M589 with an S parameter now flags an error if there is no I (IP address) parameter
+- When resuming a print, the initial feed rate wasn't being passed to the SD card GCode source
+- The FTP responder now supports the "CWD ." command
+
+Version 1.20beta6
+=================
+
+Upgrade notes:
+- If you are using a Duet to control a RepRapPro Ormerod, Huxley Duo or Mendel 3 printer or any other printer that uses the Z probe to do X homing, you need to add line M574 X1 S2 to config.g.
+- If you are using a Duet 06 or 085 and you don't already set the P parameter in your G31 command, add P400 to that command to get the same behaviour as before.
+- If you are using PT100 sensors, make sure you don't have any additional parameters in your M305 commands for those heaters left over from when you were using thermistors. In particular, the R parameter now configures the reference resistor value on the PT100 interface board, and must be omitted or set to 400 when using the Duet3D PT100 daughter board.
+
+New features:
+- Implemented M915 motor load monitoring configuration. Only R0 and R1 actions are implemented at present. See https://duet3d.com/wiki/Stall_detection_and_sensorless_homing.
+- Implemented sensorless homing using motor load monitoring (S3 option in M574 command)
+- M574 command has new options S2 to select the Z probe and S3 to select motor load detection, in place of using an endstop switch
+- M584 can now be used to create additional axes using any of the letters UVWABC in any order
+- The value of the reference resistor on MAX31865 PT100 interface boards can now be configured (thanks bpaczkowski)
+- 3-wire PT100 sensors are now supported (thanks zlowred)
+
+Other changes:
+- XYZ options have been removed from the M558 command. Use the new M574 S2 option instead.
+- G31 P parameter now defaults to 500 instead of 400 on the Duet 06/085 build just as it has done in the other builds
+- X homing no longer defaults to using the Z probe in the Duet 06/085 build
+- M906 and M913 commands no longer wait for all movement to stop, so that M913 cdan be used in the power fail script
+
+Bug fixes:
+- Configuring MAX31856 thermocouple boards sometimes resulted in strange behaviour
+- If a filament error was detected, the print was paused and the resume information was saved, but the pause script was not executed and the Duet needed to be restarted before movement was possible again
+
+Version 1.20beta4
+=================
+
+Bug fixes:
+
+- Resuming a print after pausing still sometimes gave a "low voltage" error if no M911 command had been used
+- Simulation mode didn't work in 1.20b2 or 1.20b3
+
+Version 1.20beta3
+=================
+
+Bug fixes:
+- M500 command wrote extra M307 lines were written to config-override.g in 1.20b2
+- CoreXY homing didn't work in 1.20b2
+- Motor idle detection didn't work in 1.20b2
+- M585 didn't work
+- Resuming a print after pausing gave a "low voltage" error if no M911 command had been used
+- The code to detect M122 early also recognised commands of the form Mxxx122 where xxx were non-numeric
+
+Version 1.20beta2
+=================
+
+Upgrade notes
+- Duet WiFi users can use either DuetWiFiServer 1.20beta2 (which disables WiFi module sleep) or 1.20alpha1 (which uses the default "modem sleep" mode)
+- The parameters to the M911 command (which configures power fail handling) have changed. If you use this command in config.g you will have to change it accordingly.
+- On a Duet WiFi, if your M552 command in config.g includes a P parameter with an IP address, you will need to remove them
+- If you currently have G31 parameters for your active Z probe in config-override.g that are different from the ones in config.g, you should copy them to config.g, otherwise they will be lost next time you run M500.
+
+New and changed features:
+- M500 no longer saves G31 Z probe parameters to confog-override.g
+- A line of GCode may now contain multiple G- and M-commands. The commands are executed sequentially. A command that takes an un-quoted string parameter must be the last command on the line. A T command must be on a line by itself.
+- On SCARA printers, arm position limits are applied as well as XY size limits
+- Heater 0 values are sent to to PanelDue even if there is no heated bed
+- When logging is enabled, a log entry is now written when the date/time is set
+- When logging is enabled, "Maximum open file count exceeded" messages are logged
+- Loss of power is now handled much faster. The print is paused in the middle of a move if necessary. The M911 parameters are changed to facilitate this.
+- Following a power failure, M916 can now be used to resume the print instead of using M98 Presurrect.g
+- The TMC2660 Stallguard detection and Coolstep parameters may now be configured using M915. Currently, no action is performed when a stall is signalled.
+- If a heater fault occurs, the print is paused instead of cancelled
+- The start and end speeds of short segmented moves in accelerating or decalerating sequences are more closely matched where possible, which should give smoother motion
+- All error messages relating to incorrect use of a G- or M-code now include the G- or M-number of the command that caused them
+- Increased ADC oversample bits to 2
+- Duet WiFi: M122 diagnostics now include the wifi module sleep mode and additional network diagnostics
+- You can now disable monitoring of TMC2660 drivers that are not in use by using parameter R-1 in the corresponding M569 command
+- The M585 (probe tool) command is now implemented (thanks chrishamm)
+- If axis lengths are adjusted by probing, a subsequent M500 command saves them in config-override.g
+- If tool offsets are adjusted by probing, a subsequent M500 command saves them in config-override.g 
+- The layer counting mechanism has been modified to better handle GCode files that use a different layer height when printing support
+- Debug messages sent to the USB port are truncated or thrown away if a software watchdog reset is imminent
+- XY speed limiting is now done separately for each kinematics, in particular for CoreXY printers it is more accurate
+- Support for Polar kinematics has been added but not tested, see M669 command
+- The TMC2660 drivers are configured to detect short-to-ground conditions faster
+- The parameters in rr_ http commands are now all order-independent
+
+Bug fixes:
+- An error in computing the time taken to execute moves that were not yet frozen caused the first movement on a SCARA printer following homing to be jerky
+- An extra space in the output from the M114 command confused Pronterface, causing it to print exception messages
+- An error in the motion planning system that could lead to a null pointer dereference has been fixed. It is not known what symptoms (if any) were associated with this bug.
+- When tuning a heater, any previous maximum PWM value that was set is now ignored
+
+
 Version 1.20beta1
 =================
 

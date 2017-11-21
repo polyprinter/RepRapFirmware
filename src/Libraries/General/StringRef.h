@@ -12,7 +12,8 @@
 #include <cstdarg>	// for va_args
 #include <cstring>	// for strlen
 
-#undef printf
+// Need to declare strnlen here because it isn't ISO standard
+size_t strnlen(const char *s, size_t n);
 
 // Class to describe a string buffer, including its length. This saves passing buffer lengths around everywhere.
 class StringRef
@@ -25,6 +26,7 @@ public:
 
 	size_t Length() const { return len; }
 	size_t strlen() const;
+	bool IsEmpty() const { return p[0] == 0; }
 	char *Pointer() { return p; }
 	const char *Pointer() const { return p; }
 
@@ -33,7 +35,7 @@ public:
 
 	void Clear() const { p[0] = 0; }
 
-	int printf(const char *fmt, ...) const  __attribute__ ((format (printf, 2, 3)));
+	int printf(const char *fmt, ...) const __attribute__ ((format (printf, 2, 3)));
 	int vprintf(const char *fmt, va_list vargs) const;
 	int catf(const char *fmt, ...) const __attribute__ ((format (printf, 2, 3)));
 	int vcatf(const char *fmt, va_list vargs) const;
@@ -41,8 +43,8 @@ public:
 	size_t cat(const char *src) const;
 	size_t cat(char c) const;
 	size_t StripTrailingSpaces() const;
+	size_t Prepend(const char *src) const;
 
-	bool IsEmpty() const { return p[0] == 0; }
 };
 
 // Class to describe a string which we can get a StringRef reference to
@@ -53,11 +55,30 @@ public:
 
 	StringRef GetRef() { return StringRef(storage, Len + 1); }
 	const char *c_str() const { return storage; }
-	size_t strlen() const { return ::strlen(storage); }
+	size_t strlen() const { return strnlen(storage, Len); }
 	bool IsEmpty() const { return storage[0] == 0; }
+	const char *Pointer() const { return storage; }
+	char& operator[](size_t index) { return storage[index]; }
+	char operator[](size_t index) const { return storage[index]; }
+	size_t MaxLength() const { return Len; }
+
+	void Clear() { storage[0] = 0; }
+	size_t cat(char c);
 
 private:
 	char storage[Len + 1];
 };
+
+// Append a character if it will fit and return the new length
+template<size_t Len> size_t String<Len>::cat(char c)
+{
+	size_t length = strlen();
+	if (length + 1 < Len)
+	{
+		storage[length++] = c;
+		storage[length] = 0;
+	}
+	return length;
+}
 
 #endif /* STRINGREF_H_ */

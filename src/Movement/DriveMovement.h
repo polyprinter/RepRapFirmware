@@ -11,16 +11,29 @@
 #include <gcodes/gcodes.h>
 #include "RepRapFirmware.h"
 
+class LinearDeltaKinematics;
+
 // Struct for passing parameters to the DriveMovement Prepare methods
 struct PrepParams
 {
+	// Parameters used for all types of motion
 	float decelStartDistance;
 	uint32_t startSpeedTimesCdivA;
 	uint32_t topSpeedTimesCdivA;
 	uint32_t decelStartClocks;
 	uint32_t topSpeedTimesCdivAPlusDecelStartClocks;
 	uint32_t accelClocksMinusAccelDistanceTimesCdivTopSpeed;
+
+	// Parameters used only for extruders
 	float compFactor;
+
+	// Parameters used only for delta moves
+	float initialX;
+	float initialY;
+	const LinearDeltaKinematics *dparams;
+	float diagonalSquared;
+	float a2plusb2;								// sum of the squares of the X and Y movement fractions
+	float a2b2D2;
 };
 
 enum class DMState : uint8_t
@@ -34,24 +47,30 @@ enum class DMState : uint8_t
 class DriveMovement
 {
 public:
+	friend class DDA;
+
 	DriveMovement(DriveMovement *next);
 
-	bool CalcNextStepTimeCartesian(const DDA &dda, bool live);
-	bool CalcNextStepTimeDelta(const DDA &dda, bool live);
+	bool CalcNextStepTimeCartesian(const DDA &dda, bool live) __attribute__ ((hot));
+	bool CalcNextStepTimeDelta(const DDA &dda, bool live) __attribute__ ((hot));
 #ifdef POLYPRINTER
-	bool CalcNextStepTimeVibration(const DDA &dda, bool live);
+	bool CalcNextStepTimeVibration(const DDA &dda, bool live) __attribute__ ((hot));
 #endif
-	void PrepareCartesianAxis(const DDA& dda, const PrepParams& params);
-	void PrepareDeltaAxis(const DDA& dda, const PrepParams& params);
-	void PrepareExtruder(const DDA& dda, const PrepParams& params, bool doCompensation);
+	void PrepareCartesianAxis(const DDA& dda, const PrepParams& params) __attribute__ ((hot));
+	void PrepareDeltaAxis(const DDA& dda, const PrepParams& params) __attribute__ ((hot));
+	void PrepareExtruder(const DDA& dda, const PrepParams& params, bool doCompensation) __attribute__ ((hot));
 #ifdef POLYPRINTER
-	void PrepareExtruderWithLinearAdvance(const DDA& dda, const PrepParams& params, bool doCompensation);
-	void PrepareExtruderWithVibration(const DDA& dda, const PrepParams& params, const GCodes::PolyZHomeParams& zHomingParams );
+	void PrepareExtruderWithLinearAdvance(const DDA& dda, const PrepParams& params, bool doCompensation) __attribute__ ((hot));
+	void PrepareExtruderWithVibration(const DDA& dda, const PrepParams& params, const GCodes::PolyZHomeParams& zHomingParams ) __attribute__ ((hot));
 #endif
 	void ReduceSpeed(const DDA& dda, float inverseSpeedFactor);
 	void DebugPrint(char c, bool withDelta) const;
 	int32_t GetNetStepsLeft() const;
 	int32_t GetNetStepsTaken() const;
+
+#if HAS_SMART_DRIVERS
+	uint32_t GetStepInterval(uint32_t microstepShift) const;	// Get the current full step interval for this axis or extruder
+#endif
 
 	static void InitialAllocate(unsigned int num);
 	static int NumFree() { return numFree; }
@@ -61,11 +80,11 @@ public:
 	static void Release(DriveMovement *item);
 
 private:
-	bool CalcNextStepTimeCartesianFull(const DDA &dda, bool live);
-	bool CalcNextStepTimeDeltaFull(const DDA &dda, bool live);
+	bool CalcNextStepTimeCartesianFull(const DDA &dda, bool live) __attribute__ ((hot));
+	bool CalcNextStepTimeDeltaFull(const DDA &dda, bool live) __attribute__ ((hot));
 
 #ifdef POLYPRINTER
-	bool CalcNextStepTimeVibrationFull(const DDA &dda, bool live);
+	bool CalcNextStepTimeVibrationFull(const DDA &dda, bool live) __attribute__ ((hot));
 #ifdef DO_QUADRATURE_MODULATION_OUTPUT
 	enum { vibrationPhasesPerCycle = 4 };
 #else
@@ -77,28 +96,30 @@ private:
 	static int numFree;
 	static int minFree;
 
-public:
 	// Parameters common to Cartesian, delta and extruder moves
 
-	// The following only need to be stored per-drive if we are supporting pressure advance
-	uint64_t twoDistanceToStopTimesCsquaredDivA;
-	uint32_t startSpeedTimesCdivA;
-	int32_t accelClocksMinusAccelDistanceTimesCdivTopSpeed;		// this one can be negative
-	uint32_t topSpeedTimesCdivAPlusDecelStartClocks;
+	DriveMovement *nextDM;								// link to next DM that needs a step
 
-	// These values don't depend on how the move is executed, so are set by Init()
-	uint32_t totalSteps;								// total number of steps for this move
-	uint8_t drive;										// the drive that this DM controls
 	DMState state;										// whether this is active or not
-	bool direction;										// true=forwards, false=backwards
+	uint8_t drive;										// the drive that this DM controls
+	uint8_t microstepShift : 4,							// log2 of the microstepping factor
+			direction : 1,								// true=forwards, false=backwards
+			fullCurrent : 1;							// true if the drivers are set to the full current, false if they are set to the standstill current
 	uint8_t stepsTillRecalc;							// how soon we need to recalculate
+
+	uint32_t totalSteps;								// total number of steps for this move
 
 	// These values change as the step is executed
 	uint32_t nextStep;									// number of steps already done
 	uint32_t reverseStartStep;							// the step number for which we need to reverse direction due to pressure advance or delta movement
 	uint32_t nextStepTime;								// how many clocks after the start of this move the next step is due
 	uint32_t stepInterval;								// how many clocks between steps
-	DriveMovement *nextDM;								// link to next DM that needs a step
+
+	// The following only need to be stored per-drive if we are supporting pressure advance
+	uint64_t twoDistanceToStopTimesCsquaredDivA;
+	uint32_t startSpeedTimesCdivA;
+	int32_t accelClocksMinusAccelDistanceTimesCdivTopSpeed;		// this one can be negative
+	uint32_t topSpeedTimesCdivAPlusDecelStartClocks;
 
 	// Parameters unique to a style of move (Cartesian, delta or extruder). Currently, extruders and Cartesian moves use the same parameters.
 	union MoveParams
@@ -210,6 +231,7 @@ inline bool DriveMovement::CalcNextStepTimeCartesian(const DDA &dda, bool live)
 
 // Calculate the time since the start of the move when the next step for the specified DriveMovement is due
 // Return true if there are more steps to do. When finished, leave nextStep == totalSteps + 1.
+// We inline this part to speed things up when we are doing double/quad/octal stepping.
 inline bool DriveMovement::CalcNextStepTimeDelta(const DDA &dda, bool live)
 {
 	++nextStep;
@@ -341,5 +363,25 @@ inline int32_t DriveMovement::GetNetStepsTaken() const
 	}
 	return (direction) ? netStepsTaken : -netStepsTaken;
 }
+
+// This is inlined because it is only called from one place
+inline void DriveMovement::Release(DriveMovement *item)
+{
+	item->nextDM = freeList;
+	freeList = item;
+	++numFree;
+}
+
+#if HAS_SMART_DRIVERS
+
+// Get the current full step interval for this axis or extruder
+inline uint32_t DriveMovement::GetStepInterval(uint32_t microstepShift) const
+{
+	return ((nextStep >> microstepShift) != 0)		// if at least 1 full step done
+		? stepInterval << microstepShift			// return the interval between steps converted to full steps
+			: 0;
+}
+
+#endif
 
 #endif /* DRIVEMOVEMENT_H_ */

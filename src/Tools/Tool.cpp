@@ -100,6 +100,7 @@ Tool * Tool::freelist = nullptr;
 	t->yMapping = yMap;
 	t->fanMapping = fanMap;
 	t->heaterFault = false;
+	t->axisOffsetsProbed = 0;
 	t->displayColdExtrudeWarning = false;
 
 	for (size_t axis = 0; axis < MaxAxes; axis++)
@@ -138,7 +139,7 @@ Tool * Tool::freelist = nullptr;
 	}
 }
 
-void Tool::Print(StringRef& reply)
+void Tool::Print(StringRef& reply) const
 {
 	reply.printf("Tool %d - ", myNumber);
 	if (!StringEquals(name, ""))
@@ -168,7 +169,7 @@ void Tool::Print(StringRef& reply)
 	{
 		if ((xMapping & (1u << xi)) != 0)
 		{
-			reply.catf("%c%c", sep, GCodes::axisLetters[xi]);
+			reply.catf("%c%c", sep, reprap.GetGCodes().GetAxisLetters()[xi]);
 			sep = ',';
 		}
 	}
@@ -179,7 +180,7 @@ void Tool::Print(StringRef& reply)
 	{
 		if ((yMapping & (1u << yi)) != 0)
 		{
-			reply.catf("%c%c", sep, GCodes::axisLetters[yi]);
+			reply.catf("%c%c", sep, reprap.GetGCodes().GetAxisLetters()[yi]);
 			sep = ',';
 		}
 	}
@@ -300,35 +301,25 @@ bool Tool::AllHeatersAtHighTemperature(bool forExtrusion) const
 	return true;
 }
 
-void Tool::Activate(Tool* currentlyActive)
+void Tool::Activate()
 {
-	if (state != ToolState::active)
+	for (size_t heater = 0; heater < heaterCount; heater++)
 	{
-		if (currentlyActive != nullptr && currentlyActive != this)
-		{
-			currentlyActive->Standby();
-		}
-		for (size_t heater = 0; heater < heaterCount; heater++)
-		{
-			reprap.GetHeat().SetActiveTemperature(heaters[heater], activeTemperatures[heater]);
-			reprap.GetHeat().SetStandbyTemperature(heaters[heater], standbyTemperatures[heater]);
-			reprap.GetHeat().Activate(heaters[heater]);
-		}
-		state = ToolState::active;
+		reprap.GetHeat().SetActiveTemperature(heaters[heater], activeTemperatures[heater]);
+		reprap.GetHeat().SetStandbyTemperature(heaters[heater], standbyTemperatures[heater]);
+		reprap.GetHeat().Activate(heaters[heater]);
 	}
+	state = ToolState::active;
 }
 
 void Tool::Standby()
 {
-	if (state != ToolState::standby)
+	for (size_t heater = 0; heater < heaterCount; heater++)
 	{
-		for (size_t heater = 0; heater < heaterCount; heater++)
-		{
-			reprap.GetHeat().SetStandbyTemperature(heaters[heater], standbyTemperatures[heater]);
-			reprap.GetHeat().Standby(heaters[heater], this);
-		}
-		state = ToolState::standby;
+		reprap.GetHeat().SetStandbyTemperature(heaters[heater], standbyTemperatures[heater]);
+		reprap.GetHeat().Standby(heaters[heater], this);
 	}
+	state = ToolState::standby;
 }
 
 void Tool::SetVariables(const float* standby, const float* active)
@@ -461,11 +452,12 @@ bool Tool::WriteSettings(FileStore *f) const
 	return ok;
 }
 
-void Tool::SetOffsets(const float offs[MaxAxes])
+void Tool::SetOffset(size_t axis, float offs, bool byProbing)
 {
-	for(size_t i = 0; i < MaxAxes; ++i)
+	offset[axis] = offs;
+	if (byProbing)
 	{
-		offset[i] = offs[i];
+		SetBit(axisOffsetsProbed, axis);
 	}
 }
 

@@ -1,18 +1,8 @@
 eclipse.preferences.version=1
-environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850.1027429289/LINK_FLAGS_1/delimiter=;
-environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850.1027429289/LINK_FLAGS_1/operation=append
-environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850.1027429289/LINK_FLAGS_1/value=-mthumb -Wl,--cref -Wl,--check-sections -Wl,--gc-sections -Wl,--entry\=Reset_Handler -Wl,--unresolved-symbols\=report-all -Wl,--warn-common -Wl,--warn-section-align -Wl,--warn-unresolved-symbols -Wl,--start-group
-environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850.1027429289/LINK_FLAGS_2/delimiter=;
-environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850.1027429289/LINK_FLAGS_2/operation=append
-environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850.1027429289/LINK_FLAGS_2/value=-Wl,--end-group -lm -gcc
 environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850.1027429289/append=true
 environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850.1027429289/appendContributed=true
-environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850.241502451.1275216290/LINK_FLAGS_1/delimiter=;
-environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850.241502451.1275216290/LINK_FLAGS_1/operation=append
-environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850.241502451.1275216290/LINK_FLAGS_1/value=-mthumb -Wl,--cref -Wl,--check-sections -Wl,--gc-sections -Wl,--entry\=Reset_Handler -Wl,--unresolved-symbols\=report-all -Wl,--warn-common -Wl,--warn-section-align -Wl,--warn-unresolved-symbols -Wl,--start-group
-environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850.241502451.1275216290/LINK_FLAGS_2/delimiter=;
-environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850.241502451.1275216290/LINK_FLAGS_2/operation=append
-environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850.241502451.1275216290/LINK_FLAGS_2/value=-Wl,--end-group -lm -gcc
+environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850.1745168887/append=true
+environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850.1745168887/appendContributed=true
 environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850.241502451.1275216290/append=true
 environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850.241502451.1275216290/appendContributed=true
 environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850.241502451.286403080/LINK_FLAGS_1/delimiter=;
@@ -23,23 +13,8 @@ environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.9764
 environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850.241502451.286403080/LINK_FLAGS_2/value=-Wl,--end-group -lm -gcc
 environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850.241502451.286403080/append=true
 environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850.241502451.286403080/appendContributed=true
-environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850.241502451/LINK_FLAGS_1/delimiter=;
-environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850.241502451/LINK_FLAGS_1/operation=append
-environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850.241502451/LINK_FLAGS_1/value=-mthumb -Wl,--cref -Wl,--check-sections -Wl,--gc-sections -Wl,--entry\=Reset_Handler -Wl,--unresolved-symbols\=report-all -Wl,--warn-common -Wl,--warn-section-align -Wl,--warn-unresolved-symbols -Wl,--start-group
-environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850.241502451/LINK_FLAGS_2/delimiter=;
-environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850.241502451/LINK_FLAGS_2/operation=append
-environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850.241502451/LINK_FLAGS_2/value=-Wl,--end-group -lm -gcc
 environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850.241502451/append=true
 environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850.241502451/appendContributed=true
-environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850/LINK_FLAGS_1/delimiter=;
-environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850/LINK_FLAGS_1/operation=append
-environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850/LINK_FLAGS_1/value=-mthumb -Wl,--cref -Wl,--check-sections -Wl,--gc-sections -Wl,--entry\=Reset_Handler -Wl,--unresolved-symbols\=report-all -Wl,--warn-common -Wl,--warn-section-align -Wl,--warn-unresolved-symbols -Wl,--start-group
-environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850/LINK_FLAGS_2/delimiter=;
-environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850/LINK_FLAGS_2/operation=append
-environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850/LINK_FLAGS_2/value=-Wl,--end-group -lm -gcc
-environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850/PATH/delimiter=;
-environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850/PATH/operation=replace
-environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850/PATH/value=C\:\\Arduino-1.5.8\\hardware\\arduino\\sam\\system\\CMSIS\\Examples\\cmsis_example\\gcc_arm;C\:\\Arduino-1.5.8\\hardware\\tools\\gcc-arm-none-eabi-4.8.3-2014q1\\bin;C\:/Program Files/Java/jre1.8.0_60/bin/server;C\:/Program Files/Java/jre1.8.0_60/bin;C\:/Program Files/Java/jre1.8.0_60/lib/amd64;C\:\\Program Files\\PolyPrinter\\Lua\\5.1;C\:\\Program Files\\PolyPrinter\\Lua\\5.1;C\:\\Windows\\System32;C\:\\Python27;C\:\\Python27\\Scripts;C\:\\Program Files (x86)\\Atmel\\Flip 3.4.7\\bin;C\:\\gsoap-2.8\\gsoap\\bin\\win32;C\:\\Program Files\\Perforce;C\:\\WINDOWS\\system32
 environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850/append=true
 environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850/appendContributed=true
 environment/project/cdt.managedbuild.config.gnu.cross.exe.release.516195201/LINK_FLAGS_1/delimiter=;

@@ -31,6 +31,7 @@ Licence: GPL
 #include "Core.h"
 #include "Configuration.h"
 #include "Pins.h"
+
 #include "Libraries/General/StringRef.h"
 
 // Module numbers and names, used for diagnostics and debug
@@ -50,7 +51,8 @@ enum Module : uint8_t
 	modulePortControl = 11,
 	moduleDuetExpansion = 12,
 	moduleFilamentSensors = 13,
-	numModules = 14,				// make this one greater than the last module number
+	moduleWiFi = 14,
+	numModules = 15,				// make this one greater than the last module number
 	noModule = 15
 };
 
@@ -62,7 +64,10 @@ class Platform;
 class GCodes;
 class Move;
 class DDA;
+class Kinematics;
 class Heat;
+class PID;
+class TemperatureSensor;
 class Tool;
 class Roland;
 class Scanner;
@@ -75,13 +80,14 @@ class GCodeBuffer;
 class GCodeQueue;
 class FilamentSensor;
 class RandomProbePointSet;
+class Logger;
 
 #if SUPPORT_IOBITS
 class PortControl;
 #endif
 
 // Define floating point type to use for calculations where we would like high precision in matrix calculations
-#ifdef DUET_NG
+#if SAM4E || SAM4S
 typedef double floatc_t;					// type of matrix element used for calibration
 #else
 // We are more memory-constrained on the SAM3X
@@ -89,6 +95,7 @@ typedef float floatc_t;						// type of matrix element used for calibration
 #endif
 
 typedef uint32_t AxesBitmap;				// Type of a bitmap representing a set of axes
+typedef uint32_t DriversBitmap;				// Type of a bitmap representing a set of driver numbers
 typedef uint32_t FansBitmap;				// Type of a bitmap representing a set of fan numbers
 
 // A single instance of the RepRap class contains all the others
@@ -103,6 +110,8 @@ bool StringEquals(const char* s1, const char* s2);
 int StringContains(const char* string, const char* match);
 void SafeStrncpy(char *dst, const char *src, size_t length) pre(length != 0);
 void SafeStrncat(char *dst, const char *src, size_t length) pre(length != 0);
+
+void ListDrivers(const StringRef& str, DriversBitmap drivers);
 
 // Macro to assign an array from an initialiser list
 #define ARRAY_INIT(_dest, _init) static_assert(sizeof(_dest) == sizeof(_init), "Incompatible array types"); memcpy(_dest, _init, sizeof(_init));
@@ -188,6 +197,8 @@ extern StringRef scratchString;
 // Common definitions used by more than one module
 const size_t XYZ_AXES = 3;										// The number of Cartesian axes
 const size_t X_AXIS = 0, Y_AXIS = 1, Z_AXIS = 2, E0_AXIS = 3;	// The indices of the Cartesian axes in drive arrays
+const size_t CoreXYU_AXES = 5;									// The number of axes in a CoreXYU machine
+const size_t U_AXIS = 3, V_AXIS = 4;							// The indices of the U and V motors in a CoreXYU machine (needed by Platform)
 
 // Common conversion factors
 const float MinutesToSeconds = 60.0;
@@ -205,22 +216,19 @@ typedef uint32_t FilePosition;
 const FilePosition noFilePosition = 0xFFFFFFFF;
 
 // Interrupt priorities - must be chosen with care! 0 is the highest priority, 15 is the lowest.
-#if SAM4S || SAM4E
-const uint32_t NvicPriorityWatchdog = 0;		// watchdog has highest priority (SAM4 only)
-#endif
-
-const uint32_t NvicPriorityUart = 1;			// UART is next to avoid character loss
-const uint32_t NvicPrioritySystick = 2;			// systick kicks the watchdog and starts the ADC conversions, so must be quite high
-const uint32_t NvicPriorityPins = 3;			// priority for GPIO pin interrupts - filament sensors must be higher than step
-const uint32_t NvicPriorityStep = 4;			// step interrupt is next highest, it can preempt most other interrupts
-const uint32_t NvicPriorityUSB = 5;				// USB interrupt
+const uint32_t NvicPriorityUart = 1;			// UART is highest to avoid character loss (it has only a 1-character receive buffer)
+const uint32_t NvicPriorityDriversUsart = 2;	// USART used to control and monitor the TMC2660 drivers
+const uint32_t NvicPrioritySystick = 3;			// systick kicks the watchdog and starts the ADC conversions, so must be quite high
+const uint32_t NvicPriorityPins = 4;			// priority for GPIO pin interrupts - filament sensors must be higher than step
+const uint32_t NvicPriorityStep = 5;			// step interrupt is next highest, it can preempt most other interrupts
+const uint32_t NvicPriorityUSB = 6;				// USB interrupt
 
 #if HAS_LWIP_NETWORKING
-const uint32_t NvicPriorityNetworkTick = 5;		// priority for network tick interrupt
-const uint32_t NvicPriorityEthernet = 5;		// priority for Ethernet interface
+const uint32_t NvicPriorityNetworkTick = 7;		// priority for network tick interrupt
+const uint32_t NvicPriorityEthernet = 7;		// priority for Ethernet interface
 #endif
 
-const uint32_t NvicPrioritySpi = 6;				// SPI used for network transfers on Duet WiFi/Duet vEthernet
-const uint32_t NvicPriorityTwi = 7;				// TWI used to read endstop and other inputs on the DueXn
+const uint32_t NvicPrioritySpi = 7;				// SPI is used for network transfers on Duet WiFi/Duet vEthernet
+const uint32_t NvicPriorityTwi = 8;				// TWI is used to read endstop and other inputs on the DueXn
 
 #endif
