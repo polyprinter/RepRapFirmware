@@ -154,11 +154,11 @@ bool DDA::CheckForZeroVectorJerkError( const DDA* firstBlock, const DDA* secondB
 	float difference = secondBlock->startSpeed - firstBlock->endSpeed;
 	const float VECTORIAL_JERK_LIMIT_MMpSEC = 3.0f;
 	if ( fabs( difference )  > VECTORIAL_JERK_LIMIT_MMpSEC ) {
-		debugPrintf( "Error: Vectorial Jerk: %f - ", difference );
+		debugPrintf( "Error: Vectorial Jerk: %f - ", (double)difference );
 		debugPrintf( " First DDA: %d", firstBlock->ringIndex );
 		debugPrintf( " 2nd DDA: %d", secondBlock->ringIndex );
-		debugPrintf( "  First Exit: %f vs.", firstBlock->endSpeed );
-		debugPrintf( " Second Entry: %f\n", secondBlock->startSpeed );
+		debugPrintf( "  First Exit: %f vs.", (double)firstBlock->endSpeed );
+		debugPrintf( " Second Entry: %f\n", (double)secondBlock->startSpeed );
 		//debugPrintf("\n");
 		return true;
 	}
@@ -175,8 +175,8 @@ float DDA::SingleBlockJerkVel( const DDA* firstBlock, size_t drive ) {
 #ifdef TRACE_SINGLE_BLOCK
 	if ( initialJerk_MMpSEC > 0 || finalJerk_MMpSEC > 0 ) {
 		SERIAL_ECHOLN( "\nTracedSingleJerkVel:" );
-		SERIAL_ECHOPAIR( "\ninitial jerk_MMpSEC:", initialJerk_MMpSEC );
-		SERIAL_ECHOPAIR( "\n  final jerk_MMpSEC:", finalJerk_MMpSEC );
+		SERIAL_ECHOPAIR( "\ninitial jerk_MMpSEC:", (double)initialJerk_MMpSEC );
+		SERIAL_ECHOPAIR( "\n  final jerk_MMpSEC:", (double)finalJerk_MMpSEC );
 		SERIAL_ECHOLN("");
 	}
 #endif
@@ -198,8 +198,8 @@ float DDA::TracedJerkVel( const DDA* firstBlock, const DDA* secondBlock, size_t 
 	float firsExitVel_MMpSEC = firstBlock->directionVector[drive] * firstBlock->endSpeed;
 	float secondEntryVel_MMpSEC = secondBlock->directionVector[drive] * secondBlock->startSpeed;
 	float jerk_MMpSEC = secondEntryVel_MMpSEC - firsExitVel_MMpSEC;
-	debugPrintf( "   exit speed: %f, ", firsExitVel_MMpSEC );
-	debugPrintf( " entry speed: %f\n", secondEntryVel_MMpSEC );
+	debugPrintf( "   exit speed: %f, ", (double)firsExitVel_MMpSEC );
+	debugPrintf( " entry speed: %f\n", (double)secondEntryVel_MMpSEC );
 	return jerk_MMpSEC;
 }
 
@@ -215,7 +215,7 @@ void DDA::TraceAxisJunctionPlan( const DDA* firstBlock, const DDA* secondBlock, 
 	//float jerkStepsPerSecond = secondAxisInitialSpeed_StepsPerSec - firstAxisFinalSpeed_StepsPerSec;
 	float jerk_MMpSEC = TracedJerkVel( firstBlock, secondBlock, drive );
 	//debugPrintf( " Axis Jerk steps/sec:", jerkStepsPerSecond );
-	debugPrintf( " Axis Jerk mm/sec: %f\n", jerk_MMpSEC );
+	debugPrintf( " Axis Jerk mm/sec: %f\n", (double)jerk_MMpSEC );
 	//debugPrintf("");
 }
 
@@ -245,10 +245,10 @@ bool DDA::CheckForJerkError( const DDA* firstBlock, const DDA* secondBlock, floa
 	for (size_t drive = 0; drive < DRIVES && drive <= toAxis; drive++) {
 		float factor = JerkFactor( firstBlock, secondBlock, drive );
 		if ( fabs(factor) > errorFactorThreshold ) {
-			debugPrintf( "Drive %d Jerk Factor high: %f", drive, factor );
+			debugPrintf( "Drive %d Jerk Factor high: %f", drive, (double)factor );
 			debugPrintf( " Block:  %d", firstBlock->ringIndex );
 			debugPrintf( " and:  %d", secondBlock->ringIndex );
-			debugPrintf( " vs. allowed max jerk: %f\n",  EffectiveAxisJerkLimit(drive)  );
+			debugPrintf( " vs. allowed max jerk: %f\n",  (double)EffectiveAxisJerkLimit(drive)  );
 			debugPrintf("\n");
 
 			// if disagreement:
@@ -496,7 +496,7 @@ bool DDA::Init(GCodes::RawMove &nextMove, bool doMotorMapping)
 					relativeExtrusionDebt[drive] -= distanceMoved;
 					if ( relativeExtrusionDebt[drive] > 1.0f/reprap.GetPlatform().DriveStepsPerUnit(drive) )
 					{
-						debugPrintf("Error in relativeExtrusionDebt - > 1.0 steps\n", relativeExtrusionDebt[drive] );
+						debugPrintf("Error in relativeExtrusionDebt of %f is - > 1.0 steps\n", (double)relativeExtrusionDebt[drive] );
 					}
 				}
 				else {
@@ -1228,7 +1228,7 @@ inline void DDA::SetBlockMaxAllowableJerkEntrySpeed( const DDA* prevblock, DDA* 
 				float axisSpeedQ = ( currentblock->directionVector[axis] * jerkLimitedEntrySpeed_MMpSEC );
 				float jerk = axisSpeedQ - axisSpeedP;
 				if ( fabs(jerk) > axisJerkAllowed * 1.01f ) { // a little tolerance cuts down noise lines
-					debugPrintf( "  Check FAILED!: axis %d jerk: %f vs %f allowed, from maxPossibleAxisJerk %f (%f to %f), entrySpeed of %f\n", axis, jerk, axisJerkAllowed, maxPossibleAxisJerk, axisSpeedP, axisSpeedQ, jerkLimitedEntrySpeed_MMpSEC );
+					debugPrintf( "  Check FAILED!: axis %d jerk: %f vs %f allowed, from maxPossibleAxisJerk %f (%f to %f), entrySpeed of %f\n", axis, (double)jerk, (double)axisJerkAllowed, (double)maxPossibleAxisJerk, (double)axisSpeedP, (double)axisSpeedQ, (double)jerkLimitedEntrySpeed_MMpSEC );
 				}
 #endif
 #ifdef TRACE_SetBlockMaxAllowableJerkEntrySpeed
@@ -1274,7 +1274,7 @@ bool DDA::MaximizeJunctionSpeed( DDA* p, DDA* q ) {
 #ifdef CHECK_PLANNING_ASSUMPTIONS
 		// TODO: check to make sure that Q's entry is compatible with P's exit.
 		if ( q->startSpeed > q->requestedSpeed || q->startSpeed > q->decelLimitedEntrySpeed_MMpSEC ) {
-			debugPrintf( "MaximizeJunctionSpeed: q->startSpeed high: %f\n", q->startSpeed );
+			debugPrintf( "MaximizeJunctionSpeed: q->startSpeed high: %f\n", (double)q->startSpeed );
 		}
 
 #endif
@@ -1733,12 +1733,17 @@ inline bool DDA::IsDecelerationMove() const
 				&& prev->state == DDA::provisional			// if we can't adjust the previous move then we don't care (and its figures may not be reliable if it has been recycled already)
 				&& prev->decelDistance > 0.0);				// if the previous move has no deceleration phase then no point in adjus6ting it
 }
+#endif
+
 
 // Return true if there is no reason to delay preparing this move
 bool DDA::IsGoodToPrepare() const
 {
 	return endSpeed >= topSpeed;							// if it never decelerates, we can't improve it
 }
+
+#ifdef POLYPRINTER
+#else
 
 // Try to increase the ending speed of this move to allow the next move to start at targetNextSpeed.
 // Only called if this move ands the next one are both printing moves.

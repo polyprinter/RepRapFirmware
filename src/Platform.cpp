@@ -299,7 +299,7 @@ void PolyPrinterParameters::Init()
 // writes them to the given file store
 bool PolyPrinterParameters::WriteParameters( FileStore *f ) const
 {
-	scratchString.printf( "G39 L%f R%f\n", nutSwitchOvertravelLeft_MM, nutSwitchOvertravelRight_MM );
+	scratchString.printf( "G39 L%f R%f\n", (double)nutSwitchOvertravelLeft_MM, (double)nutSwitchOvertravelRight_MM );
 	return f->Write(scratchString.Pointer());
 }
 

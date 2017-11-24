@@ -312,6 +312,7 @@ private:
 	void CheckTriggers();												// Check for and execute triggers
 #ifdef POLYPRINTER
 	bool CheckErrorConditions( TriggerInputsBitmap currentEndstopStates, TriggerInputsBitmap risenStates, TriggerInputsBitmap fallenStates ); // Check for and handle error conditions
+	void DoPrintAbort();
 #endif	
 	void CheckFilament();												// Check for and respond to filament errors
 	void CheckHeaterFault();											// Check for and respond to a heater fault, returning true if we should exit
@@ -363,6 +364,10 @@ private:
 	void SaveResumeInfo(bool wasPowerFailure);
 
 	const char* GetMachineModeString() const;							// Get the name of the current machine mode
+#ifdef POLYPRINTER
+		// PolyPrinter special sub-state condition
+	bool ignoringZdownAndXYMoves;				// true when head contact or when nut switch condition exists. Inputs like that will be "eaten".
+#endif
 
 	Platform& platform;													// The RepRap machine
 
@@ -386,10 +391,7 @@ private:
 	size_t nextGcodeSource;												// The one to check next
 
 	const GCodeBuffer* resourceOwners[NumResources];					// Which gcode buffer owns each resource
-#ifdef POLYPRINTER
-		// PolyPrinter special sub-state condition
-	bool ignoringZdownAndXYMoves;				// true when head contact or when nut switch condition exists. Inputs like that will be "eaten".
-#endif
+
 	MachineType machineType;					// whether FFF, laser or CNC
 	bool active;								// Live and running?
 	bool isPaused;								// true if the print has been paused manually or automatically

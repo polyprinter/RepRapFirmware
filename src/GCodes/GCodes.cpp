@@ -42,12 +42,12 @@
 const size_t gcodeReplyLength = 2048;			// long enough to pass back a reasonable number of files in response to M20
 
 GCodes::GCodes(Platform& p) :
+#ifdef POLYPRINTER
+	ignoringZdownAndXYMoves( false ),
+#endif
 	platform(p), machineType(MachineType::fff), active(false),
 #if HAS_VOLTAGE_MONITOR
 	powerFailScript(nullptr),
-#endif
-#ifdef POLYPRINTER
-	ignoringZdownAndXYMoves( false ),
 #endif
 	isFlashing(false), fileBeingHashed(nullptr), lastWarningMillis(0)
 {
@@ -486,7 +486,7 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, StringRef& reply)
 			}
 		}
 		gb.AdvanceState();
-			if (reprap.GetTool(newToolNumber) != nullptr && (toolChangeParam & TPreBit) != 0)
+			if (reprap.GetTool(gb.MachineState().newToolNumber) != nullptr && (gb.MachineState().toolChangeParam & TPreBit) != 0
 #ifdef POLYPRINTER
 #else
 						&& AllAxesAreHomed()
@@ -1136,7 +1136,7 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, StringRef& reply)
 						bool canUseNutswitch = XYathomePosition;
 						bool canUseBedContact = XYathomePosition;
 
-						if ( canUseNutswitch && endstopsTriggeredLastMove & ( 1 << Z_AXIS ) )
+						if ( canUseNutswitch && ( endstopsTriggeredLastMove & ( 1 << Z_AXIS ) ) )
 						{
 							// this is for when the Nut Switch is actually wired to the Z endstop pin
 							reply.printf("Falling back to Left Nut Switch correction");
@@ -1157,7 +1157,7 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, StringRef& reply)
 							moveBuffer.xAxes = DefaultXAxisMapping;
 							segmentsLeft = 1;
 						}
-						else if ( canUseBedContact && endstopsTriggeredLastMove & ( 1 << BED_CONTACT_ENDSTOP_NUM ) )
+						else if ( canUseBedContact && ( endstopsTriggeredLastMove & ( 1 << BED_CONTACT_ENDSTOP_NUM ) ) )
 						{
 							//reply.printf("Bed Contact on unsuccessful Probe, no Nut Switch Activation - stopping printing");
 							//SetIgnoringZdownAndXYMoves( true );
@@ -1191,7 +1191,7 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, StringRef& reply)
 							//           - it should stay pretty close.
 							//           - then if it's NOT at the same temperature, do the additional probe at the chosen point
 							SetIgnoringZdownAndXYMoves( true );
-							DoPause( gb, false );
+							DoPause( gb, PauseReason::trigger, "Z Probe Failure" );
 							//lastProbedZ = 0.0;
 						}
 					}
@@ -1573,7 +1573,7 @@ bool GCodes::CheckErrorConditions( TriggerInputsBitmap currentEndstopStates, Tri
 				{
 					return false;
 				}
-				DoPause(*fileGCode, false);		// this is generally recoverable, with supervision, if it's clearable
+				DoPause(*fileGCode, PauseReason::trigger, "Nut Switch");		// this is generally recoverable, with supervision, if it's clearable
 
 				platform.Message(GenericMessage, "Nut Switch Activation detected! Ignoring moves until Z-home done.\n");
 
@@ -1700,7 +1700,7 @@ void GCodes::DoPrintAbort()
 	reprap.FastStop();		// stop everything but does not officially Halt or completely disable things, so doesn't need a reboot to be active again
 
 	// make sure we don't read any more lines from a file
-	CancelPrint( false , false );  // this leaves it able to print again, when tested by itself
+	StopPrint( false );  // this leaves it able to print again, when tested by itself
 
 
 	reprap.GetMove().ClearPendingMoves();

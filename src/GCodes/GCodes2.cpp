@@ -233,9 +233,9 @@ bool GCodes::HandleGcode(GCodeBuffer& gb, StringRef& reply)
 #ifdef POLYPRINTER
 	case 38:
 		// set or report PolyPrinter Vibration Probing Result data
-		debugPrintf("probe result came in from %s State is %d idle %d ready %d executing %d\n", gb.GetIdentity(), gb.GetState(), gb.IsIdle(), gb.IsReady(), gb.IsExecuting() );
+		debugPrintf("probe result came in from %s State is %d idle %d ready %d executing %d\n", gb.GetIdentity(), (int)gb.GetState(), (int)gb.IsIdle(), (int)gb.IsReady(), (int)gb.IsExecuting() );
 		result = SetPolyPrinterProbeResult(gb, reply);
-		debugPrintf("G38 result %d\n", result );
+		debugPrintf("G38 result %d\n", (int)result );
 		break;
 
 	case 39:
