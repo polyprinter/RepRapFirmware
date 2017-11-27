@@ -26,6 +26,9 @@ Licence: GPL
 #include <cstddef>			// for size_t
 
 #define POLYPRINTER
+#ifdef POLYPRINTER
+#define POLYPRINTER_DAUGHTERBOARD_ALPHA
+#endif
 
 // Other firmware that we might switch to be compatible with.
 

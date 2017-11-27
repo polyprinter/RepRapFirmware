@@ -67,11 +67,16 @@ constexpr Pin AdditionalIoExpansionStart = 220;		// Pin numbers 220-235 are on t
 
 // DRIVES
 constexpr Pin GlobalTmcEnablePin = 38;				// The pin that drives ENN of all TMC2660 drivers on production boards (on pre-production boards they are grounded)
-#ifdef POLYPRINTER
-// we use a daughterboard that swaps X vs Y
-constexpr Pin ENABLE_PINS[DRIVES] = { 78, 42, 41, 49, 57, 87, 88, 89, 90, 31, 82, 60 };
-constexpr Pin STEP_PINS[DRIVES] = { 70, 72, 71, 69, 68, 66, 65, 64, 67, 91, 84, 85 };
-constexpr Pin DIRECTION_PINS[DRIVES] = { 75, 77, 76, 01, 73, 92, 86, 80, 81, 32, 83, 25 };
+#ifdef POLYPRINTER_DAUGHTERBOARD_ALPHA
+// we use a daughterboard where:
+// Y motor is attached to X driver
+// X motor is attached to E1 driver
+// E motor is attached to X driver, with a relay for the 2nd extruder
+// Z has a relay separating the right side Z from left when activated.
+//                                        X  Y   Z   E0  E1  E2  E3  E4  E5  E6  E7  E8
+constexpr Pin ENABLE_PINS[DRIVES] =    { 57, 78, 42, 49, 41, 87, 88, 89, NoPin, 31, 82, 60 };
+constexpr Pin STEP_PINS[DRIVES] =      { 68, 70, 72, 69, 71, 66, 65, 64, NoPin, 91, 84, 85 };
+constexpr Pin DIRECTION_PINS[DRIVES] = { 73, 75, 77, 01, 76, 92, 86, 80, 81, 32, 83, 25 };
 #else
 constexpr Pin ENABLE_PINS[DRIVES] = { 78, 41, 42, 49, 57, 87, 88, 89, 90, 31, 82, 60 };
 constexpr Pin STEP_PINS[DRIVES] = { 70, 71, 72, 69, 68, 66, 65, 64, 67, 91, 84, 85 };
@@ -84,7 +89,12 @@ constexpr Pin DueX_INT = 17;						// DueX interrupt pin = PA17 (was E6_STOP)
 // Endstops
 // RepRapFirmware only has a single endstop per axis.
 // Gcode defines if it is a max ("high end") or min ("low end") endstop and sets if it is active HIGH or LOW.
+#ifdef POLYPRINTER
+// NOT SWAPPED
 constexpr Pin END_STOP_PINS[DRIVES] = { 46, 02, 93, 74, 48, 200, 203, 202, 201, 213, 39, 8 };
+#else
+constexpr Pin END_STOP_PINS[DRIVES] = { 46, 02, 93, 74, 48, 200, 203, 202, 201, 213, 39, 8 };
+#endif
 
 // HEATERS
 constexpr Pin TEMP_SENSE_PINS[Heaters] = { 45, 47, 44, 61, 62, 63, 59, 18 }; // Thermistor pin numbers

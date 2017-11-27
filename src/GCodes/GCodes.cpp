@@ -693,7 +693,7 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, StringRef& reply)
 			const GridDefinition& grid = move.AccessHeightMap().GetGrid();
 			const float x = grid.GetXCoordinate(gridXindex);
 			const float y = grid.GetYCoordinate(gridYindex);
-				platform.MessageF(GenericMessage, "gridProbing1: grid point index %d,%d (%.1f, %.1f)\n", gridXindex, gridYindex, x, y);
+				platform.MessageF(GenericMessage, "gridProbing1: grid point index %d,%d (%.1f, %.1f)\n", gridXindex, gridYindex, (double)x, (double)y);
 
 			if (grid.IsInRadius(x, y))
 			{
@@ -833,7 +833,7 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, StringRef& reply)
 
 				heightError = moveBuffer.coords[Z_AXIS] - platform.ZProbeStopHeight();
 #ifdef POLYPRINTER
-					debugPrintf("gridProbing3: using height offset %f\n", platform.GetPolyPrinterProbeResult().detectionOffset_MM );
+					debugPrintf("gridProbing3: using height offset %f\n", (double)platform.GetPolyPrinterProbeResult().detectionOffset_MM );
 					heightError += platform.GetPolyPrinterProbeResult().detectionOffset_MM;
 #endif
 			}
@@ -1081,8 +1081,8 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, StringRef& reply)
 					g30zStoppedHeight = m[Z_AXIS] - heightAdjust;				// save for later
 					g30zHeightError = g30zStoppedHeight - platform.ZProbeStopHeight();
 #ifdef POLYPRINTER
-						debugPrintf("probingAtPoint4: using height offset %f\n", platform.GetPolyPrinterProbeResult().detectionOffset_MM );
-						g30zHeightError += platform.GetPolyPrinterProbeResult().detectionOffset_MM;
+						debugPrintf("probingAtPoint4: using height offset %f\n", (double)platform.GetPolyPrinterProbeResult().detectionOffset_MM );
+						(double)( g30zHeightError += platform.GetPolyPrinterProbeResult().detectionOffset_MM );
 #endif
 
 				}
@@ -2483,6 +2483,10 @@ bool GCodes::DoStraightMove(GCodeBuffer& gb, StringRef& reply, bool isCoordinate
 		}
 
 #ifdef POLYPRINTER
+		// TODO: POLYPRINTER restore the move ignoring (seems to start up in that mode and won't move X or Y)
+//#define POLYPRINTER_CAN_IGNORE_MOVES
+#endif
+#ifdef POLYPRINTER_CAN_IGNORE_MOVES
 		// assert moveBuffer.moveType == 0
 		// check for handling a bed-contact or nut switch condition, where we must reject possibly harmful moves
 		if ( IsIgnoringZdownandXYMoves() )
@@ -2494,6 +2498,11 @@ bool GCodes::DoStraightMove(GCodeBuffer& gb, StringRef& reply, bool isCoordinate
 				 || moveBuffer.coords[Z_AXIS] <  moveBuffer.initialCoords[Z_AXIS]
 					 )
 			{
+#define VERBOSE_MOVE_PARSING
+#ifdef VERBOSE_MOVE_PARSING
+				reprap.GetPlatform().Message(WarningMessage, "Ignored move due to previous problem\n");
+				reprap.GetPlatform().MessageF(GenericMessage, "To Z %f from %f\n", (double)moveBuffer.coords[Z_AXIS], (double)moveBuffer.initialCoords[Z_AXIS] );
+#endif
 				// we disallow such moves in this state
 				// put the initial physical positioning coords back in as the supposed target for this move. Do nothing.
 				memcpy(moveBuffer.coords, moveBuffer.initialCoords, numTotalAxes * sizeof(moveBuffer.initialCoords[0]));
