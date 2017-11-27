@@ -1192,6 +1192,11 @@ inline uint16_t Platform::GetRawZProbeReading() const
 {
 	switch (zProbeType)
 	{
+	case 1:
+	case 2:
+	case 3:
+		return min<uint16_t>(AnalogInReadChannel(zProbeAdcChannel), 4000);
+
 	case 4:
 		{
 			const bool b = IoPort::ReadPin(endStopPins[E0_AXIS]);
@@ -1199,6 +1204,7 @@ inline uint16_t Platform::GetRawZProbeReading() const
 		}
 
 	case 5:
+	case 8:
 		return (IoPort::ReadPin(zProbePin)) ? 4000 : 0;
 
 	case 6:
@@ -1206,13 +1212,21 @@ inline uint16_t Platform::GetRawZProbeReading() const
 			const bool b = IoPort::ReadPin(endStopPins[E0_AXIS + 1]);
 			return (b) ? 4000 : 0;
 		}
+	case 7:
+		{
+			const bool b = IoPort::ReadPin(endStopPins[Z_AXIS]);
+			return (b) ? 4000 : 0;
+		}
+
 #ifdef POLYPRINTER
 	case ZProbeTypePoly :
+		{
 		// TODO: identify and set up the actual pin we use in production if we don't redefine this pin
 		return (IoPort::ReadPin(zProbePin)) ? 4000 : 0;
+		}
 #endif
 	default:
-		return min<uint16_t>(AnalogInReadChannel(zProbeAdcChannel), 4000);
+		return 4000;
 	}
 }
 
