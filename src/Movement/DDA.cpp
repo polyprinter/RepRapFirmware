@@ -2455,7 +2455,8 @@ void DDA::CheckEndstops(Platform& platform)
 		if ( ((endStopsToCheck & (1 << Z_AXIS)) != 0) && platform.Stopped(Z_AXIS) != EndStopHit::noStop )
 		{
 			// must have hit the Z switch (or nut switch wired to that pin)
-			//debugPrintf("Hit Z switch while doing probe. Abandoning this probe\n");
+			// TODO: POLYPRINTER re-comment this message
+			debugPrintf("Hit Z switch while doing probe. Abandoning this probe\n");
 			MoveAborted();
 			reprap.GetMove().HitLowStop( 1 << Z_AXIS );  // doesn't zero anything
 		}
@@ -2491,7 +2492,7 @@ void DDA::CheckEndstops(Platform& platform)
 		}
 	}
 #endif
-#ifdef POLYPRINTER
+#ifdef POLYPRINTER_SUPPORT_BED_CONTACT
 	// if the bits are set, then a check resulting in an active state is supposed to stop the movement.
 	// this particular check is not necessarily what's used to detect errors while printing But it could.
 	if ( platform.GetBedContactExists() != EndStopHit::noStop )

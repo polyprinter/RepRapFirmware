@@ -13,7 +13,7 @@
 // Set up to probe
 bool PolyProbe::Init(float frequency, float amplitude, float rate, float height)
 {
-debugPrintf("Start probe f=%.1f a=%.2f r=%.2f h=%.1f\n", frequency, amplitude, rate, height);
+debugPrintf("Start probe f=%.1f a=%.2f r=%.2f h=%.1f\n", (double)frequency, (double)amplitude, (double)rate, (double)height);
 	// Sanity check the inputs (we check the max amplitude later)
 	if (frequency < 50.0 || frequency > 1000.0 || amplitude < 0.02 || rate < 0.1 || rate > 10.0 || height < 0.5)
 	{
@@ -54,16 +54,16 @@ debugPrintf("normalSteps=%u\n", normalSteps);
 	maxIncrements = height * zRate;
 
 const float peakAccel = fsquare(2.0 * PI * frequency) * amplitude * 0.5;
-debugPrintf("halfCycleTime=%u halfCyclesPerIncrement=%u peak accel=%.1f\n", halfCycleTime, halfCyclesPerIncrement, peakAccel);
+debugPrintf("halfCycleTime=%f halfCyclesPerIncrement=%u peak accel=%.1f\n", (double)halfCycleTime, (unsigned int)halfCyclesPerIncrement, (double)peakAccel);
 debugPrintf("normalTable=");
 for (unsigned int i = 0; i < normalSteps; ++i)
 {
-	debugPrintf(" %u", normalStepTable[i]);
+	debugPrintf(" %u", (unsigned int)normalStepTable[i]);
 }
 debugPrintf(" incStepTable=");
 for (unsigned int i = 0; i <= normalSteps; ++i)
 {
-	debugPrintf(" %u", incStepTable[i]);
+	debugPrintf(" %u", (unsigned int)incStepTable[i]);
 }
 debugPrintf("\n");
 	return true;

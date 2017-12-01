@@ -28,6 +28,7 @@ Licence: GPL
 #define POLYPRINTER
 #ifdef POLYPRINTER
 #define POLYPRINTER_DAUGHTERBOARD_ALPHA
+//#define POLYPRINTER_SUPPORT_BED_CONTACT
 #endif
 
 // Other firmware that we might switch to be compatible with.
