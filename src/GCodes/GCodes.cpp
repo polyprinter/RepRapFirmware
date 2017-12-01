@@ -35,8 +35,8 @@
 #include "RepRap.h"
 #include "Tools/Tool.h"
 
-#ifdef DUET_NG
-#include "FirmwareUpdater.h"
+#if defined(DUET_NG) || defined(DUET_M)
+# include "FirmwareUpdater.h"
 #endif
 
 const size_t gcodeReplyLength = 2048;			// long enough to pass back a reasonable number of files in response to M20
@@ -626,7 +626,7 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, StringRef& reply)
 		break;
 
 	case GCodeState::flashing1:
-#ifdef DUET_NG
+#if defined(DUET_NG) || defined(DUET_M)
 		// Update additional modules before the main firmware
 		if (FirmwareUpdater::IsReady())
 		{
@@ -1675,8 +1675,9 @@ void GCodes::CheckFilament()
 		&& LockMovement(*autoPauseGCode)							// need to lock movement before executing the pause macro
 	   )
 	{
-		scratchString.printf("Extruder %u reports %s", lastFilamentErrorExtruder, FilamentSensor::GetErrorMessage(lastFilamentError));
-		DoPause(*autoPauseGCode, PauseReason::filament, scratchString.Pointer());
+		String<100> filamentErrorString;
+		filamentErrorString.GetRef().printf("Extruder %u reports %s", lastFilamentErrorExtruder, FilamentSensor::GetErrorMessage(lastFilamentError));
+		DoPause(*autoPauseGCode, PauseReason::filament, filamentErrorString.Pointer());
 		lastFilamentError = FilamentSensorStatus::ok;
 	}
 }
@@ -2003,9 +2004,10 @@ bool GCodes::PauseOnStall(DriversBitmap stalledDrivers)
 		return false;
 	}
 
-	scratchString.printf("Stall detected on driver(s)");
-	ListDrivers(scratchString, stalledDrivers);
-	DoPause(*autoPauseGCode, PauseReason::stall, scratchString.Pointer());
+	String<100> stallErrorString;
+	stallErrorString.GetRef().printf("Stall detected on driver(s)");
+	ListDrivers(stallErrorString.GetRef(), stalledDrivers);
+	DoPause(*autoPauseGCode, PauseReason::stall, stallErrorString.Pointer());
 	return true;
 }
 
