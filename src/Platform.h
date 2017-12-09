@@ -95,17 +95,12 @@ constexpr uint32_t maxPidSpinDelay = 5000;			// Maximum elapsed time in millisec
 
 /****************************************************************************************************/
 
-// File handling
-
-constexpr size_t MAX_FILES = 10;					// Must be large enough to handle the max number of simultaneous web requests + files being printed
-constexpr size_t FILE_BUFFER_SIZE = 256;
-
-/****************************************************************************************************/
-
 enum class BoardType : uint8_t
 {
 	Auto = 0,
-#if defined(DUET_NG) && defined(DUET_WIFI)
+#if defined(__SAME70Q21__)
+	SAME70_TEST = 1
+#elif defined(DUET_NG) && defined(DUET_WIFI)
 	DuetWiFi_10 = 1
 #elif defined(DUET_NG) && defined(DUET_ETHERNET)
 	DuetEthernet_10 = 1
@@ -360,7 +355,8 @@ public:
 
 	void SoftwareReset(uint16_t reason, const uint32_t *stk = nullptr);
 	bool AtxPower() const;
-	void SetAtxPower(bool on);
+	void AtxPowerOn();
+	void AtxPowerOff(bool defer);
 	void SetBoardType(BoardType bt);
 	const char* GetElectronicsString() const;
 	const char* GetBoardString() const;
@@ -410,15 +406,14 @@ public:
 	friend class FileStore;
 
 	MassStorage* GetMassStorage() const;
-	FileStore* GetFileStore(const char* directory, const char* fileName, OpenMode mode);
+	FileStore* OpenFile(const char* directory, const char* fileName, OpenMode mode) { return massStorage->OpenFile(directory, fileName, mode); }
+
 	const char* GetWebDir() const; 					// Where the html etc files are
 	const char* GetGCodeDir() const; 				// Where the gcodes are
 	const char* GetSysDir() const;  				// Where the system files are
 	const char* GetMacroDir() const;				// Where the user-defined macros are
 	const char* GetConfigFile() const; 				// Where the configuration is stored (in the system dir).
 	const char* GetDefaultFile() const;				// Where the default configuration is stored (in the system dir).
-	void InvalidateFiles(const FATFS *fs);			// Called to invalidate files when the SD card is removed
-	bool AnyFileOpen(const FATFS *fs) const;		// Returns true if any files are open on the SD card
 
 	// Message output (see MessageType for further details)
 
@@ -551,7 +546,7 @@ public:
 		return thermistorFilters[channel];
 	}
 
-	void SetHeater(size_t heater, float power)				// power is a fraction in [0,1]
+	void SetHeater(size_t heater, float power, PwmFrequency freq = 0)	// power is a fraction in [0,1]
 	pre(heater < Heaters);
 
 	uint32_t HeatSampleInterval() const;
@@ -875,8 +870,6 @@ private:
 	// Files
 
 	MassStorage* massStorage;
-	FileStore* files[MAX_FILES];
-	bool fileStructureInitialised;
   
 	// Data used by the tick interrupt handler
 
@@ -949,6 +942,9 @@ private:
 	float extrusionAncilliaryPwmValue;
 	PwmPort extrusionAncilliaryPwmPort;
 	PwmPort spindleForwardPort, spindleReversePort, laserPort;
+
+	// Power on/off
+	bool deferredPowerDown;
 
 	// Direct pin manipulation
 	int8_t logicalPinModes[HighestLogicalPin + 1];		// what mode each logical pin is set to - would ideally be class PinMode not int8_t
@@ -1274,6 +1270,9 @@ inline OutputBuffer *Platform::GetAuxGCodeReply()
 // Calculate the step bit for a driver. This doesn't need to be fast.
 /*static*/ inline uint32_t Platform::CalcDriverBitmap(size_t driver)
 {
+#if defined(__SAME70Q21__)
+	return 0;
+#else
 	const PinDescription& pinDesc = g_APinDescription[STEP_PINS[driver]];
 #if defined(DUET_NG)
 	return pinDesc.ulPin;
@@ -1288,6 +1287,7 @@ inline OutputBuffer *Platform::GetAuxGCodeReply()
 #else
 # error Unknown board
 #endif
+#endif
 }
 
 // Set the specified step pins high and all other step pins low
@@ -1295,7 +1295,9 @@ inline OutputBuffer *Platform::GetAuxGCodeReply()
 // We rely on only those port bits that are step pins being set in the PIO_OWSR register of each port
 /*static*/ inline void Platform::StepDriversHigh(uint32_t driverMap)
 {
-#if defined(DUET_NG)
+#if defined(__SAME70Q21__)
+	// TBD
+#elif defined(DUET_NG)
 	PIOD->PIO_ODSR = driverMap;				// on Duet WiFi all step pins are on port D
 #elif defined(DUET_M)
 	PIOC->PIO_ODSR = driverMap;				// on Duet M all step pins are on port C
@@ -1322,7 +1324,9 @@ inline OutputBuffer *Platform::GetAuxGCodeReply()
 // We rely on only those port bits that are step pins being set in the PIO_OWSR register of each port
 /*static*/ inline void Platform::StepDriversLow()
 {
-#if defined(DUET_NG)
+#if defined(__SAME70Q21__)
+	// TODO
+#elif defined(DUET_NG)
 	PIOD->PIO_ODSR = 0;						// on Duet WiFi all step pins are on port D
 #elif defined(DUET_M)
 	PIOC->PIO_ODSR = 0;						// on Duet M all step pins are on port C

@@ -29,6 +29,9 @@ Licence: GPL
 
 #include "ecv.h"
 #include "Core.h"
+
+typedef uint16_t PwmFrequency;		// type used to represent a PWM frequency. 0 sometimes means "default".
+
 #include "Configuration.h"
 #include "Pins.h"
 
@@ -87,7 +90,7 @@ class PortControl;
 #endif
 
 // Define floating point type to use for calculations where we would like high precision in matrix calculations
-#if SAM4E || SAM4S
+#if SAM4E || SAM4S || SAME70
 typedef double floatc_t;					// type of matrix element used for calibration
 #else
 // We are more memory-constrained on the SAM3X
@@ -101,9 +104,11 @@ typedef uint32_t FansBitmap;				// Type of a bitmap representing a set of fan nu
 // A single instance of the RepRap class contains all the others
 extern RepRap reprap;
 
-// Functions and globals not part of any class
+// Debugging support
 extern "C" void debugPrintf(const char* fmt, ...) __attribute__ ((format (printf, 1, 2)));
+#define DEBUG_HERE do { debugPrintf("At " __FILE__ " line %d\n", __LINE__); delay(50); } while (false)
 
+// Functions and globals not part of any class
 bool StringEndsWith(const char* string, const char* ending);
 bool StringStartsWith(const char* string, const char* starting);
 bool StringEquals(const char* s1, const char* s2);

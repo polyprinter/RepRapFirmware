@@ -1,9 +1,9 @@
 #include "RepRap.h"
 
-#include "Network.h"
 #include "Movement/Move.h"
 #include "GCodes/GCodes.h"
 #include "Heating/Heat.h"
+#include "Network.h"
 #include "Platform.h"
 #include "Scanner.h"
 #include "PrintMonitor.h"
@@ -12,7 +12,7 @@
 #include "Version.h"
 
 #ifdef DUET_NG
-#include "DueXn.h"
+# include "DueXn.h"
 #endif
 
 #if SUPPORT_IOBITS
@@ -57,7 +57,8 @@ extern "C" void hsmciIdle()
 
 RepRap::RepRap() : toolList(nullptr), currentTool(nullptr), lastWarningMillis(0), activeExtruders(0),
 	activeToolHeaters(0), ticksInSpinState(0), spinningModule(noModule), debug(0), stopped(false),
-	active(false), resetting(false), processingConfig(true), beepFrequency(0), beepDuration(0)
+	active(false), resetting(false), processingConfig(true), beepFrequency(0), beepDuration(0),
+	displayMessageBox(false), boxSeq(0)
 {
 	OutputBuffer::Init();
 	platform = new Platform();
@@ -81,7 +82,6 @@ RepRap::RepRap() : toolList(nullptr), currentTool(nullptr), lastWarningMillis(0)
 	SetPassword(DEFAULT_PASSWORD);
 	SetName(DEFAULT_NAME);
 	message[0] = 0;
-	displayMessageBox = false;
 }
 
 void RepRap::Init()
@@ -465,12 +465,15 @@ void RepRap::PrintTool(int toolNumber, StringRef& reply) const
 	}
 }
 
-void RepRap::StandbyTool(int toolNumber)
+void RepRap::StandbyTool(int toolNumber, bool simulating)
 {
 	Tool* const tool = GetTool(toolNumber);
 	if (tool != nullptr)
 	{
-		tool->Standby();
+		if (!simulating)
+		{
+			tool->Standby();
+		}
   		if (currentTool == tool)
 		{
 			currentTool = nullptr;
@@ -559,11 +562,11 @@ void RepRap::Tick()
 		if (ticksInSpinState >= MaxTicksInSpinState)	// if we stall for 20 seconds, save diagnostic data and reset
 		{
 			resetting = true;
-			for(size_t i = 0; i < Heaters; i++)
+			for (size_t i = 0; i < Heaters; i++)
 			{
 				platform->SetHeater(i, 0.0);
 			}
-			for(size_t i = 0; i < DRIVES; i++)
+			for (size_t i = 0; i < DRIVES; i++)
 			{
 				platform->DisableDrive(i);
 				// We can't set motor currents to 0 here because that requires interrupts to be working, and we are in an ISR
@@ -707,7 +710,7 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 				response->EncodeString(boxMessage, ARRAY_SIZE(boxMessage), false);
 				response->cat(",\"title\":");
 				response->EncodeString(boxTitle, ARRAY_SIZE(boxTitle), false);
-				response->catf(",\"mode\":%d,\"timeout\":%.1f,\"controls\":%" PRIu32 "}", boxMode, (double)timeLeft, boxControls);
+				response->catf(",\"mode\":%d,\"seq\":%" PRIu32 ",\"timeout\":%.1f,\"controls\":%" PRIu32 "}", boxMode, boxSeq, (double)timeLeft, boxControls);
 			}
 			response->cat("}");
 		}
@@ -774,7 +777,7 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 		response->cat(",\"temps\":{");
 
 		/* Bed */
-		const int8_t bedHeater = heat->GetBedHeater();
+		const int8_t bedHeater = (NumBedHeaters > 0) ? heat->GetBedHeater(0) : -1;
 		if (bedHeater != -1)
 		{
 			response->catf("\"bed\":{\"current\":%.1f,\"active\":%.1f,\"state\":%d,\"heater\":%d},",
@@ -783,12 +786,21 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 		}
 
 		/* Chamber */
-		const int8_t chamberHeater = heat->GetChamberHeater();
+		const int8_t chamberHeater = (NumChamberHeaters > 0) ? heat->GetChamberHeater(0) : -1;
 		if (chamberHeater != -1)
 		{
 			response->catf("\"chamber\":{\"current\":%.1f,\"active\":%.1f,\"state\":%d,\"heater\":%d},",
 				(double)heat->GetTemperature(chamberHeater), (double)heat->GetActiveTemperature(chamberHeater),
 					heat->GetStatus(chamberHeater), chamberHeater);
+		}
+
+		/* Cabinet */
+		const int8_t cabinetHeater = (NumChamberHeaters > 1) ? heat->GetChamberHeater(1) : -1;
+		if (cabinetHeater != -1)
+		{
+			response->catf("\"cabinet\":{\"current\":%.1f,\"active\":%.1f,\"state\":%d,\"heater\":%d},",
+				(double)heat->GetTemperature(cabinetHeater), (double)heat->GetActiveTemperature(cabinetHeater),
+					heat->GetStatus(cabinetHeater), cabinetHeater);
 		}
 
 		/* Heaters */
@@ -1273,7 +1285,7 @@ OutputBuffer *RepRap::GetLegacyStatusResponse(uint8_t type, int seq)
 	response->printf("{\"status\":\"%c\",\"heaters\":", ch);
 
 	// Send the heater actual temperatures. If there is no bed heater, send zero for PanelDue.
-	const int8_t bedHeater = heat->GetBedHeater();
+	const int8_t bedHeater = (NumBedHeaters > 0) ? heat->GetBedHeater(0) : -1;
 	ch = ',';
 	response->catf("[%.1f", (double)((bedHeater == -1) ? 0.0 : heat->GetTemperature(bedHeater)));
 	for (size_t heater = DefaultE0Heater; heater < GetToolHeatersInUse(); heater++)
@@ -1284,7 +1296,7 @@ OutputBuffer *RepRap::GetLegacyStatusResponse(uint8_t type, int seq)
 	response->cat((ch == '[') ? "[]" : "]");
 
 	// Send the heater active temperatures
-	response->catf(",\"active\":[%.1f", (double)((bedHeater == -1) ? 0.0 : heat->GetActiveTemperature(heat->GetBedHeater())));
+	response->catf(",\"active\":[%.1f", (double)((bedHeater == -1) ? 0.0 : heat->GetActiveTemperature(bedHeater)));
 	for (size_t heater = DefaultE0Heater; heater < GetToolHeatersInUse(); heater++)
 	{
 		response->catf(",%.1f", (double)(heat->GetActiveTemperature(heater)));
@@ -1399,7 +1411,8 @@ OutputBuffer *RepRap::GetLegacyStatusResponse(uint8_t type, int seq)
 
 	if (displayMessageBox)
 	{
-		response->catf(",\"msgBox.mode\":%d,\"msgBox.timeout\":%.1f,\"msgBox.controls\":%" PRIu32 "", boxMode, (double)timeLeft, boxControls);
+		response->catf(",\"msgBox.mode\":%d,\"msgBox.seq\":%" PRIu32 ",\"msgBox.timeout\":%.1f,\"msgBox.controls\":%" PRIu32 "",
+						boxMode, boxSeq, (double)timeLeft, boxControls);
 		response->cat(",\"msgBox.msg\":");
 		response->EncodeString(boxMessage, ARRAY_SIZE(boxMessage), false);
 		response->cat(",\"msgBox.title\":");
@@ -1626,6 +1639,7 @@ void RepRap::SetAlert(const char *msg, const char *title, int mode, float timeou
 	boxTimeout = round(max<float>(timeout, 0.0) * 1000.0);
 	boxControls = controls;
 	displayMessageBox = true;
+	++boxSeq;
 }
 
 // Clear pending message box

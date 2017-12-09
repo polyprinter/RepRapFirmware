@@ -24,9 +24,9 @@
 #include "Heating/Heat.h"
 #include "Movement/DDA.h"
 #include "Movement/Move.h"
+#include "Network.h"
 #include "PrintMonitor.h"
 #include "FilamentSensors/FilamentSensor.h"
-#include "Network.h"
 #include "RepRap.h"
 #include "Scanner.h"
 #include "Version.h"
@@ -39,11 +39,11 @@
 
 #include "sd_mmc.h"
 
-#if HAS_SMART_DRIVERS
+#ifdef DUET_NG
 # include "TMC2660.h"
 #endif
 
-#ifdef DUET_NG
+#if HAS_WIFI_NETWORKING
 # include "FirmwareUpdater.h"
 #endif
 
@@ -63,6 +63,7 @@ extern "C" char *sbrk(int i);
 
 inline void EnableCache()
 {
+	cmcc_invalidate_all(CMCC);
 	cmcc_enable(CMCC);
 }
 
@@ -140,7 +141,7 @@ uint32_t lastSoftTimerInterruptScheduledAt = 0;
 // Therefore, be very careful what you do here!
 void UrgentInit()
 {
-#ifdef DUET_NG
+#if HAS_SMART_DRIVERS
 	// When the reset button is pressed on pre-production Duet WiFi boards, if the TMC2660 drivers were previously enabled then we get
 	// uncommanded motor movements if the STEP lines pick up any noise. Try to reduce that by initialising the pins that control the drivers early here.
 	// On the production boards the ENN line is pulled high and that prevents motor movements.
@@ -336,7 +337,7 @@ Platform::Platform() :
 		nextDriveToPoll(0),
 		onBoardDriversFanRunning(false), offBoardDriversFanRunning(false), onBoardDriversFanStartMillis(0), offBoardDriversFanStartMillis(0),
 #endif
-		lastFanCheckTime(0), auxGCodeReply(nullptr), fileStructureInitialised(false), tickState(0), debugCode(0), lastWarningMillis(0)
+		lastFanCheckTime(0), auxGCodeReply(nullptr), tickState(0), debugCode(0), lastWarningMillis(0)
 {
 	// Output
 	auxOutput = new OutputStack();
@@ -347,11 +348,6 @@ Platform::Platform() :
 
 	// Files
 	massStorage = new MassStorage(this);
-
-	for (size_t i = 0; i < MAX_FILES; i++)
-	{
-		files[i] = new FileStore(this);
-	}
 }
 
 //*******************************************************************************************************************
@@ -360,6 +356,7 @@ void Platform::Init()
 {
 	// Deal with power first
 	pinMode(ATX_POWER_PIN, OUTPUT_LOW);
+	deferredPowerDown = false;
 
 	SetBoardType(BoardType::Auto);
 
@@ -395,9 +392,10 @@ void Platform::Init()
 #if defined(DUET_NG) && defined(DUET_WIFI)
 	// The WiFi module has a unique MAC address, so we don't need a default
 	memset(macAddress, 0xFF, sizeof(macAddress));
-#elif defined(DUET_NG) && defined(DUET_ETHERNET)
-	// On the Duet Ethernet, use the unique chip ID as most of the MAC address.
-	// The unique ID is 128 bits long whereas the whole MAC address is only 48 bits, so we can't guarantee that each Duet Ethernet will get a unique MAC address this way.
+#elif (defined(DUET_NG) && defined(DUET_ETHERNET)) || (defined(__SAME70Q21__))
+	// On the Duet Ethernet and SAM E70, use the unique chip ID as most of the MAC address.
+	// The unique ID is 128 bits long whereas the whole MAC address is only 48 bits,
+	// so we can't guarantee that each Duet will get a unique MAC address this way.
 	{
 		uint32_t idBuf[4];
 		memset(idBuf, 0, sizeof(idBuf));
@@ -429,20 +427,19 @@ void Platform::Init()
 	// File management
 	massStorage->Init();
 
-	for (size_t file = 0; file < MAX_FILES; file++)
-	{
-		files[file]->Init();
-	}
-
-	fileStructureInitialised = true;
-
 #if defined(DUET_06_085)
+	// Motor current setting on Duet 0.6 and 0.8.5
 	mcpDuet.begin();							// only call begin once in the entire execution, this begins the I2C comms on that channel for all objects
 	mcpExpansion.setMCP4461Address(0x2E);		// not required for mcpDuet, as this uses the default address
+	ARRAY_INIT(potWipes, POT_WIPES);
+	senseResistor = SENSE_RESISTOR;
+	maxStepperDigipotVoltage = MAX_STEPPER_DIGIPOT_VOLTAGE;
+	stepperDacVoltageRange = STEPPER_DAC_VOLTAGE_RANGE;
+	stepperDacVoltageOffset = STEPPER_DAC_VOLTAGE_OFFSET;
 #endif
 
 #if defined(__ALLIGATOR__)
-	pinMode(EthernetPhyResetPin,INPUT);													 // Init Ethernet Phy Reset Pin
+	pinMode(EthernetPhyResetPin, INPUT);													// Init Ethernet Phy Reset Pin
 	// Alligator Init DAC for motor current vref
 	ARRAY_INIT(spiDacCS, SPI_DAC_CS);
 	dacAlligator.Init(spiDacCS[0]);
@@ -468,15 +465,6 @@ void Platform::Init()
 	ARRAY_INIT(driveStepsPerUnit, DRIVE_STEPS_PER_UNIT);
 	ARRAY_INIT(instantDvs, INSTANT_DVS);
 	maxPrintingAcceleration = maxTravelAcceleration = 10000.0;
-
-#if defined(DUET_06_085)
-	// Motor current setting on Duet 0.6 and 0.8.5
-	ARRAY_INIT(potWipes, POT_WIPES);
-	senseResistor = SENSE_RESISTOR;
-	maxStepperDigipotVoltage = MAX_STEPPER_DIGIPOT_VOLTAGE;
-	stepperDacVoltageRange = STEPPER_DAC_VOLTAGE_RANGE;
-	stepperDacVoltageOffset = STEPPER_DAC_VOLTAGE_OFFSET;
-#endif
 
 	// Z PROBE
 	zProbeType = 0;								// default is to use no Z probe
@@ -623,7 +611,21 @@ void Platform::Init()
 	ARRAY_INIT(heatOnPins, HEAT_ON_PINS);
 	ARRAY_INIT(spiTempSenseCsPins, SpiTempSensorCsPins);
 
-	configuredHeaters = (DefaultBedHeater >= 0) ? (1 << DefaultBedHeater) : 0;
+	configuredHeaters = 0;
+	for (int8_t bedHeater : DefaultBedHeaters)
+	{
+		if (bedHeater >= 0)
+		{
+			configuredHeaters |= (1 << bedHeater);
+		}
+	}
+	for (int8_t chamberHeater : DefaultChamberHeaters)
+	{
+		if (chamberHeater >= 0)
+		{
+			configuredHeaters |= (1 << chamberHeater);
+		}
+	}
 	heatSampleTicks = HEAT_SAMPLE_TIME * SecondsToMillis;
 
 	// Enable pullups on all the SPI CS pins. This is required if we are using more than one device on the SPI bus.
@@ -716,26 +718,6 @@ void Platform::Init()
 	InitialiseInterrupts();		// also sets 'active' to true
 }
 
-void Platform::InvalidateFiles(const FATFS *fs)
-{
-	for (size_t i = 0; i < MAX_FILES; i++)
-	{
-		files[i]->Invalidate(fs);
-	}
-}
-
-bool Platform::AnyFileOpen(const FATFS *fs) const
-{
-	for (size_t i = 0; i < MAX_FILES; i++)
-	{
-		if (files[i]->IsOpenOn(fs))
-		{
-			return true;
-		}
-	}
-	return false;
-}
-
 void Platform::SetZProbeDefaults()
 {
 	switchZProbeParameters.Init(0.0);
@@ -749,7 +731,7 @@ void Platform::InitZProbe()
 	zProbeOffFilter.Init(0);
 
 #ifdef DUET_06_085
-	zProbeModulationPin = (board == BoardType::Duet_07 || board == BoardType::Duet_085) ? Z_PROBE_MOD_PIN07 : Z_PROBE_MOD_PIN;
+	zProbeModulationPin = (board == BoardType::Duet_07 || board == BoardType::Duet_085) ? Z_PROBE_MOD_PIN07 : Z_PROBE_MOD_PIN06;
 #else
 	zProbeModulationPin = Z_PROBE_MOD_PIN;
 #endif
@@ -872,17 +854,20 @@ int Platform::GetZProbeSecondaryValues(int& v1, int& v2)
 // Get our best estimate of the Z probe temperature
 float Platform::GetZProbeTemperature()
 {
-	const int8_t bedHeater = reprap.GetHeat().GetBedHeater();
-	if (bedHeater >= 0)
+	for (size_t i = 0; i < NumBedHeaters; i++)
 	{
-		TemperatureError err;
-		const float temp = reprap.GetHeat().GetTemperature(bedHeater, err);
-		if (err == TemperatureError::success)
+		const int8_t bedHeater = reprap.GetHeat().GetBedHeater(i);
+		if (bedHeater >= 0)
 		{
-			return temp;
+			TemperatureError err;
+			const float temp = reprap.GetHeat().GetTemperature(bedHeater, err);
+			if (err == TemperatureError::success)
+			{
+				return temp;
+			}
 		}
 	}
-	return 25.0;							// assume 25C if we can't read he bed temperature
+	return 25.0;							// assume 25C if we can't read the bed temperature
 }
 
 float Platform::ZProbeStopHeight()
@@ -1043,21 +1028,22 @@ bool Platform::HomingZWithProbe() const
 // Check the prerequisites for updating the main firmware. Return True if satisfied, else print a message to 'reply' and return false.
 bool Platform::CheckFirmwareUpdatePrerequisites(StringRef& reply)
 {
-	FileStore * const firmwareFile = GetFileStore(GetSysDir(), IAP_FIRMWARE_FILE, OpenMode::read);
+	FileStore * const firmwareFile = OpenFile(GetSysDir(), IAP_FIRMWARE_FILE, OpenMode::read);
 	if (firmwareFile == nullptr)
 	{
 		reply.printf("Firmware binary \"%s\" not found", IAP_FIRMWARE_FILE);
 		return false;
 	}
 
+	// Check that the binary looks sensible. The first word is the initial stack pointer, which should be the top of RAM.
 	uint32_t firstDword;
 	bool ok = firmwareFile->Read(reinterpret_cast<char*>(&firstDword), sizeof(firstDword)) == (int)sizeof(firstDword);
 	firmwareFile->Close();
 	if (!ok || firstDword !=
-#if SAM4E || SAM4S
-						IRAM_ADDR + IRAM_SIZE
-#else
+#if SAM3XA
 						IRAM1_ADDR + IRAM1_SIZE
+#else
+						IRAM_ADDR + IRAM_SIZE
 #endif
 			)
 	{
@@ -1077,7 +1063,7 @@ bool Platform::CheckFirmwareUpdatePrerequisites(StringRef& reply)
 // Update the firmware. Prerequisites should be checked before calling this.
 void Platform::UpdateFirmware()
 {
-	FileStore * const iapFile = GetFileStore(GetSysDir(), IAP_UPDATE_FILE, OpenMode::read);
+	FileStore * const iapFile = OpenFile(GetSysDir(), IAP_UPDATE_FILE, OpenMode::read);
 	if (iapFile == nullptr)
 	{
 		MessageF(FirmwareUpdateMessage, "IAP not found\n");
@@ -1101,7 +1087,7 @@ void Platform::UpdateFirmware()
 	uint32_t data32[IFLASH_PAGE_SIZE/4];
 	char* const data = reinterpret_cast<char *>(data32);
 
-#if SAM4E || SAM4S
+#if SAM4E || SAM4S || SAME70
 	// The EWP command is not supported for non-8KByte sectors in the SAM4 series.
 	// So we have to unlock and erase the complete 64Kb sector first.
 	flash_unlock(IAP_FLASH_START, IAP_FLASH_END, nullptr, nullptr);
@@ -1245,17 +1231,17 @@ void Platform::UpdateFirmware()
 	static const char filename[] = "0:/sys/" IAP_FIRMWARE_FILE;
 	const uint32_t topOfStack = *reinterpret_cast<uint32_t *>(IAP_FLASH_START);
 	if (topOfStack + sizeof(filename) <=
-#if SAM4E || SAM4S
-						IRAM_ADDR + IRAM_SIZE
-#else
+#if SAM3XA
 						IRAM1_ADDR + IRAM1_SIZE
+#else
+						IRAM_ADDR + IRAM_SIZE
 #endif
 	   )
 	{
 		memcpy(reinterpret_cast<char*>(topOfStack), filename, sizeof(filename));
 	}
 
-#ifdef DUET_NG
+#if defined(DUET_NG) || defined(DUET_M)
 	IoPort::WriteDigital(Z_PROBE_MOD_PIN, false);	// turn the DIAG LED off
 #endif
 
@@ -1303,15 +1289,7 @@ void Platform::SendAuxMessage(const char* msg)
 void Platform::Exit()
 {
 	StopLogging();
-
-	// Close all files
-	for (FileStore*& f : files)
-	{
-		while (f->inUse)
-		{
-			f->Close();
-		}
-	}
+	massStorage->CloseAllFiles();
 
 	// Release the aux output stack (should release the others too!)
 	while (auxGCodeReply != nullptr)
@@ -1358,6 +1336,13 @@ void Platform::UpdateNetworkAddress(byte dst[4], const byte src[4])
 	{
 		dst[i] = src[i];
 	}
+#if HAS_LWIP_NETWORKING
+# if HAS_MULTIPLE_NETWORK_INTERFACES
+	reprap.GetNetwork().SetIPAddress(EthernetInterfaceIndex, ipAddress, gateWay, netMask);
+# else
+	reprap.GetNetwork().SetIPAddress(ipAddress, gateWay, netMask);
+# endif
+#endif
 }
 
 void Platform::SetIPAddress(byte ip[])
@@ -1451,17 +1436,11 @@ bool Platform::FlushMessages()
 void Platform::Spin()
 {
 	if (!active)
-		return;
-
-	// Check if any files are supposed to be closed
-	for (size_t i = 0; i < MAX_FILES; i++)
 	{
-		if (files[i]->closeRequested)
-		{
-			// We cannot do this in ISRs, so do it here
-			files[i]->Close();
-		}
+		return;
 	}
+
+	massStorage->Spin();
 
 	// Try to flush messages to serial ports
 	(void)FlushMessages();
@@ -1616,9 +1595,18 @@ void Platform::Spin()
 	if (now - lastFanCheckTime >= FanCheckInterval)
 	{
 		lastFanCheckTime = now;
+		bool thermostaticFanRunning = false;
 		for (size_t fan = 0; fan < NUM_FANS; ++fan)
 		{
-			fans[fan].Check();
+			if (fans[fan].Check())
+			{
+				thermostaticFanRunning = true;
+			}
+		}
+
+		if (deferredPowerDown && !thermostaticFanRunning)
+		{
+			AtxPowerOff(false);
 		}
 
 		// Check whether it is time to report any faults (do this after checking fans in case driver cooling fans are turned on)
@@ -1840,6 +1828,7 @@ float Platform::AdcReadingToCpuTemperature(uint32_t adcVal) const
 // Perform a software reset. 'stk' points to the program counter on the stack if the cause is an exception, otherwise it is nullptr.
 void Platform::SoftwareReset(uint16_t reason, const uint32_t *stk)
 {
+	cpu_irq_disable();							// disable interrupts before we call any flash functions. We don't enable them again.
 	wdt_restart(WDT);							// kick the watchdog
 
 #if SAM4E || SAME70
@@ -1883,7 +1872,7 @@ void Platform::SoftwareReset(uint16_t reason, const uint32_t *stk)
 		size_t slot = SoftwareResetData::numberOfSlots;
 		SoftwareResetData srdBuf[SoftwareResetData::numberOfSlots];
 
-#if SAM4E || SAM4S
+#if SAM4E || SAM4S || SAME70
 		if (flash_read_user_signature(reinterpret_cast<uint32_t*>(srdBuf), sizeof(srdBuf)/sizeof(uint32_t)) == FLASH_RC_OK)
 #elif SAM3XA
 		DueFlashStorage::read(SoftwareResetData::nvAddress, srdBuf, sizeof(srdBuf));
@@ -1900,7 +1889,7 @@ void Platform::SoftwareReset(uint16_t reason, const uint32_t *stk)
 		if (slot == SoftwareResetData::numberOfSlots)
 		{
 			// No free slots, so erase the area
-#if SAM4E || SAM4S
+#if SAM4E || SAM4S || SAME70
 			flash_erase_user_signature();
 #endif
 			memset(srdBuf, 0xFF, sizeof(srdBuf));
@@ -1923,7 +1912,7 @@ void Platform::SoftwareReset(uint16_t reason, const uint32_t *stk)
 		}
 
 		// Save diagnostics data to Flash
-#if SAM4E || SAM4S
+#if SAM4E || SAM4S || SAME70
 		flash_write_user_signature(srdBuf, sizeof(srdBuf)/sizeof(uint32_t));
 #else
 		DueFlashStorage::write(SoftwareResetData::nvAddress, srdBuf, sizeof(srdBuf));
@@ -1948,7 +1937,7 @@ void NETWORK_TC_HANDLER()
 
 #endif
 
-static void FanInterrupt(void*)
+static void FanInterrupt(CallbackParameter)
 {
 	++fanInterruptCount;
 	if (fanInterruptCount == fanMaxInterruptCount)
@@ -1969,7 +1958,7 @@ void Platform::InitialiseInterrupts()
 	// Set the tick interrupt to the highest priority. We need to to monitor the heaters and kick the watchdog.
 	NVIC_SetPriority(SysTick_IRQn, NvicPrioritySystick);		// set priority for tick interrupts
 
-#if SAM4E || SAM4S
+#if SAM4E || SAM4S || SAME70
 	NVIC_SetPriority(UART0_IRQn, NvicPriorityPanelDueUart);		// set priority for UART interrupt
 	NVIC_SetPriority(UART1_IRQn, NvicPriorityWiFiUart);			// set priority for WiFi UART interrupt
 #else
@@ -1982,7 +1971,10 @@ void Platform::InitialiseInterrupts()
 
 	// Timer interrupt for stepper motors
 	// The clock rate we use is a compromise. Too fast and the 64-bit square roots take a long time to execute. Too slow and we lose resolution.
-	// We choose a clock divisor of 128 which gives 1.524us resolution on the Duet 085 (84MHz clock) and 0.9375us resolution on the Duet WiFi.
+	// We choose a clock divisor of 128 which gives
+	// 1.524us resolution on the Duet 085 (84MHz clock)
+	// 1.067us resolution on the Duet WiFi (120MHz clock)
+	// 0.853us resolution on the SAM E70 (150MHz clock)
 	pmc_set_writeprotect(false);
 	pmc_enable_periph_clk((uint32_t) STEP_TC_IRQN);
 	tc_init(STEP_TC, STEP_TC_CHAN, TC_CMR_WAVE | TC_CMR_WAVSEL_UP | TC_CMR_TCCLKS_TIMER_CLOCK4 | TC_CMR_EEVT_XC0);	// must set TC_CMR_EEVT nonzero to get RB compare interrupts
@@ -1993,10 +1985,16 @@ void Platform::InitialiseInterrupts()
 	NVIC_EnableIRQ(STEP_TC_IRQN);
 
 #if HAS_LWIP_NETWORKING
-	// Timer interrupt to keep the networking timers running (called at 16Hz)
 	pmc_enable_periph_clk((uint32_t) NETWORK_TC_IRQN);
+# if SAME70
+	// Timer interrupt to keep the networking timers running (called at 18Hz)
+	tc_init(NETWORK_TC, NETWORK_TC_CHAN, TC_CMR_WAVE | TC_CMR_WAVSEL_UP_RC | TC_CMR_TCCLKS_TIMER_CLOCK4);
+	const uint32_t rc = (VARIANT_MCK/128)/18;				// 128 because we selected TIMER_CLOCK4 above (16-bit counter)
+# else
+	// Timer interrupt to keep the networking timers running (called at 16Hz)
 	tc_init(NETWORK_TC, NETWORK_TC_CHAN, TC_CMR_WAVE | TC_CMR_WAVSEL_UP_RC | TC_CMR_TCCLKS_TIMER_CLOCK2);
-	const uint32_t rc = (VARIANT_MCK/8)/16;					// 8 because we selected TIMER_CLOCK2 above
+	const uint32_t rc = (VARIANT_MCK/8)/16;					// 8 because we selected TIMER_CLOCK2 above (32-bit counter)
+# endif
 	tc_write_ra(NETWORK_TC, NETWORK_TC_CHAN, rc/2);			// 50% high, 50% low
 	tc_write_rc(NETWORK_TC, NETWORK_TC_CHAN, rc);
 	tc_start(NETWORK_TC, NETWORK_TC_CHAN);
@@ -2006,7 +2004,11 @@ void Platform::InitialiseInterrupts()
 	NVIC_EnableIRQ(NETWORK_TC_IRQN);
 
 	// Set up the Ethernet interface priority here to because we have access to the priority definitions
+# if SAME70
+	NVIC_SetPriority(GMAC_IRQn, NvicPriorityEthernet);
+# else
 	NVIC_SetPriority(EMAC_IRQn, NvicPriorityEthernet);
+# endif
 #endif
 
 	NVIC_SetPriority(PIOA_IRQn, NvicPriorityPins);
@@ -2019,7 +2021,9 @@ void Platform::InitialiseInterrupts()
 	NVIC_SetPriority(PIOE_IRQn, NvicPriorityPins);
 #endif
 
-#if SAM4E || SAM4S
+#if SAME70
+	NVIC_SetPriority(USBHS_IRQn, NvicPriorityUSB);
+#elif SAM4E || SAM4S
 	NVIC_SetPriority(UDP_IRQn, NvicPriorityUSB);
 #elif SAM3XA
 	NVIC_SetPriority(UOTGHS_IRQn, NvicPriorityUSB);
@@ -2027,7 +2031,9 @@ void Platform::InitialiseInterrupts()
 # error
 #endif
 
+#if !SAME70
 	NVIC_SetPriority(TWI1_IRQn, NvicPriorityTwi);
+#endif
 
 	// Interrupt for 4-pin PWM fan sense line
 	if (coolingFanRpmPin != NoPin)
@@ -2066,11 +2072,11 @@ void Platform::InitialiseInterrupts()
 void Platform::PrintUniqueId(MessageType mtype)
 {
 	uint32_t idBuf[5];
+	const irqflags_t flags = cpu_irq_save();
 	DisableCache();
-	cpu_irq_disable();
 	const uint32_t rc = flash_read_unique_id(idBuf, 4);
-	cpu_irq_enable();
 	EnableCache();
+	cpu_irq_restore(flags);
 	if (rc == 0)
 	{
 		// Put the checksum at the end
@@ -2156,13 +2162,15 @@ void Platform::Diagnostics(MessageType mtype)
 
 	Message(mtype, "\n");
 
-#if SAM4E || SAM4S
+#if SAM4E || SAM4S || SAME70
 	PrintUniqueId(mtype);
 #endif
 
 	// Print memory stats and error codes to USB and copy them to the current webserver reply
 	const char *ramstart =
-#if SAM4E || SAM4S
+#if SAME70
+			(char *) 0x20400000;
+#elif SAM4E || SAM4S
 			(char *) 0x20000000;
 #elif SAM3XA
 			(char *) 0x20070000;
@@ -2201,11 +2209,11 @@ void Platform::Diagnostics(MessageType mtype)
 #if SAM4E || SAM4S || SAME70
 		// Work around bug in ASF flash library: flash_read_user_signature calls a RAMFUNC without disabling interrupts first.
 		// This caused a crash (watchdog timeout) sometimes if we run M122 while a print is in progress
-		DisableCache();
 		const irqflags_t flags = cpu_irq_save();
+		DisableCache();
 		const uint32_t rc = flash_read_user_signature(reinterpret_cast<uint32_t*>(srdBuf), sizeof(srdBuf)/sizeof(uint32_t));
-		cpu_irq_restore(flags);
 		EnableCache();
+		cpu_irq_restore(flags);
 
 		if (rc == FLASH_RC_OK)
 #else
@@ -2242,7 +2250,7 @@ void Platform::Diagnostics(MessageType mtype)
 				scratchString.Clear();
 				for (size_t i = 0; i < ARRAY_SIZE(srdBuf[slot].stack); ++i)
 				{
-					scratchString.catf(" %08" PRIx32 "", srdBuf[slot].stack[i]);
+					scratchString.catf(" %08" PRIx32, srdBuf[slot].stack[i]);
 				}
 				MessageF(mtype, "Stack:%s\n", scratchString.Pointer());
 			}
@@ -2257,21 +2265,13 @@ void Platform::Diagnostics(MessageType mtype)
 	MessageF(mtype, "Error status: %" PRIu32 "\n", errorCodeBits);
 
 	// Show the number of free entries in the file table
-	unsigned int numFreeFiles = 0;
-	for (size_t i = 0; i < MAX_FILES; i++)
-	{
-		if (!files[i]->inUse)
-		{
-			++numFreeFiles;
-		}
-	}
-	MessageF(mtype, "Free file entries: %u\n", numFreeFiles);
+	MessageF(mtype, "Free file entries: %u\n", massStorage->GetNumFreeFiles());
 
 	// Show the HSMCI CD pin and speed
 #if HAS_HIGH_SPEED_SD
-	MessageF(mtype, "SD card 0 %s, interface speed: %.1fMBytes/sec\n", (sd_mmc_card_detected(0) ? "detected" : "not detected"), (double)((float)hsmci_get_speed() * 0.000001));
+	MessageF(mtype, "SD card 0 %s, interface speed: %.1fMBytes/sec\n", (massStorage->IsCardDetected(0) ? "detected" : "not detected"), (double)((float)hsmci_get_speed() * 0.000001));
 #else
-	MessageF(mtype, "SD card 0 %s\n", (sd_mmc_card_detected(0) ? "detected" : "not detected"));
+	MessageF(mtype, "SD card 0 %s\n", (massStorage->IsCardDetected(0) ? "detected" : "not detected"));
 #endif
 
 	// Show the longest SD card write time
@@ -2297,18 +2297,9 @@ void Platform::Diagnostics(MessageType mtype)
 	// Show the motor stall status
 	for (size_t drive = 0; drive < numSmartDrivers; ++drive)
 	{
-		const uint32_t stat = SmartDrivers::GetLiveStatus(drive);
-		MessageF(mtype, "Driver %d:%s%s%s%s%s%s\n", drive,
-						(stat & TMC_RR_SG) ? " stalled" : "",
-						(stat & TMC_RR_OT) ? " temperature-shutdown!"
-							: (stat & TMC_RR_OTPW) ? " temperature-warning" : "",
-						(stat & TMC_RR_S2G) ? " short-to-ground" : "",
-						((stat & TMC_RR_OLA) && !(stat & TMC_RR_STST)) ? " open-load-A" : "",
-						((stat & TMC_RR_OLB) && !(stat & TMC_RR_STST)) ? " open-load-B" : "",
-						(stat & TMC_RR_STST) ? " standstill"
-							: (stat & (TMC_RR_SG | TMC_RR_OT | TMC_RR_OTPW | TMC_RR_S2G | TMC_RR_OLA | TMC_RR_OLB))
-							  ? "" : " ok"
-				);
+		String<100> driverStatus;
+		SmartDrivers::AppendDriverStatus(drive, driverStatus.GetRef());
+		MessageF(mtype, "Driver %u:%s\n", drive, driverStatus.c_str());
 	}
 #endif
 
@@ -2372,7 +2363,7 @@ bool Platform::DiagnosticTest(GCodeBuffer& gb, StringRef& reply, int d)
 			bool testFailed = false;
 
 			// Check the SD card detect and speed
-			if (!sd_mmc_card_detected(0))
+			if (!massStorage->IsCardDetected(0))
 			{
 				Message(AddError(mtype), "SD card 0 not detected\n");
 				testFailed = true;
@@ -2517,7 +2508,11 @@ bool Platform::DiagnosticTest(GCodeBuffer& gb, StringRef& reply, int d)
 
 	case (int)DiagnosticTestType::BusFault:
 		// Read from the "Undefined (Abort)" area
-#if SAM4E || SAM4S || SAME70
+#if SAME70
+		// FIXME: The SAME70 provides an MPU, maybe we should configure it as well?
+		// I guess this can wait until we have the RTOS working though.
+		Message(WarningMessage, "There is no abort area on the SAME70");
+#elif SAM4E || SAM4S
 		(void)RepRap::ReadDword(reinterpret_cast<const char*>(0x20800000));
 #elif SAM3XA
 		(void)RepRap::ReadDword(reinterpret_cast<const char*>(0x20200000));
@@ -2630,11 +2625,14 @@ void Platform::DriverCoolingFansOn(uint32_t driverChannelsMonitored)
 #endif
 
 // Power is a fraction in [0,1]
-void Platform::SetHeater(size_t heater, float power)
+void Platform::SetHeater(size_t heater, float power, PwmFrequency freq)
 {
 	if (heatOnPins[heater] != NoPin)
 	{
-		const uint16_t freq = (reprap.GetHeat().IsBedOrChamberHeater(heater)) ? SlowHeaterPwmFreq : NormalHeaterPwmFreq;
+		if (freq == 0)
+		{
+			freq = (reprap.GetHeat().IsBedOrChamberHeater(heater)) ? SlowHeaterPwmFreq : NormalHeaterPwmFreq;	// use sefault PWM frequency
+		}
 		const float pwm =
 #if ACTIVE_LOW_HEAT_ON
 			1.0 - power;
@@ -2649,18 +2647,24 @@ void Platform::UpdateConfiguredHeaters()
 {
 	configuredHeaters = 0;
 
-	// Check bed heater
-	const int8_t bedHeater = reprap.GetHeat().GetBedHeater();
-	if (bedHeater >= 0)
+	// Check bed heaters
+	for (size_t i = 0; i < NumBedHeaters; i++)
 	{
-		configuredHeaters |= (1 << bedHeater);
+		const int8_t bedHeater = reprap.GetHeat().GetBedHeater(i);
+		if (bedHeater >= 0)
+		{
+			configuredHeaters |= (1 << bedHeater);
+		}
 	}
 
-	// Check chamber heater
-	const int8_t chamberHeater = reprap.GetHeat().GetChamberHeater();
-	if (chamberHeater >= 0)
+	// Check chamber heaters
+	for (size_t i = 0; i < NumChamberHeaters; i++)
 	{
-		configuredHeaters |= (1 << chamberHeater);
+		const int8_t chamberHeater = reprap.GetHeat().GetChamberHeater(i);
+		if (chamberHeater >= 0)
+		{
+			configuredHeaters |= (1 << chamberHeater);
+		}
 	}
 
 	// Check tool heaters
@@ -2832,9 +2836,12 @@ bool Platform::WriteAxisLimits(FileStore *f, AxesBitmap axesProbed, const float 
 	}
 
 	scratchString.printf("M208 S%d", sParam);
-	for (size_t axis = 0; axis < MaxAxes && IsBitSet(axesProbed, axis); ++axis)
+	for (size_t axis = 0; axis < MaxAxes; ++axis)
 	{
-		scratchString.catf(" %c%.2f", reprap.GetGCodes().GetAxisLetters()[axis], (double)limits[axis]);
+		if (IsBitSet(axesProbed, axis))
+		{
+			scratchString.catf(" %c%.2f", reprap.GetGCodes().GetAxisLetters()[axis], (double)limits[axis]);
+		}
 	}
 	scratchString.cat('\n');
 	return f->Write(scratchString.Pointer());
@@ -3406,8 +3413,23 @@ void Platform::InitFans()
 		// Fan 1 on the Duet 0.8.5 shares its control pin with heater 6. Set it full on to make sure the heater (if present) is off.
 		fans[1].SetValue(1.0);												// set it full on
 #else
-		// Set fan 1 to be thermostatic by default, monitoring all heaters except the default bed heater
-		fans[1].SetHeatersMonitored(((1 << Heaters) - 1) & ~(1 << DefaultBedHeater));
+		// Set fan 1 to be thermostatic by default, monitoring all heaters except the default bed and chamber heaters
+		Fan::HeatersMonitoredBitmap bedAndChamberHeaterMask = 0;
+		for (uint8_t bedHeater : DefaultBedHeaters)
+		{
+			if (bedHeater >= 0)
+			{
+				SetBit(bedAndChamberHeaterMask, bedHeater);
+			}
+		}
+		for (uint8_t chamberHeater : DefaultChamberHeaters)
+		{
+			if (chamberHeater >= 0)
+			{
+				SetBit(bedAndChamberHeaterMask, chamberHeater);
+			}
+		}
+		fans[1].SetHeatersMonitored(LowestNBits<Fan::HeatersMonitoredBitmap>(Heaters) & ~bedAndChamberHeaterMask);
 		fans[1].SetValue(1.0);												// set it full on
 #endif
 	}
@@ -3440,32 +3462,6 @@ void Platform::GetEndStopConfiguration(size_t axis, EndStopPosition& esType, End
 }
 
 //-----------------------------------------------------------------------------------------------------
-
-FileStore* Platform::GetFileStore(const char* directory, const char* fileName, OpenMode mode)
-{
-	if (!fileStructureInitialised)
-	{
-		return nullptr;
-	}
-
-	for (size_t i = 0; i < MAX_FILES; i++)
-	{
-		if (!files[i]->inUse)
-		{
-			if (files[i]->Open(directory, fileName, mode))
-			{
-				files[i]->inUse = true;
-				return files[i];
-			}
-			else
-			{
-				return nullptr;
-			}
-		}
-	}
-	Message(ErrorMessage, "Max open file count exceeded.\n");
-	return nullptr;
-}
 
 void Platform::AppendAuxReply(const char *msg)
 {
@@ -3748,16 +3744,14 @@ void Platform::Message(MessageType type, const char *message)
 // sParam = 3 As for 2 but also display a Cancel button
 void Platform::SendAlert(MessageType mt, const char *message, const char *title, int sParam, float tParam, AxesBitmap controls)
 {
-	switch (mt)
+	if ((mt & (HttpMessage | LcdMessage)) != 0)
 	{
-	case HttpMessage:
-	case LcdMessage:
-	case GenericMessage:
-		// Make the RepRap class cache this message until it's picked up by the HTTP clients and/or PanelDue
-		reprap.SetAlert(message, title, sParam, tParam, controls);
-		break;
+		reprap.SetAlert(message, title, sParam, tParam, controls);		// make the RepRap class cache this message until it's picked up by the HTTP clients and/or PanelDue
+	}
 
-	default:
+	mt = (MessageType)(mt & (UsbMessage | TelnetMessage));
+	if (mt != 0)
+	{
 		if (strlen(title) > 0)
 		{
 			MessageF(mt, "- %s -\n", title);
@@ -3771,7 +3765,6 @@ void Platform::SendAlert(MessageType mt, const char *message, const char *title,
 		{
 			Message(mt, "Send M292 to continue or M292 P1 to cancel\n");
 		}
-		break;
 	}
 }
 
@@ -3831,15 +3824,26 @@ bool Platform::AtxPower() const
 	return IoPort::ReadPin(ATX_POWER_PIN);
 }
 
-void Platform::SetAtxPower(bool on)
+void Platform::AtxPowerOn()
 {
-	if (!on && logger != nullptr)
+	deferredPowerDown = false;
+	IoPort::WriteDigital(ATX_POWER_PIN, true);
+}
+
+void Platform::AtxPowerOff(bool defer)
+{
+	deferredPowerDown = defer;
+	if (!defer)
 	{
-		logger->LogMessage(realTime, "Power off commanded");
-		logger->Flush(true);
-		// We don't call logger->Stop() here because we don't now whether turning off the power will work
+		deferredPowerDown = false;
+		if (logger != nullptr)
+		{
+			logger->LogMessage(realTime, "Power off commanded");
+			logger->Flush(true);
+			// We don't call logger->Stop() here because we don't now whether turning off the power will work
+		}
+		IoPort::WriteDigital(ATX_POWER_PIN, false);
 	}
-	IoPort::WriteDigital(ATX_POWER_PIN, on);
 }
 
 void Platform::SetPressureAdvance(size_t extruder, float factor)
@@ -3926,7 +3930,9 @@ void Platform::SetBoardType(BoardType bt)
 {
 	if (bt == BoardType::Auto)
 	{
-#if defined(DUET_NG) && defined(DUET_WIFI)
+#if defined(__SAME70Q21__)
+		board = BoardType::SAME70_TEST;
+#elif defined(DUET_NG) && defined(DUET_WIFI)
 		board = BoardType::DuetWiFi_10;
 #elif defined(DUET_NG) && defined(DUET_ETHERNET)
 		board = BoardType::DuetEthernet_10;
@@ -3965,7 +3971,9 @@ const char* Platform::GetElectronicsString() const
 {
 	switch (board)
 	{
-#if defined(DUET_NG) && defined(DUET_WIFI)
+#if defined(__SAME70Q21__)
+	case BoardType::SAME70_TEST:			return "SAM E70 prototype 1";
+#elif defined(DUET_NG) && defined(DUET_WIFI)
 	case BoardType::DuetWiFi_10:			return "Duet WiFi 1.0";
 #elif defined(DUET_NG) && defined(DUET_ETHERNET)
 	case BoardType::DuetEthernet_10:		return "Duet Ethernet 1.0";
@@ -3991,7 +3999,9 @@ const char* Platform::GetBoardString() const
 {
 	switch (board)
 	{
-#if defined(DUET_NG) && defined(DUET_WIFI)
+#if defined(__SAME70Q21__)
+	case BoardType::SAME70_TEST:			return "same70prototype1";
+#elif defined(DUET_NG) && defined(DUET_WIFI)
 	case BoardType::DuetWiFi_10:			return "duetwifi10";
 #elif defined(DUET_NG) && defined(DUET_ETHERNET)
 	case BoardType::DuetEthernet_10:		return "duetethernet10";
