@@ -130,8 +130,11 @@ public:
 	void PrepareCartesianAxis(const DDA& dda, const PrepParams& params) __attribute__ ((hot));
 	void PrepareDeltaAxis(const DDA& dda, const PrepParams& params) __attribute__ ((hot));
 	void PrepareExtruder(const DDA& dda, const PrepParams& params, bool doCompensation) __attribute__ ((hot));
-#ifdef POLYPRINTER
+
+#ifdef POLYPRINTER_PrepareExtruderWithLinearAdvance
 	void PrepareExtruderWithLinearAdvance(const DDA& dda, const PrepParams& params, bool doCompensation) __attribute__ ((hot));
+#endif
+#ifdef POLYPRINTER
 	void PrepareExtruderWithVibration(const DDA& dda, const PrepParams& params, const GCodes::PolyZHomeParams& zHomingParams ) __attribute__ ((hot));
 #endif
 	void ReduceSpeed(const DDA& dda, uint32_t inverseSpeedFactor);

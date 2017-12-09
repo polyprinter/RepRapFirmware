@@ -2231,7 +2231,11 @@ void DDA::Prepare(uint8_t simMode)
 					}
 					else
 					{
+#ifdef POLYPRINTER_PrepareExtruderWithLinearAdvance
 						pdm->PrepareExtruderWithLinearAdvance(*this, params, usePressureAdvance);
+#else
+						pdm->PrepareExtruder(*this, params, usePressureAdvance);
+#endif
 					}
 #else
 					dm.PrepareExtruder(*this, params, usePressureAdvance);

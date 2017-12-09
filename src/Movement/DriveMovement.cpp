@@ -177,7 +177,7 @@ void DriveMovement::PrepareExtruder(const DDA& dda, const PrepParams& params, bo
 
 	// Calculate the pressure advance parameter
 	const float compensationTime_SEC_or_MMpMMpSEC = (doCompensation && dv > 0.0) ? reprap.GetPlatform().GetPressureAdvance(drive - reprap.GetGCodes().GetTotalAxes()) : 0.0;
-	const uint32_t compensationClocks = lrintf(compensationTime_SEC_or_MMpMMpSEC * DDA::stepClockRate);
+	//const uint32_t compensationClocks = lrintf(compensationTime_SEC_or_MMpMMpSEC * DDA::stepClockRate);
 	mp.cart.accelCompensationClocks = roundU32(compensationTime_SEC_or_MMpMMpSEC * (float)DDA::stepClockRate * params.compFactor);
 
 	// Calculate the net total step count to allow for compensation. It may be negative.
@@ -199,10 +199,10 @@ void DriveMovement::PrepareExtruder(const DDA& dda, const PrepParams& params, bo
 
 	// modify the clock count for cruise speed zero intercept by the time taken at cruise to travel the compensation distance added
 	// - we are adding accelCompensationDistance_MM which takes accelCompensationDistance_MM/dda.topSpeed seconds
-	const float compensationDistanceTimeAtTopSpeed_SEC = accelCompensationDistance_vect_MM / dda.topSpeed;  // vectorially
-	int32_t compensationClocksDeltaToCruiseInterceptClocks = compensationDistanceTimeAtTopSpeed_SEC * DDA::stepClockRate;
+	//const float compensationDistanceTimeAtTopSpeed_SEC = accelCompensationDistance_vect_MM / dda.topSpeed;  // vectorially
+	//int32_t compensationClocksDeltaToCruiseInterceptClocks = compensationDistanceTimeAtTopSpeed_SEC * DDA::stepClockRate;
 	// since more advance means more steps, the intercept number becomes smaller when there is advance
-	accelClocksMinusAccelDistanceTimesCdivTopSpeed = (int32_t)params.accelClocksMinusAccelDistanceTimesCdivTopSpeed - compensationClocksDeltaToCruiseInterceptClocks;
+	//accelClocksMinusAccelDistanceTimesCdivTopSpeed = (int32_t)params.accelClocksMinusAccelDistanceTimesCdivTopSpeed - compensationClocksDeltaToCruiseInterceptClocks;
 
 	// Calculate the deceleration and reverse phase parameters
 	// First check whether there is any deceleration at all, otherwise we may get strange results because of rounding errors
@@ -220,7 +220,7 @@ void DriveMovement::PrepareExtruder(const DDA& dda, const PrepParams& params, bo
 		const int32_t initialDecelSpeedTimesCdivA = (int32_t)params.topSpeedTimesCdivA - (int32_t)mp.cart.compensationClocks;	// signed because it may be negative and we square it
 		const uint64_t initialDecelSpeedTimesCdivASquared = isquare64(initialDecelSpeedTimesCdivA);
 		twoDistanceToStopTimesCsquaredDivA =
-			initialDecelSpeedTimesCdivASquared + llrintf(((params.decelStartDistance + accelCompensationDistance) * (DDA::stepClockRateSquared * 2))/dda.acceleration);
+			initialDecelSpeedTimesCdivASquared + llrintf(((params.decelStartDistance + accelCompensationDistance_vect_MM) * (DDA::stepClockRateSquared * 2))/dda.acceleration);
 
 		// Calculate the move distance to the point of zero speed, where reverse motion starts
 		// the "speed" at the beginning of deceleration is actually instantaneously lower than it was at cruise.
@@ -260,7 +260,7 @@ void DriveMovement::PrepareExtruder(const DDA& dda, const PrepParams& params, bo
 	}
 }
 
-#ifdef POLYPRINTER
+#ifdef POLYPRINTER_PrepareExtruderWithLinearAdvance
 // TODO: POLYPRINTER - make sure that any improvements, above, are incorporated e.g. from v1.10 or so. Possibly, drop all this custom code if it does nothing.
 // Prepare this DM for an extruder move with linear Advance
 void DriveMovement::PrepareExtruderWithLinearAdvance(const DDA& dda, const PrepParams& params, bool doCompensation)
@@ -378,7 +378,9 @@ void DriveMovement::PrepareExtruderWithLinearAdvance(const DDA& dda, const PrepP
 		}
 	}
 }
+#endif
 
+#ifdef POLYPRINTER
 void DriveMovement::PrepareExtruderWithVibration(const DDA& dda, const PrepParams& params, const GCodes::PolyZHomeParams& zHomingParams )
 {
 	// calculate how many total steps we will need for the overall time the move should take
