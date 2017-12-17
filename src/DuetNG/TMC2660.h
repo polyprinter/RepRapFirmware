@@ -15,7 +15,7 @@
 
 // The Platform class needs to know which USART we are using when assigning interrupt priorities
 #define USART_TMC_DRV			USART1
-#define USART_TMC_DRV_IRQn		USART1_IRQn
+#define SERIAL_TMC_DRV_IRQn		USART1_IRQn
 #define ID_USART_TMC_DRV		ID_USART1
 #define USART_TMC_DRV_Handler	USART1_Handler
 
@@ -38,9 +38,10 @@ namespace SmartDrivers
 	void EnableDrive(size_t drive, bool en);
 	uint32_t GetLiveStatus(size_t drive);
 	uint32_t GetAccumulatedStatus(size_t drive, uint32_t bitsToKeep);
-	bool SetMicrostepping(size_t drive, int microsteps, int mode);
+	bool SetMicrostepping(size_t drive, unsigned int microsteps, int mode);
 	unsigned int GetMicrostepping(size_t drive, int mode, bool& interpolation);
-	void SetDriversPowered(bool powered);
+	void Spin(bool powered);
+	void TurnDriversOff();
 	void SetStallThreshold(size_t drive, int sgThreshold);
 	void SetStallFilter(size_t drive, bool sgFilter);
 	void SetStallMinimumStepsPerSecond(size_t drive, unsigned int stepsPerSecond);

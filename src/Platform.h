@@ -53,6 +53,23 @@ Licence: GPL
 constexpr bool FORWARDS = true;
 constexpr bool BACKWARDS = !FORWARDS;
 
+// Define the number of ADC filters and the indices of the extra ones
+#if HAS_VREF_MONITOR
+constexpr size_t VrefFilterIndex = Heaters;
+constexpr size_t VssaFilterIndex = Heaters + 1;
+# if HAS_CPU_TEMP_SENSOR
+constexpr size_t NumAdcFilters = Heaters + 3;
+constexpr size_t CpuTempFilterIndex = Heaters + 2;
+# else
+constexpr size_t NumAdcFilters = Heaters + 2;
+# endif
+#elif HAS_CPU_TEMP_SENSOR
+constexpr size_t NumAdcFilters = Heaters + 1;
+constexpr size_t CpuTempFilterIndex = Heaters;
+#else
+constexpr size_t NumAdcFilters = Heaters;
+#endif
+
 /**************************************************************************************************/
 
 #if SUPPORT_INKJET
@@ -159,7 +176,8 @@ enum class SoftwareResetReason : uint16_t
 	otherFault = 0x70,
 	inAuxOutput = 0x0800,			// this bit is or'ed in if we were in aux output at the time
 	inLwipSpin = 0x2000,			// we got stuck in a call to LWIP for too long
-	inUsbOutput = 0x4000			// this bit is or'ed in if we were in USB output at the time
+	inUsbOutput = 0x4000,			// this bit is or'ed in if we were in USB output at the time
+	deliberate = 0x8000				// this but it or'ed in if we deliberately caused a fault
 };
 
 // Enumeration to describe various tests we do in response to the M122 command
@@ -444,7 +462,7 @@ public:
 	void SetIdleCurrentFactor(float f);
 	float GetIdleCurrentFactor() const
 		{ return idleCurrentFactor; }
-	bool SetDriverMicrostepping(size_t driver, int microsteps, int mode);
+	bool SetDriverMicrostepping(size_t driver, unsigned int microsteps, int mode);
 	unsigned int GetDriverMicrostepping(size_t drive, int mode, bool& interpolation) const;
 	bool SetMicrostepping(size_t drive, int microsteps, int mode);
 	unsigned int GetMicrostepping(size_t drive, int mode, bool& interpolation) const;
@@ -540,10 +558,10 @@ public:
 	// Heat and temperature
 	float GetZProbeTemperature();							// Get our best estimate of the Z probe temperature
 
-	volatile ThermistorAveragingFilter& GetThermistorFilter(size_t channel)
-	pre(channel < ARRAY_SIZE(thermistorFilters))
+	volatile ThermistorAveragingFilter& GetAdcFilter(size_t channel)
+	pre(channel < ARRAY_SIZE(adcFilters))
 	{
-		return thermistorFilters[channel];
+		return adcFilters[channel];
 	}
 
 	void SetHeater(size_t heater, float power, PwmFrequency freq = 0)	// power is a fraction in [0,1]
@@ -605,6 +623,9 @@ public:
 #if HAS_SMART_DRIVERS
 	float GetTmcDriversTemperature(unsigned int board) const;
 	void DriverCoolingFansOn(uint32_t driverChannelsMonitored);
+#endif
+
+#if HAS_STALL_DETECT
 	bool ConfigureStallDetection(GCodeBuffer& gb, StringRef& reply);
 #endif
 
@@ -655,6 +676,8 @@ private:
 
 #if HAS_SMART_DRIVERS
 	void ReportDrivers(DriversBitmap whichDrivers, const char* text, bool& reported);
+#endif
+#if HAS_STALL_DETECT
 	bool AnyMotorStalled(size_t drive) const pre(drive < DRIVES);
 #endif
 
@@ -674,12 +697,12 @@ private:
 	// directly from/to flash memory.
 	struct SoftwareResetData
 	{
-		static const uint16_t versionValue = 7;		// increment this whenever this struct changes
+		static const uint16_t versionValue = 8;		// increment this whenever this struct changes
 		static const uint16_t magicValue = 0x7D00 | versionValue;	// value we use to recognise that all the flash data has been written
 #if SAM3XA
 		static const uint32_t nvAddress = 0;		// must be 4-byte aligned
 #endif
-		static const size_t numberOfSlots = 5;		// number of storage slots used to implement wear levelling - must fit in 512 bytes
+		static const size_t numberOfSlots = 4;		// number of storage slots used to implement wear levelling - must fit in 512 bytes
 
 		uint16_t magic;								// the magic number, including the version
 		uint16_t resetReason;						// this records why we did a software reset, for diagnostic purposes
@@ -689,7 +712,8 @@ private:
 		uint32_t icsr;								// interrupt control and state register
 		uint32_t bfar;								// bus fault address register
 		uint32_t sp;								// stack pointer
-		uint32_t stack[18];							// stack when the exception occurred, with the program counter at the bottom
+		time_t when;								// value of the RTC when the software reset occurred
+		uint32_t stack[24];							// stack when the exception occurred, with the program counter at the bottom
 
 		bool isVacant() const						// return true if this struct can be written without erasing it first
 		{
@@ -707,7 +731,7 @@ private:
 	};
 
 #if SAM4E || SAM4S || SAME70
-	static_assert(SoftwareResetData::numberOfSlots * sizeof(SoftwareResetData) <= 512, "Can't fit software reset data in SAM4 user signature area");
+	static_assert(SoftwareResetData::numberOfSlots * sizeof(SoftwareResetData) <= 512, "Can't fit software reset data in user signature area");
 #else
 	static_assert(SoftwareResetData::numberOfSlots * sizeof(SoftwareResetData) <= FLASH_DATA_LENGTH, "NVData too large");
 #endif
@@ -748,7 +772,6 @@ private:
 	void GetStackUsage(uint32_t* currentStack, uint32_t* maxStack, uint32_t* neverUsed) const;
 
 	// DRIVES
-
 	void SetDriverCurrent(size_t driver, float current, int code);
 	void UpdateMotorCurrent(size_t driver);
 	void SetDriverDirection(uint8_t driver, bool direction)
@@ -781,9 +804,7 @@ private:
 
 #if HAS_SMART_DRIVERS
 	size_t numSmartDrivers;						// the number of TMC2660 drivers we have, the remaining are simple enable/step/dir drivers
-	DriversBitmap logOnStallDrivers, pauseOnStallDrivers, rehomeOnStallDrivers;
-	DriversBitmap temperatureShutdownDrivers, temperatureWarningDrivers, shortToGroundDrivers, openLoadDrivers, stalledDrivers;
-	DriversBitmap stalledDriversToLog, stalledDriversToPause, stalledDriversToRehome;
+	DriversBitmap temperatureShutdownDrivers, temperatureWarningDrivers, shortToGroundDrivers, openLoadDrivers;
 	uint8_t nextDriveToPoll;
 	bool driversPowered;
 	bool onBoardDriversFanRunning;						// true if a fan is running to cool the on-board drivers
@@ -792,11 +813,16 @@ private:
 	uint32_t offBoardDriversFanStartMillis;				// how many times we have suppressed a temperature warning
 #endif
 
+#if HAS_STALL_DETECT
+	DriversBitmap logOnStallDrivers, pauseOnStallDrivers, rehomeOnStallDrivers;
+	DriversBitmap stalledDrivers, stalledDriversToLog, stalledDriversToPause, stalledDriversToRehome;
+#endif
+
 #if defined(DUET_06_085)
 	// Digipots
 	MCP4461 mcpDuet;
 	MCP4461 mcpExpansion;
-	Pin potWipes[8];								// we have only 8 digipots, on the Duet 0.8.5 we use the DAC for the 9th
+	Pin potWipes[8];												// we have only 8 digipots, on the Duet 0.8.5 we use the DAC for the 9th
 	float senseResistor;
 	float maxStepperDigipotVoltage;
 	float stepperDacVoltageRange, stepperDacVoltageOffset;
@@ -807,7 +833,6 @@ private:
 #endif
 
 	// Z probe
-
 	Pin zProbePin;
 	Pin zProbeModulationPin;
 	ZProbeProgrammer zProbeProg;
@@ -815,11 +840,9 @@ private:
 	volatile ZProbeAveragingFilter zProbeOffFilter;					// Z probe readings we took with the IR turned off
 
 	// Thermistors and temperature monitoring
-	volatile ThermistorAveragingFilter thermistorFilters[Heaters];	// bed and extruder thermistor readings
+	volatile ThermistorAveragingFilter adcFilters[NumAdcFilters];	// ADC reading averaging filters
 
 #if HAS_CPU_TEMP_SENSOR
-	volatile ThermistorAveragingFilter cpuTemperatureFilter;		// MCU temperature readings
-	AnalogChannelNumber temperatureAdcChannel;
 	uint32_t highestMcuTemperature, lowestMcuTemperature;
 	float mcuTemperatureAdjust;
 #endif
@@ -829,7 +852,6 @@ private:
 	void UpdateNetworkAddress(byte dst[4], const byte src[4]);
 
 	// Axes and endstops
-
 	float axisMaxima[MaxAxes];
 	float axisMinima[MaxAxes];
 	AxesBitmap axisMinimaProbed, axisMaximaProbed;
@@ -839,7 +861,6 @@ private:
 	static bool WriteAxisLimits(FileStore *f, AxesBitmap axesProbed, const float limits[MaxAxes], int sParam);
 
 	// Heaters - bed is assumed to be the first
-
 	Pin tempSensePins[Heaters];
 	Pin heatOnPins[Heaters];
 	Pin spiTempSenseCsPins[MaxSpiTempSensors];
@@ -847,7 +868,6 @@ private:
 	uint32_t heatSampleTicks;
 
 	// Fans
-
 	Fan fans[NUM_FANS];
 	Pin coolingFanRpmPin;											// we currently support only one fan RPM input
 	uint32_t lastFanCheckTime;
@@ -855,7 +875,6 @@ private:
 	bool FansHardwareInverted(size_t fanNumber) const;
 
   	// Serial/USB
-
 	uint32_t baudRates[NUM_SERIAL_CHANNELS];
 	uint8_t commsParams[NUM_SERIAL_CHANNELS];
 	OutputStack *auxOutput;
@@ -868,7 +887,6 @@ private:
 	uint32_t auxSeq;							// Sequence number for AUX devices
 
 	// Files
-
 	MassStorage* massStorage;
   
 	// Data used by the tick interrupt handler
@@ -904,10 +922,10 @@ private:
 	// of the M305 command (e.g., SetThermistorNumber() and array lookups assume range
 	// checking has already been performed.
 
-	AnalogChannelNumber thermistorAdcChannels[Heaters];
+	AnalogChannelNumber filteredAdcChannels[NumAdcFilters];
 	AnalogChannelNumber zProbeAdcChannel;
 	uint8_t tickState;
-	size_t currentHeater;
+	size_t currentFilterNumber;
 	int debugCode;
 
 	// Hotend configuration
@@ -948,6 +966,9 @@ private:
 
 	// Direct pin manipulation
 	int8_t logicalPinModes[HighestLogicalPin + 1];		// what mode each logical pin is set to - would ideally be class PinMode not int8_t
+
+	// Misc
+	bool deliberateError;								// true if we deliberately caused an exception for testing purposes
 };
 
 // Where the htm etc files are

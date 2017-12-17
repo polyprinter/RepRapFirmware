@@ -49,6 +49,13 @@ struct MoveParameters
 								(double)accelDistance, (double)steadyDistance, (double)decelDistance, (double)requestedSpeed, (double)startSpeed, (double)topSpeed, (double)endSpeed,
 								(double)targetNextSpeed, endstopChecks, flags);
 	}
+
+	static void PrintHeading()
+	{
+		reprap.GetPlatform().Message(DebugMessage,
+									"accelDistance,steadyDistance,decelDistance,requestedSpeed,startSpeed,topSpeed,endSpeed,"
+									"targetNextSpeed,endstopChecks,flags\n");
+	}
 };
 
 //const size_t NumSavedMoves = 128;
@@ -59,21 +66,30 @@ static size_t savedMovePointer = 0;
 // Print the saved moves in CSV format for analysis
 /*static*/ void DDA::PrintMoves()
 {
+	MoveParameters::PrintHeading();
+#ifdef POLYPRINTER
 	// Print the saved moves in CSV format
 	reprap.GetPlatform().MessageF(DEBUG_MESSAGE, "Moves:%s,%s,%s,%s,%s,%s ptr %d\n","accelDistance","steadyDistance","decelDistance","startSpeed","topSpeed","endSpeed", savedMovePointer );
-	size_t movePointer = savedMovePointer;
+	size_t movePointer = savedMovePointer;			; make sure we start at a relevant position
 	for (size_t i = 0; i < NumSavedMoves; ++i)
 	{
 		const MoveParameters& m = savedMoves[savedMovePointer];
-#ifdef POLYPRINTER		
+		
 		if ( m.isUsed() ) {
-#endif		
-		savedMoves[savedMovePointer].DebugPrint();
-#ifdef POLYPRINTER			
+	
+		m.DebugPrint();
+			
 		}
-#endif		
+		
 		movePointer = (movePointer + 1) % NumSavedMoves;
 	}
+#else
+	for (size_t i = 0; i < NumSavedMoves; ++i)
+	{
+		savedMoves[savedMovePointer].DebugPrint();
+		savedMovePointer = (savedMovePointer + 1) % NumSavedMoves;
+	}
+#endif	
 }
 
 #else
@@ -742,7 +758,7 @@ bool DDA::Init(GCodes::RawMove &nextMove, bool doMotorMapping)
 	{
 		// Try to meld this move to the previous move to avoid stop/start
 		// Assuming that this move ends with zero speed, calculate the maximum possible starting speed: u^2 = v^2 - 2as
-		prev->targetNextSpeed = sqrtf(acceleration * totalDistance * 2.0);
+		prev->targetNextSpeed = min<float>(sqrtf(acceleration * totalDistance * 2.0), requestedSpeed);
 		DoLookahead(prev);
 		startSpeed = prev->targetNextSpeed;
 	}
@@ -2204,7 +2220,7 @@ void DDA::Prepare(uint8_t simMode)
 		for (size_t drive = 0; drive < DRIVES; ++drive)
 		{
 			DriveMovement* const pdm = pddm[drive];
-			if (pddm != nullptr && pdm->state == DMState::moving)
+			if (pdm != nullptr && pdm->state == DMState::moving)
 			{
 				if (isLeadscrewAdjustmentMove)
 				{
@@ -2593,7 +2609,7 @@ pre(state == frozen)
 		const size_t numAxes = reprap.GetGCodes().GetTotalAxes();
 		for (size_t i = 0; i < DRIVES; ++i)
 		{
-			DriveMovement* const pdm = pddm[i];
+			DriveMovement* const pdm = FindDM(i);
 			if (pdm != nullptr && pdm->state == DMState::moving)
 			{
 				const size_t drive = pdm->drive;
@@ -2783,7 +2799,7 @@ bool DDA::Step()
 // For extruder drivers, we need to be able to calculate how much of the extrusion was completed after calling this.
 void DDA::StopDrive(size_t drive)
 {
-	DriveMovement* const pdm = pddm[drive];
+	DriveMovement* const pdm = FindDM(drive);
 	if (pdm != nullptr && pdm->state == DMState::moving)
 	{
 		pdm->state = DMState::idle;
@@ -2832,7 +2848,7 @@ float DDA::GetProportionDone(bool moveWasAborted) const
 			int32_t taken = 0, left = 0;
 			for (size_t drive = reprap.GetGCodes().GetTotalAxes(); drive < DRIVES; ++drive)
 			{
-				const DriveMovement* const pdm = pddm[drive];
+				const DriveMovement* const pdm = FindDM(drive);
 				if (pdm != nullptr)								// if this extruder is active
 				{
 					taken += pdm->GetNetStepsTaken();
@@ -2873,7 +2889,7 @@ void DDA::ReduceHomingSpeed()
 		// Adjust the speed in the DMs
 		for (size_t drive = 0; drive < DRIVES; ++drive)
 		{
-			DriveMovement* const pdm = pddm[drive];
+			DriveMovement* const pdm = FindDM(drive);
 			if (pdm != nullptr && pdm->state == DMState::moving)
 			{
 				pdm->ReduceSpeed(*this, ProbingSpeedReductionFactor);
@@ -2886,7 +2902,7 @@ bool DDA::HasStepError() const
 {
 	for (size_t drive = 0; drive < DRIVES; ++drive)
 	{
-		const DriveMovement* const pdm = pddm[drive];
+		const DriveMovement* const pdm = FindDM(drive);
 		if (pdm != nullptr && pdm->state == DMState::stepError)
 		{
 			return true;
@@ -2906,7 +2922,7 @@ bool DDA::Free()
 // Return the number of net steps already taken in this move by a particular drive
 int32_t DDA::GetStepsTaken(size_t drive) const
 {
-	const DriveMovement * const dmp = pddm[drive];
+	const DriveMovement * const dmp = FindDM(drive);
 	return (dmp != nullptr) ? dmp->GetNetStepsTaken() : 0;
 }
 

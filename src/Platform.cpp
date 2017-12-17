@@ -42,6 +42,9 @@
 #ifdef DUET_NG
 # include "TMC2660.h"
 #endif
+#ifdef DUET_M
+# include "TMC22xx.h"
+#endif
 
 #if HAS_WIFI_NETWORKING
 # include "FirmwareUpdater.h"
@@ -53,7 +56,8 @@
 extern char _end;
 extern "C" char *sbrk(int i);
 
-#if !defined(HAS_LWIP_NETWORKING) || !defined(HAS_CPU_TEMP_SENSOR) || !defined(HAS_HIGH_SPEED_SD)
+#if !defined(HAS_LWIP_NETWORKING) || !defined(HAS_WIFI_NETWORKING) || !defined(HAS_CPU_TEMP_SENSOR) || !defined(HAS_HIGH_SPEED_SD) \
+ || !defined(HAS_SMART_DRIVERS) || !defined(HAS_STALL_DETECT) || !defined(HAS_VOLTAGE_MONITOR) || !defined(HAS_VREF_MONITOR) || !defined(ACTIVE_LOW_HEAT_ON)
 # error Missing feature definition
 #endif
 
@@ -337,7 +341,7 @@ Platform::Platform() :
 		nextDriveToPoll(0),
 		onBoardDriversFanRunning(false), offBoardDriversFanRunning(false), onBoardDriversFanStartMillis(0), offBoardDriversFanStartMillis(0),
 #endif
-		lastFanCheckTime(0), auxGCodeReply(nullptr), tickState(0), debugCode(0), lastWarningMillis(0)
+		lastFanCheckTime(0), auxGCodeReply(nullptr), tickState(0), debugCode(0), lastWarningMillis(0), deliberateError(false)
 {
 	// Output
 	auxOutput = new OutputStack();
@@ -578,11 +582,6 @@ void Platform::Init()
 	}
 	DuetExpansion::AdditionalOutputInit();
 
-	// Initialise TMC2660 driver module
-	driversPowered = false;
-	SmartDrivers::Init(ENABLE_PINS, numSmartDrivers);
-	logOnStallDrivers = pauseOnStallDrivers = rehomeOnStallDrivers = 0;
-
 	// Set up the VSSA sense pin. Older Duet WiFis don't have it connected, so we enable the pulldown resistor to keep it inactive.
 	{
 		pinMode(VssaSensePin, INPUT_PULLUP);
@@ -597,10 +596,23 @@ void Platform::Init()
 			pinMode(VssaSensePin, INPUT);
 		}
 	}
+#endif
 
-	temperatureShutdownDrivers = temperatureWarningDrivers = shortToGroundDrivers = openLoadDrivers = stalledDrivers = 0;
-	stalledDriversToLog = stalledDriversToPause = stalledDriversToRehome = 0;
+#if HAS_SMART_DRIVERS
+	// Initialise TMC driver module
+	driversPowered = false;
+	SmartDrivers::Init(ENABLE_PINS, numSmartDrivers);
+	temperatureShutdownDrivers = temperatureWarningDrivers = shortToGroundDrivers = openLoadDrivers = 0;
 	onBoardDriversFanRunning = offBoardDriversFanRunning = false;
+#endif
+
+#if HAS_STALL_DETECT
+	stalledDrivers = 0;
+	logOnStallDrivers = pauseOnStallDrivers = rehomeOnStallDrivers = 0;
+	stalledDriversToLog = stalledDriversToPause = stalledDriversToRehome = 0;
+#endif
+
+#if HAS_VOLTAGE_MONITOR
 	autoSaveEnabled = false;
 	autoSaveState = AutoSaveState::starting;
 #endif
@@ -647,16 +659,29 @@ void Platform::Init()
 #endif
 			);
 		}
-		AnalogChannelNumber chan = PinToAdcChannel(tempSensePins[heater]);	// translate the Arduino Due Analog pin number to the SAM ADC channel number
+		const AnalogChannelNumber chan = PinToAdcChannel(tempSensePins[heater]);	// translate the pin number to the SAM ADC channel number
 		pinMode(tempSensePins[heater], AIN);
-		thermistorAdcChannels[heater] = chan;
-		AnalogInEnableChannel(chan, true);
-		thermistorFilters[heater].Init(0);
+		filteredAdcChannels[heater] = chan;
 	}
 
-#if HAS_CPU_TEMP_SENSOR
-	cpuTemperatureFilter.Init(0);
+#if HAS_VREF_MONITOR
+	// Set up the VSSA and VREF measurement channels
+	pinMode(VssaSensePin, AIN);
+	filteredAdcChannels[VssaFilterIndex] = PinToAdcChannel(VssaSensePin);		// translate the pin number to the SAM ADC channel number
+	pinMode(VrefSensePin, AIN);
+	filteredAdcChannels[VrefFilterIndex] = PinToAdcChannel(VrefSensePin);		// translate the pin number to the SAM ADC channel number
 #endif
+
+#if HAS_CPU_TEMP_SENSOR
+	filteredAdcChannels[CpuTempFilterIndex] = GetTemperatureAdcChannel();
+#endif
+
+	// Initialise all the ADC filters and enable the corresponding ADC channels
+	for (size_t filter = 0; filter < NumAdcFilters; ++filter)
+	{
+		adcFilters[filter].Init(0);
+		AnalogInEnableChannel(filteredAdcChannels[filter], true);
+	}
 
 	// Fans
 	InitFans();
@@ -693,8 +718,6 @@ void Platform::Init()
 
 #if HAS_CPU_TEMP_SENSOR
 	// MCU temperature monitoring
-	temperatureAdcChannel = GetTemperatureAdcChannel();
-	AnalogInEnableChannel(temperatureAdcChannel, true);
 	highestMcuTemperature = 0;									// the highest output we have seen from the ADC filter
 	lowestMcuTemperature = 4095 * ThermistorAverageReadings;	// the lowest output we have seen from the ADC filter
 	mcuTemperatureAdjust = 0.0;
@@ -992,14 +1015,14 @@ bool Platform::ProgramZProbe(GCodeBuffer& gb, StringRef& reply)
 {
 	if (gb.Seen('S'))
 	{
-		long zProbeProgram[MaxZProbeProgramBytes];
+		uint32_t zProbeProgram[MaxZProbeProgramBytes];
 		size_t len = MaxZProbeProgramBytes;
-		gb.GetLongArray(zProbeProgram, len);
+		gb.GetUnsignedArray(zProbeProgram, len);
 		if (len != 0)
 		{
 			for (size_t i = 0; i < len; ++i)
 			{
-				if (zProbeProgram[i] < 0 || zProbeProgram[i] > 255)
+				if (zProbeProgram[i] > 255)
 				{
 					reply.copy("Out of range value in program bytes");
 					return true;
@@ -1447,9 +1470,9 @@ void Platform::Spin()
 
 	// Check the MCU max and min temperatures
 #if HAS_CPU_TEMP_SENSOR
-	if (cpuTemperatureFilter.IsValid())
+	if (adcFilters[CpuTempFilterIndex].IsValid())
 	{
-		const uint32_t currentMcuTemperature = cpuTemperatureFilter.GetSum();
+		const uint32_t currentMcuTemperature = adcFilters[CpuTempFilterIndex].GetSum();
 		if (currentMcuTemperature > highestMcuTemperature)
 		{
 			highestMcuTemperature= currentMcuTemperature;
@@ -1522,6 +1545,7 @@ void Platform::Spin()
 				{
 					openLoadDrivers &= ~mask;
 				}
+#if HAS_STALL_DETECT
 				if ((stat & TMC_RR_SG) != 0)
 				{
 					if ((stalledDrivers & mask) == 0)
@@ -1546,8 +1570,10 @@ void Platform::Spin()
 				{
 					stalledDrivers &= ~mask;
 				}
+#endif
 			}
 
+#if HAS_STALL_DETECT
 			// Action any pause or rehome actions due to motor stalls. This may have to be done more than once.
 			if (stalledDriversToRehome != 0)
 			{
@@ -1563,7 +1589,7 @@ void Platform::Spin()
 					stalledDriversToPause = 0;
 				}
 			}
-
+#endif
 			// Advance drive number ready for next time
 			++nextDriveToPoll;
 			if (nextDriveToPoll == numSmartDrivers)
@@ -1576,7 +1602,7 @@ void Platform::Spin()
 	{
 		driversPowered = true;
 	}
-	SmartDrivers::SetDriversPowered(driversPowered);
+	SmartDrivers::Spin(driversPowered);
 #endif
 
 	const uint32_t now = millis();
@@ -1632,7 +1658,9 @@ void Platform::Spin()
 					ReportDrivers(temperatureWarningDrivers, "Warning: high temperature", reported);
 				}
 			}
+#endif
 
+#if HAS_STALL_DETECT
 			// Check for stalled drivers that need to be reported and logged
 			if (stalledDriversToLog != 0 && reprap.GetGCodes().IsReallyPrinting())
 			{
@@ -1661,8 +1689,15 @@ void Platform::Spin()
 			}
 #endif
 
-#ifdef DUET_NG
 			// Check for a VSSA fault
+#if HAS_VREF_MONITOR
+			constexpr uint32_t MaxVssaFilterSum = (15 * 4096 * ThermistorAverageReadings * 4)/2200;
+			if (adcFilters[VssaFilterIndex].GetSum() > MaxVssaFilterSum)
+			{
+				Message(ErrorMessage, "VSSA fault, check thermistor wiring\n");
+				reported = true;
+			}
+#elif defined(DUET_NG)
 			if (vssaSenseWorking && digitalRead(VssaSensePin))
 			{
 				Message(ErrorMessage, "VSSA fault, check thermistor wiring\n");
@@ -1745,6 +1780,10 @@ void Platform::ReportDrivers(DriversBitmap whichDrivers, const char* text, bool&
 		reported = true;
 	}
 }
+
+#endif
+
+#if HAS_STALL_DETECT
 
 // Return true if any motor driving this axis or extruder is stalled
 bool Platform::AnyMotorStalled(size_t drive) const
@@ -1866,6 +1905,10 @@ void Platform::SoftwareReset(uint16_t reason, const uint32_t *stk)
 		}
 		reason |= (uint8_t)reprap.GetSpinningModule();
 		reason |= (softwareResetDebugInfo & 0x07) << 5;
+		if (deliberateError)
+		{
+			reason |= (uint16_t)SoftwareResetReason::deliberate;
+		}
 
 		// Record the reason for the software reset
 		// First find a free slot (wear levelling)
@@ -1897,6 +1940,7 @@ void Platform::SoftwareReset(uint16_t reason, const uint32_t *stk)
 		}
 		srdBuf[slot].magic = SoftwareResetData::magicValue;
 		srdBuf[slot].resetReason = reason;
+		srdBuf[slot].when = realTime;
 		GetStackUsage(nullptr, nullptr, &srdBuf[slot].neverUsedRam);
 		srdBuf[slot].hfsr = SCB->HFSR;
 		srdBuf[slot].cfsr = SCB->CFSR;
@@ -1966,7 +2010,7 @@ void Platform::InitialiseInterrupts()
 #endif
 
 #if HAS_SMART_DRIVERS
-	NVIC_SetPriority(USART_TMC_DRV_IRQn, NvicPriorityDriversUsart);
+	NVIC_SetPriority(SERIAL_TMC_DRV_IRQn, NvicPriorityDriversSerialTMC);
 #endif
 
 	// Timer interrupt for stepper motors
@@ -2043,7 +2087,7 @@ void Platform::InitialiseInterrupts()
 
 	// Tick interrupt for ADC conversions
 	tickState = 0;
-	currentHeater = 0;
+	currentFilterNumber = 0;
 
 	// Set up the timeout of the regulator watchdog, and set up the backup watchdog if there is one
 	// The clock frequency for both watchdogs is 32768/128 = 256Hz
@@ -2221,14 +2265,14 @@ void Platform::Diagnostics(MessageType mtype)
 #endif
 		{
 			// Find the last slot written
-			slot = SoftwareResetData::numberOfSlots - 1;
-			while (slot >= 0 && srdBuf[slot].magic == 0xFFFF)
+			slot = SoftwareResetData::numberOfSlots;
+			do
 			{
 				--slot;
 			}
+			while (slot >= 0 && srdBuf[slot].magic == 0xFFFF);
 		}
 
-		Message(mtype, "Last software reset reason: ");
 		if (slot >= 0 && srdBuf[slot].magic == SoftwareResetData::magicValue)
 		{
 			const uint32_t reason = srdBuf[slot].resetReason & 0xF0;
@@ -2239,10 +2283,23 @@ void Platform::Diagnostics(MessageType mtype)
 														: (reason == (uint32_t)SoftwareResetReason::wdtFault) ? "Watchdog timeout"
 															: (reason == (uint32_t)SoftwareResetReason::otherFault) ? "Other fault"
 																: "Unknown";
-			MessageF(mtype, "%s, spinning module %s, available RAM %" PRIu32 " bytes (slot %d)\n",
-					reasonText, moduleName[srdBuf[slot].resetReason & 0x0F], srdBuf[slot].neverUsedRam, slot);
+			if (srdBuf[slot].when != 0)
+			{
+				const struct tm * const timeInfo = gmtime(&srdBuf[slot].when);
+				scratchString.printf("at %04u-%02u-%02u %02u:%02u",
+								timeInfo->tm_year + 1900, timeInfo->tm_mon + 1, timeInfo->tm_mday, timeInfo->tm_hour, timeInfo->tm_min);
+			}
+			else
+			{
+				scratchString.copy("time unknown");
+			}
+
+			MessageF(mtype, "Last software reset %s, reason: %s%s, spinning module %s, available RAM %" PRIu32 " bytes (slot %d)\n",
+								scratchString.Pointer(),
+								(srdBuf[slot].resetReason & (uint32_t)SoftwareResetReason::deliberate) ? "deliberate " : "",
+								reasonText, moduleName[srdBuf[slot].resetReason & 0x0F], srdBuf[slot].neverUsedRam, slot);
 			// Our format buffer is only 256 characters long, so the next 2 lines must be written separately
-			MessageF(mtype, "Software reset code 0x%04x, HFSR 0x%08" PRIx32 ", CFSR 0x%08" PRIx32 ", ICSR 0x%08" PRIx32 ", BFAR 0x%08" PRIx32 ", SP 0x%08" PRIx32 "\n",
+			MessageF(mtype, "Software reset code 0x%04x HFSR 0x%08" PRIx32 ", CFSR 0x%08" PRIx32 ", ICSR 0x%08" PRIx32 ", BFAR 0x%08" PRIx32 ", SP 0x%08" PRIx32 "\n",
 				srdBuf[slot].resetReason, srdBuf[slot].hfsr, srdBuf[slot].cfsr, srdBuf[slot].icsr, srdBuf[slot].bfar, srdBuf[slot].sp);
 			if (srdBuf[slot].sp != 0xFFFFFFFF)
 			{
@@ -2257,7 +2314,7 @@ void Platform::Diagnostics(MessageType mtype)
 		}
 		else
 		{
-			Message(mtype, "not available\n");
+			Message(mtype, "Last software reset details not available\n");
 		}
 	}
 
@@ -2279,7 +2336,7 @@ void Platform::Diagnostics(MessageType mtype)
 
 #if HAS_CPU_TEMP_SENSOR
 	// Show the MCU temperatures
-	const uint32_t currentMcuTemperature = cpuTemperatureFilter.GetSum();
+	const uint32_t currentMcuTemperature = adcFilters[CpuTempFilterIndex].GetSum();
 	MessageF(mtype, "MCU temperature: min %.1f, current %.1f, max %.1f\n",
 		(double)AdcReadingToCpuTemperature(lowestMcuTemperature), (double)AdcReadingToCpuTemperature(currentMcuTemperature), (double)AdcReadingToCpuTemperature(highestMcuTemperature));
 	lowestMcuTemperature = highestMcuTemperature = currentMcuTemperature;
@@ -2396,7 +2453,7 @@ bool Platform::DiagnosticTest(GCodeBuffer& gb, StringRef& reply, int d)
 					return true;
 				}
 
-				const float currentMcuTemperature = AdcReadingToCpuTemperature(cpuTemperatureFilter.GetSum());
+				const float currentMcuTemperature = AdcReadingToCpuTemperature(adcFilters[CpuTempFilterIndex].GetSum());
 				if (currentMcuTemperature < tempMinMax[0])
 				{
 					MessageF(AddError(mtype), "MCU temperature %.1f is lower than expected\n", (double)currentMcuTemperature);
@@ -2486,27 +2543,33 @@ bool Platform::DiagnosticTest(GCodeBuffer& gb, StringRef& reply, int d)
 		break;
 
 	case (int)DiagnosticTestType::TestWatchdog:
+		deliberateError = true;
 		SysTick->CTRL &= ~(SysTick_CTRL_TICKINT_Msk);	// disable the system tick interrupt so that we get a watchdog timeout reset
 		break;
 
 	case (int)DiagnosticTestType::TestSpinLockup:
+		deliberateError = true;
 		debugCode = d;									// tell the Spin function to loop
 		break;
 
 	case (int)DiagnosticTestType::TestSerialBlock:		// write an arbitrary message via debugPrintf()
+		deliberateError = true;
 		debugPrintf("Diagnostic Test\n");
 		break;
 
 	case (int)DiagnosticTestType::DivideByZero:			// do an integer divide by zero to test exception handling
+		deliberateError = true;
 		(void)RepRap::DoDivide(1, 0);					// call function in another module so it can't be optimised away
 		break;
 
 	case (int)DiagnosticTestType::UnalignedMemoryAccess:	// do an unaligned memory access to test exception handling
+		deliberateError = true;
 		SCB->CCR |= SCB_CCR_UNALIGN_TRP_Msk;			// by default, unaligned memory accesses are allowed, so change that
 		(void)RepRap::ReadDword(reinterpret_cast<const char*>(dummy) + 1);	// call function in another module so it can't be optimised away
 		break;
 
 	case (int)DiagnosticTestType::BusFault:
+		deliberateError = true;
 		// Read from the "Undefined (Abort)" area
 #if SAME70
 		// FIXME: The SAME70 provides an MPU, maybe we should configure it as well?
@@ -2679,83 +2742,80 @@ void Platform::UpdateConfiguredHeaters()
 
 EndStopHit Platform::Stopped(size_t drive) const
 {
-	if (drive < DRIVES)
+	if (drive < reprap.GetGCodes().GetTotalAxes())
 	{
-		if (drive >= reprap.GetGCodes().GetTotalAxes())
+		switch (endStopInputType[drive])
 		{
-			// Endstop not used for an axis, so no configuration data available.
-			// To allow us to see its status in DWC, pretend it is configured as a high-end active high endstop.
-			return (endStopPins[drive] != NoPin && IoPort::ReadPin(endStopPins[drive])) ? EndStopHit::highHit : EndStopHit::noStop;
-		}
-		else
-		{
-			switch (endStopInputType[drive])
+		case EndStopInputType::zProbe:
 			{
-			case EndStopInputType::zProbe:
+				const EndStopHit rslt = GetZProbeResult();
+				return (rslt == EndStopHit::lowHit && endStopPos[drive] == EndStopPosition::highEndStop)
+						? EndStopHit::highHit
+							: rslt;
+			}
+
+#if HAS_STALL_DETECT
+		case EndStopInputType::motorStall:
+			{
+				bool motorIsStalled;
+				switch (reprap.GetMove().GetKinematics().GetKinematicsType())
 				{
-					const EndStopHit rslt = GetZProbeResult();
-					return (rslt == EndStopHit::lowHit && endStopPos[drive] == EndStopPosition::highEndStop)
-							? EndStopHit::highHit
-								: rslt;
+				case KinematicsType::coreXY:
+					// Both X and Y motors are involved in homing X or Y
+					motorIsStalled = (drive == X_AXIS || drive == Y_AXIS)
+										? AnyMotorStalled(X_AXIS) || AnyMotorStalled(Y_AXIS)
+											: AnyMotorStalled(drive);
+					break;
+
+				case KinematicsType::coreXYU:
+					// Both X and Y motors are involved in homing X or Y, and both U and V motors are involved in homing U
+					motorIsStalled = (drive == X_AXIS || drive == Y_AXIS)
+										? AnyMotorStalled(X_AXIS) || AnyMotorStalled(Y_AXIS)
+											: (drive == U_AXIS)
+												? AnyMotorStalled(U_AXIS) || AnyMotorStalled(V_AXIS)
+													: AnyMotorStalled(drive);
+					break;
+
+				case KinematicsType::coreXZ:
+					// Both X and Z motors are involved in homing X or Z
+					motorIsStalled = (drive == X_AXIS || drive == Z_AXIS)
+										? AnyMotorStalled(X_AXIS) || AnyMotorStalled(Z_AXIS)
+											: AnyMotorStalled(drive);
+					break;
+
+				default:
+					motorIsStalled = AnyMotorStalled(drive);
+					break;
 				}
-
-#if HAS_SMART_DRIVERS
-			case EndStopInputType::motorStall:
-				{
-					bool motorIsStalled;
-					switch (reprap.GetMove().GetKinematics().GetKinematicsType())
-					{
-					case KinematicsType::coreXY:
-						// Both X and Y motors are involved in homing X or Y
-						motorIsStalled = (drive == X_AXIS || drive == Y_AXIS)
-											? AnyMotorStalled(X_AXIS) || AnyMotorStalled(Y_AXIS)
-												: AnyMotorStalled(drive);
-						break;
-
-					case KinematicsType::coreXYU:
-						// Both X and Y motors are involved in homing X or Y, and both U and V motors are involved in homing U
-						motorIsStalled = (drive == X_AXIS || drive == Y_AXIS)
-											? AnyMotorStalled(X_AXIS) || AnyMotorStalled(Y_AXIS)
-												: (drive == U_AXIS)
-													? AnyMotorStalled(U_AXIS) || AnyMotorStalled(V_AXIS)
-														: AnyMotorStalled(drive);
-						break;
-
-					case KinematicsType::coreXZ:
-						// Both X and Z motors are involved in homing X or Z
-						motorIsStalled = (drive == X_AXIS || drive == Z_AXIS)
-											? AnyMotorStalled(X_AXIS) || AnyMotorStalled(Z_AXIS)
-												: AnyMotorStalled(drive);
-						break;
-
-					default:
-						motorIsStalled = AnyMotorStalled(drive);
-						break;
-					}
-					return (!motorIsStalled) ? EndStopHit::noStop
-							: (endStopPos[drive] == EndStopPosition::highEndStop) ? EndStopHit::highHit
-								: EndStopHit::lowHit;
-				}
-				break;
+				return (!motorIsStalled) ? EndStopHit::noStop
+						: (endStopPos[drive] == EndStopPosition::highEndStop) ? EndStopHit::highHit
+							: EndStopHit::lowHit;
+			}
+			break;
 #endif
 
-			case EndStopInputType::activeLow:
-			case EndStopInputType::activeHigh:
-				if (endStopPins[drive] != NoPin)
+		case EndStopInputType::activeLow:
+		case EndStopInputType::activeHigh:
+			if (endStopPins[drive] != NoPin)
+			{
+				bool b = IoPort::ReadPin(endStopPins[drive]);
+				if (endStopInputType[drive] == EndStopInputType::activeHigh)
 				{
-					bool b = IoPort::ReadPin(endStopPins[drive]);
-					if (endStopInputType[drive] == EndStopInputType::activeHigh)
-					{
-						b = !b;
-					}
-					return (b) ? EndStopHit::noStop : (endStopPos[drive] == EndStopPosition::highEndStop) ? EndStopHit::highHit : EndStopHit::lowHit;
+					b = !b;
 				}
-				break;
-
-			default:
-				break;
+				return (b) ? EndStopHit::noStop : (endStopPos[drive] == EndStopPosition::highEndStop) ? EndStopHit::highHit : EndStopHit::lowHit;
 			}
+			break;
+
+		default:
+			break;
 		}
+	}
+	else if (drive < DRIVES)
+	{
+		// Endstop not used for an axis, so no configuration data available.
+		// To allow us to see its status in DWC, pretend it is configured as a high-end active high endstop.
+		return (endStopPins[drive] != NoPin && IoPort::ReadPin(endStopPins[drive])) ? EndStopHit::highHit : EndStopHit::noStop;
 	}
 	return EndStopHit::noStop;
 }
@@ -3179,7 +3239,7 @@ void Platform::SetIdleCurrentFactor(float f)
 }
 
 // Set the microstepping for a driver, returning true if successful
-bool Platform::SetDriverMicrostepping(size_t driver, int microsteps, int mode)
+bool Platform::SetDriverMicrostepping(size_t driver, unsigned int microsteps, int mode)
 {
 	if (driver < DRIVES)
 	{
@@ -4027,11 +4087,7 @@ bool Platform::GetFirmwarePin(LogicalPin logicalPin, PinAccess access, Pin& firm
 {
 	firmwarePin = NoPin;										// assume failure
 	invert = false;												// this is the common case
-	if (logicalPin > HighestLogicalPin)
-	{
-		// Pin number out of range, so nothing to do here
-	}
-	else if (logicalPin >= Heater0LogicalPin && logicalPin < Heater0LogicalPin + (int)Heaters)		// pins 0-9 correspond to heater channels
+	if (logicalPin >= Heater0LogicalPin && logicalPin < Heater0LogicalPin + (int)Heaters)		// pins 0-9 correspond to heater channels
 	{
 		// For safety, we don't allow a heater channel to be used for servos until the heater has been disabled
 		if (!reprap.GetHeat().IsHeaterEnabled(logicalPin - Heater0LogicalPin))
@@ -4255,7 +4311,7 @@ bool Platform::Inkjet(int bitPattern)
 void Platform::GetMcuTemperatures(float& minT, float& currT, float& maxT) const
 {
 	minT = AdcReadingToCpuTemperature(lowestMcuTemperature);
-	currT = AdcReadingToCpuTemperature(cpuTemperatureFilter.GetSum());
+	currT = AdcReadingToCpuTemperature(adcFilters[CpuTempFilterIndex].GetSum());
 	maxT = AdcReadingToCpuTemperature(highestMcuTemperature);
 }
 #endif
@@ -4288,6 +4344,10 @@ float Platform::GetTmcDriversTemperature(unsigned int board) const
 				: 0.0;
 }
 
+#endif
+
+#if HAS_STALL_DETECT
+
 // Configure the motor stall detection, returning true if an error was encountered
 bool Platform::ConfigureStallDetection(GCodeBuffer& gb, StringRef& reply)
 {
@@ -4296,14 +4356,14 @@ bool Platform::ConfigureStallDetection(GCodeBuffer& gb, StringRef& reply)
 	DriversBitmap drivers = 0;
 	if (gb.Seen('P'))
 	{
-		long int drives[DRIVES];
+		uint32_t drives[DRIVES];
 		size_t dCount = DRIVES;
-		gb.GetLongArray(drives, dCount);
+		gb.GetUnsignedArray(drives, dCount);
 		for (size_t i = 0; i < dCount; i++)
 		{
-			if (drives[i] < 0 || (size_t)drives[i] >= numSmartDrivers)
+			if (drives[i] >= numSmartDrivers)
 			{
-				reply.printf("Invalid drive number '%ld'", drives[i]);
+				reply.printf("Invalid drive number '%" PRIu32 "'", drives[i]);
 				return true;
 			}
 			SetBit(drivers, drives[i]);
@@ -4589,7 +4649,7 @@ void Platform::Tick()
 # if HAS_SMART_DRIVERS
 		if (driversPowered && currentVin > driverOverVoltageAdcReading)
 		{
-			SmartDrivers::SetDriversPowered(false);
+			SmartDrivers::TurnDriversOff();
 			// We deliberately do not clear driversPowered here or increase the over voltage event count - we let the spin loop handle that
 		}
 # endif
@@ -4601,24 +4661,24 @@ void Platform::Tick()
 	case 1:
 	case 3:
 		{
-			// We read a thermistor channel on alternate ticks
+			// We read a filtered ADC channel on alternate ticks
 			// Because we are in the tick ISR and no other ISR reads the averaging filter, we can cast away 'volatile' here.
 			// The following code assumes number of thermistor channels = number of heater channels
-			ThermistorAveragingFilter& currentFilter = const_cast<ThermistorAveragingFilter&>(thermistorFilters[currentHeater]);
-			currentFilter.ProcessReading(AnalogInReadChannel(thermistorAdcChannels[currentHeater]));
+			ThermistorAveragingFilter& currentFilter = const_cast<ThermistorAveragingFilter&>(adcFilters[currentFilterNumber]);
+			currentFilter.ProcessReading(AnalogInReadChannel(filteredAdcChannels[currentFilterNumber]));
 
 			// Guard against overly long delays between successive calls of PID::Spin().
 			// Do not call Time() here, it isn't safe. We use millis() instead.
-			if ((configuredHeaters & (1 << currentHeater)) != 0 && (millis() - reprap.GetHeat().GetLastSampleTime(currentHeater)) > maxPidSpinDelay)
+			if ((configuredHeaters & (1u << currentFilterNumber)) != 0 && (millis() - reprap.GetHeat().GetLastSampleTime(currentFilterNumber)) > maxPidSpinDelay)
 			{
-				SetHeater(currentHeater, 0.0);
+				SetHeater(currentFilterNumber, 0.0);
 				LogError(ErrorCode::BadTemp);
 			}
 
-			++currentHeater;
-			if (currentHeater == Heaters)
+			++currentFilterNumber;
+			if (currentFilterNumber == NumAdcFilters)
 			{
-				currentHeater = 0;
+				currentFilterNumber = 0;
 			}
 
 			// If we are not using a simple modulated IR sensor, process the Z probe reading on every tick for a faster response.
@@ -4639,10 +4699,6 @@ void Platform::Tick()
 			digitalWrite(zProbeModulationPin, LOW);				// turn off the IR emitter
 		}
 
-		// Read the MCU temperature as well (no need to do it in every state)
-#if HAS_CPU_TEMP_SENSOR
-		const_cast<ThermistorAveragingFilter&>(cpuTemperatureFilter).ProcessReading(AnalogInReadChannel(temperatureAdcChannel));
-#endif
 		++tickState;
 		break;
 
