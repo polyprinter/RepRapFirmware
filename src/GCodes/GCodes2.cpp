@@ -2795,10 +2795,6 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 
 	case 558: // Set or report Z probe type and for which axes it is used
 		result = SetOrReportZProbe(gb, reply);
-#ifdef POLYPRINTER
-			gb.TryGetFValue('J', params.modulationFrequency_HZ, seenParam);		// set Hz of
-#endif
-
 		break;
 
 	case 559:
