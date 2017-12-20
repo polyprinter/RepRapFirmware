@@ -538,15 +538,13 @@ void Platform::Init()
 		driverState[drive] = DriverStatus::disabled;
 
 		// Enable pullup resistors on endstop inputs here if necessary.
-#if defined(DUET_NG)
+#if defined(DUET_NG) || defined(DUET_06_085)
 		// The Duets have hardware pullup resistors/LEDs except for the two on the CONN_LCD connector.
 		// They have RC filtering on the main endstop inputs, so best not to enable the pullup resistors on these.
-		if (drive >= 10)
-		{
-			setPullup(endStopPins[drive], true);				// enable pullup on CONN_LCD endstop input
-		}
-#endif
-#if defined(__RADDS__) || defined(__ALLIGATOR__)
+		// 2017-12-19: some users are having trouble with the endstops not being recognised in recent firmware versions.
+		// Probably the LED+resistor isn't pulling them up fast enough. So enable the pullup resistors again.
+		setPullup(endStopPins[drive], true);					// enable pullup on endstop input
+#elif defined(__RADDS__) || defined(__ALLIGATOR__)
 		// I don't know whether RADDS and Alligator have hardware pullup resistors or not. I'll assume they might not.
 		setPullup(endStopPins[drive], true);
 #endif
@@ -561,7 +559,7 @@ void Platform::Init()
 		SetPressureAdvance(extr, 0.0);							// no pressure advance
 	}
 
-#ifdef DUET_NG
+#if defined(DUET_NG)
 	// Test for presence of a DueX2 or DueX5 expansion board and work out how many TMC2660 drivers we have
 	// The SX1509B has an independent power on reset, so give it some time
 	delay(200);
@@ -596,6 +594,8 @@ void Platform::Init()
 			pinMode(VssaSensePin, INPUT);
 		}
 	}
+#elif defined(DUET_M)
+	numSmartDrivers = 5;										// TODO for now we assume that additional drivers are dumb
 #endif
 
 #if HAS_SMART_DRIVERS
@@ -2846,7 +2846,7 @@ EndStopHit Platform::GetZProbeResult() const
 }
 
 // Write the platform parameters to file
-bool Platform::WritePlatformParameters(FileStore *f) const
+bool Platform::WritePlatformParameters(FileStore *f, bool includingG31) const
 {
 	bool ok;
 	if (axisMinimaProbed != 0 || axisMaximaProbed != 0)
@@ -2866,24 +2866,22 @@ bool Platform::WritePlatformParameters(FileStore *f) const
 		ok = true;
 	}
 
-#if 0	// From version 1.20 we no longer write the Z probe parameters, but keep the code for now in case too many users complain
-	if (ok)
+	if (ok && includingG31)
 	{
 		ok = f->Write("; Z probe parameters\n");
+		if (ok)
+		{
+			ok = irZProbeParameters.WriteParameters(f, 1);
+		}
+		if (ok)
+		{
+			ok = alternateZProbeParameters.WriteParameters(f, 3);
+		}
+		if (ok)
+		{
+			ok = switchZProbeParameters.WriteParameters(f, 4);
+		}
 	}
-	if (ok)
-	{
-		ok = irZProbeParameters.WriteParameters(f, 1);
-	}
-	if (ok)
-	{
-		ok = alternateZProbeParameters.WriteParameters(f, 3);
-	}
-	if (ok)
-	{
-		ok = switchZProbeParameters.WriteParameters(f, 4);
-	}
-#endif
 
 	return ok;
 }
