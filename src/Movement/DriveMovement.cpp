@@ -172,11 +172,25 @@ void DriveMovement::PrepareDeltaAxis(const DDA& dda, const PrepParams& params)
 void DriveMovement::PrepareExtruder(const DDA& dda, const PrepParams& params, bool doCompensation)
 {
 	const float dv = dda.directionVector[drive];
-	const float stepsPerMm = reprap.GetPlatform().DriveStepsPerUnit(drive) * fabsf(dv);
+	float stepsPerMm = reprap.GetPlatform().DriveStepsPerUnit(drive) * fabsf(dv);
+	const size_t extruder = drive - reprap.GetGCodes().GetTotalAxes();
+
+#if NONLINEAR_EXTRUSION
+	if (dda.isPrintingMove)
+	{
+		float a, b, limit;
+		if (reprap.GetPlatform().GetExtrusionCoefficients(extruder, a, b, limit))
+		{
+			const float averageExtrusionSpeed = (dda.totalDistance * dv * DDA::stepClockRate)/dda.clocksNeeded;
+			stepsPerMm *= 1.0 + min<float>((averageExtrusionSpeed * a) + (averageExtrusionSpeed * averageExtrusionSpeed * b), limit);
+		}
+	}
+#endif
+
 	mp.cart.twoCsquaredTimesMmPerStepDivA = roundU64((double)(DDA::stepClockRateSquared * 2)/((double)stepsPerMm * (double)dda.acceleration));
 
 	// Calculate the pressure advance parameter
-	const float compensationTime_SEC_or_MMpMMpSEC = (doCompensation && dv > 0.0) ? reprap.GetPlatform().GetPressureAdvance(drive - reprap.GetGCodes().GetTotalAxes()) : 0.0;
+	const float compensationTime_SEC_or_MMpMMpSEC = (doCompensation && dv > 0.0) ? reprap.GetPlatform().GetPressureAdvance( extruder ) : 0.0;
 	//const uint32_t compensationClocks = lrintf(compensationTime_SEC_or_MMpMMpSEC * DDA::stepClockRate);
 	mp.cart.accelCompensationClocks = roundU32(compensationTime_SEC_or_MMpMMpSEC * (float)DDA::stepClockRate * params.compFactor);
 
@@ -184,7 +198,7 @@ void DriveMovement::PrepareExtruder(const DDA& dda, const PrepParams& params, bo
 	// for the vectorial speed change across the whole move, determine the net additional distance from Advance (could be negative)
 	const float compensationDistanceForEntireMoveSpeedChange_vect_mm = (dda.endSpeed - dda.startSpeed) * compensationTime_SEC_or_MMpMMpSEC;
 	// and convert it into steps for this axis and correct the number of steps in the whole move
-	const int32_t netSteps = (int32_t)(compensationDistanceForEntireMoveSpeedChange_vect_mm * stepsPerMm) + (int32_t)totalSteps;
+	int32_t netSteps = (int32_t)(compensationDistanceForEntireMoveSpeedChange_vect_mm * stepsPerMm) + (int32_t)totalSteps;
 
 	// Calculate the acceleration phase parameters
 	// for the vectorial speed change in acceleration, determine the net additional distance from Advance
@@ -222,40 +236,29 @@ void DriveMovement::PrepareExtruder(const DDA& dda, const PrepParams& params, bo
 		twoDistanceToStopTimesCsquaredDivA =
 			initialDecelSpeedTimesCdivASquared + llrintf(((params.decelStartDistance + accelCompensationDistance_vect_MM) * (DDA::stepClockRateSquared * 2))/dda.acceleration);
 
-		// Calculate the move distance to the point of zero speed, where reverse motion starts
+		// See whether there is a reverse phase
 		// the "speed" at the beginning of deceleration is actually instantaneously lower than it was at cruise.
-		const float initialDecelSpeed = dda.topSpeed - dda.acceleration * compensationTime_SEC_or_MMpMMpSEC;
-		const float reverseStartDistance = (initialDecelSpeed > 0.0)
-												? fsquare(initialDecelSpeed)/(2 * dda.acceleration) + params.decelStartDistance
-												: params.decelStartDistance;
-		// Reverse phase parameters
-		if (reverseStartDistance >= dda.totalDistance)
+		//const float initialDecelSpeed = dda.topSpeed - dda.acceleration * compensationTime_SEC_or_MMpMMpSEC;
+		const uint32_t stepsBeforeReverse = (compensationSpeedChange > dda.topSpeed)
+											? mp.cart.decelStartStep - 1
+											: twoDistanceToStopTimesCsquaredDivA/mp.cart.twoCsquaredTimesMmPerStepDivA;
+		if (dda.endSpeed < compensationSpeedChange && (int32_t)stepsBeforeReverse > netSteps)
 		{
-			// No reverse phase
-			totalSteps = (uint32_t)max<int32_t>(netSteps, 0);
-			reverseStartStep = netSteps + 1;
-			mp.cart.fourMaxStepDistanceMinusTwoDistanceToStopTimesCsquaredDivA = 0;
+			reverseStartStep = stepsBeforeReverse + 1;
+			totalSteps = (uint32_t)((int32_t)(2 * stepsBeforeReverse) - netSteps);
+			mp.cart.fourMaxStepDistanceMinusTwoDistanceToStopTimesCsquaredDivA =
+					(int64_t)((2 * stepsBeforeReverse) * mp.cart.twoCsquaredTimesMmPerStepDivA) - (int64_t)twoDistanceToStopTimesCsquaredDivA;
 		}
 		else
 		{
-			reverseStartStep = (initialDecelSpeed < 0.0)
-								? mp.cart.decelStartStep
-								: (twoDistanceToStopTimesCsquaredDivA/mp.cart.twoCsquaredTimesMmPerStepDivA) + 1;
-			// Because the step numbers are rounded down, we may sometimes get a situation in which netSteps = 1 and reverseStartStep = 1.
-			// This would lead to totalSteps = -1, which must be avoided.
-			const int32_t overallSteps = (int32_t)(2 * (reverseStartStep - 1)) - netSteps;
-			if (overallSteps > 0)
+			// There is no reverse phase. Check that we can actually do the last step requested.
+			if (netSteps > (int32_t)stepsBeforeReverse)
 			{
-				totalSteps = (uint32_t)overallSteps;
-				mp.cart.fourMaxStepDistanceMinusTwoDistanceToStopTimesCsquaredDivA =
-						(int64_t)((2 * (reverseStartStep - 1)) * mp.cart.twoCsquaredTimesMmPerStepDivA) - (int64_t)twoDistanceToStopTimesCsquaredDivA;
+				netSteps = (int32_t)stepsBeforeReverse;
 			}
-			else
-			{
-				totalSteps = (uint32_t)max<int32_t>(netSteps, 0);
-				reverseStartStep = totalSteps + 1;
-				mp.cart.fourMaxStepDistanceMinusTwoDistanceToStopTimesCsquaredDivA = 0;
-			}
+			reverseStartStep = netSteps + 1;
+			totalSteps = (uint32_t)max<int32_t>(netSteps, 0);
+			mp.cart.fourMaxStepDistanceMinusTwoDistanceToStopTimesCsquaredDivA = 0;
 		}
 	}
 }
