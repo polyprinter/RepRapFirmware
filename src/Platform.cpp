@@ -57,7 +57,8 @@ extern char _end;
 extern "C" char *sbrk(int i);
 
 #if !defined(HAS_LWIP_NETWORKING) || !defined(HAS_WIFI_NETWORKING) || !defined(HAS_CPU_TEMP_SENSOR) || !defined(HAS_HIGH_SPEED_SD) \
- || !defined(HAS_SMART_DRIVERS) || !defined(HAS_STALL_DETECT) || !defined(HAS_VOLTAGE_MONITOR) || !defined(HAS_VREF_MONITOR) || !defined(ACTIVE_LOW_HEAT_ON)
+ || !defined(HAS_SMART_DRIVERS) || !defined(HAS_STALL_DETECT) || !defined(HAS_VOLTAGE_MONITOR) || !defined(HAS_VREF_MONITOR) || !defined(ACTIVE_LOW_HEAT_ON) \
+ || !defined(NONLINEAR_EXTRUSION)
 # error Missing feature definition
 #endif
 
@@ -557,6 +558,10 @@ void Platform::Init()
 	{
 		extruderDrivers[extr] = (uint8_t)(extr + MinAxes);		// set up default extruder drive mapping
 		SetPressureAdvance(extr, 0.0);							// no pressure advance
+#if NONLINEAR_EXTRUSION
+		nonlinearExtrusionA[extr] = nonlinearExtrusionB[extr] = 0.0;
+		nonlinearExtrusionLimit[extr] = DefaultNonlinearExtrusionLimit;
+#endif
 	}
 
 #if defined(DUET_NG)
@@ -1305,7 +1310,8 @@ void Platform::SendAuxMessage(const char* msg)
 		buf->copy("{\"message\":");
 		buf->EncodeString(msg, strlen(msg), false, true);
 		buf->cat("}\n");
-		Message(LcdMessage, buf);
+		auxOutput->Push(buf);
+		FlushAuxMessages();
 	}
 }
 
@@ -1384,7 +1390,7 @@ void Platform::SetNetMask(byte nm[])
 }
 
 // Flush messages to USB and aux, returning true if there is more to send
-bool Platform::FlushMessages()
+bool Platform::FlushAuxMessages()
 {
 	// Write non-blocking data to the AUX line
 	OutputBuffer *auxOutputBuffer = auxOutput->GetFirstItem();
@@ -1402,6 +1408,13 @@ bool Platform::FlushMessages()
 			auxOutput->SetFirstItem(auxOutputBuffer);
 		}
 	}
+	return auxOutput->GetFirstItem() != nullptr;
+}
+
+// Flush messages to USB and aux, returning true if there is more to send
+bool Platform::FlushMessages()
+{
+	const bool auxHasMore = FlushAuxMessages();
 
 #ifdef SERIAL_AUX2_DEVICE
 	// Write non-blocking data to the second AUX line
@@ -1449,7 +1462,7 @@ bool Platform::FlushMessages()
 		}
 	}
 
-	return auxOutput->GetFirstItem() != nullptr
+	return auxHasMore
 #ifdef SERIAL_AUX2_DEVICE
 		|| aux2Output->GetFirstItem() != nullptr
 #endif
@@ -3585,7 +3598,7 @@ void Platform::RawMessage(MessageType type, const char *message)
 		logger->LogMessage(realTime, message);
 	}
 
-	// Send the nessage to the destinations
+	// Send the message to the destinations
 	if ((type & ImmediateLcdMessage) != 0)
 	{
 		SendAuxMessage(message);
@@ -3911,6 +3924,32 @@ void Platform::SetPressureAdvance(size_t extruder, float factor)
 		pressureAdvance[extruder] = factor;
 	}
 }
+
+#if NONLINEAR_EXTRUSION
+
+bool Platform::GetExtrusionCoefficients(size_t extruder, float& a, float& b, float& limit) const
+{
+	if (extruder < MaxExtruders)
+	{
+		a = nonlinearExtrusionA[extruder];
+		b = nonlinearExtrusionB[extruder];
+		limit = nonlinearExtrusionLimit[extruder];
+		return true;
+	}
+	return false;
+}
+
+void Platform::SetNonlinearExtrusion(size_t extruder, float a, float b, float limit)
+{
+	if (extruder < MaxExtruders && nonlinearExtrusionLimit[extruder] > 0.0)
+	{
+		nonlinearExtrusionLimit[extruder] = limit;
+		nonlinearExtrusionA[extruder] = a;
+		nonlinearExtrusionB[extruder] = b;
+	}
+}
+
+#endif
 
 float Platform::ActualInstantDv(size_t drive) const
 {

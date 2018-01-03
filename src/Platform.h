@@ -439,6 +439,7 @@ public:
 	void Message(MessageType type, OutputBuffer *buffer);
 	void MessageF(MessageType type, const char *fmt, ...) __attribute__ ((format (printf, 3, 4)));
 	void MessageF(MessageType type, const char *fmt, va_list vargs);
+	bool FlushAuxMessages();
 	bool FlushMessages();							// Flush messages to USB and aux, returning true if there is more to send
 	void SendAlert(MessageType mt, const char *message, const char *title, int sParam, float tParam, AxesBitmap controls);
 	void StopLogging();
@@ -517,6 +518,11 @@ public:
 	static void StepDriversHigh(uint32_t driverMap);		// set the specified step pins high
 	uint32_t GetSlowDrivers() const { return slowDrivers; }
 	uint32_t GetSlowDriverClocks() const { return slowDriverStepPulseClocks; }
+
+#if NONLINEAR_EXTRUSION
+	bool GetExtrusionCoefficients(size_t extruder, float& a, float& b, float& limit) const;
+	void SetNonlinearExtrusion(size_t extruder, float a, float b, float limit);
+#endif
 
 	// Z probe
 
@@ -790,6 +796,9 @@ private:
 	float driveStepsPerUnit[DRIVES];
 	float instantDvs[DRIVES];
 	float pressureAdvance[MaxExtruders];
+#if NONLINEAR_EXTRUSION
+	float nonlinearExtrusionA[MaxExtruders], nonlinearExtrusionB[MaxExtruders], nonlinearExtrusionLimit[MaxExtruders];
+#endif
 	float motorCurrents[DRIVES];						// the normal motor current for each stepper driver
 	float motorCurrentFraction[DRIVES];					// the percentages of normal motor current that each driver is set to
 #if HAS_SMART_DRIVERS

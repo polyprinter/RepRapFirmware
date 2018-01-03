@@ -106,7 +106,7 @@ bool FilamentSensor::ConfigurePin(GCodeBuffer& gb, StringRef& reply, bool& seen)
 			GCodes& gCodes = reprap.GetGCodes();
 			const float extrusionCommanded = (float)reprap.GetMove().GetAccumulatedExtrusion(extruder)/reprap.GetPlatform().DriveStepsPerUnit(extruder + gCodes.GetTotalAxes());
 																													// get and clear the Move extrusion commanded
-			if (gCodes.IsReallyPrinting())
+			if (gCodes.IsReallyPrinting() && !gCodes.IsSimulating())
 			{
 				const FilamentSensorStatus fstat = filamentSensors[extruder]->Check(full, extrusionCommanded);
 				if (full && fstat != FilamentSensorStatus::ok && extrusionCommanded > 0.0)
@@ -130,15 +130,15 @@ bool FilamentSensor::ConfigurePin(GCodeBuffer& gb, StringRef& reply, bool& seen)
 }
 
 // Return the filament sensor associated with a particular extruder
-/*static*/ FilamentSensor *FilamentSensor::GetFilamentSensor(int extruder)
+/*static*/ FilamentSensor *FilamentSensor::GetFilamentSensor(unsigned int extruder)
 {
-	return (extruder >= 0 && extruder < (int)MaxExtruders) ? filamentSensors[extruder] : nullptr;
+	return (extruder < MaxExtruders) ? filamentSensors[extruder] : nullptr;
 }
 
 // Set the filament sensor associated with a particular extruder
-/*static*/ bool FilamentSensor::SetFilamentSensorType(int extruder, int newSensorType)
+/*static*/ bool FilamentSensor::SetFilamentSensorType(unsigned int extruder, int newSensorType)
 {
-	if (extruder >= 0 && extruder < (int)MaxExtruders)
+	if (extruder < MaxExtruders)
 	{
 		FilamentSensor*& sensor = filamentSensors[extruder];
 		const int oldSensorType = (sensor == nullptr) ? 0 : sensor->GetType();

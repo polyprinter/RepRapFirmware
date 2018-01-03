@@ -87,7 +87,7 @@ public:
 
 	int32_t GetStepsTaken(size_t drive) const;
 
-	float GetProportionDone(bool moveWasAborted) const;				// Return the proportion of extrusion for the complete multi-segment move already done
+	float GetProportionDone(bool moveWasAborted) const;						// Return the proportion of extrusion for the complete multi-segment move already done
 
 	void MoveAborted();
 
@@ -104,6 +104,8 @@ public:
 #endif
 
 	void DebugPrint() const;
+	void DebugPrintAll() const;												// print the DDA and active DMs
+												// print the DDA only
 #ifdef POLYPRINTER
     void setRingIndex( int i ) { ringIndex = i; }
     bool HadNutSwitchActivation() const { return hadNutSwitch; }
@@ -146,7 +148,7 @@ public:
 private:
 	DriveMovement *FindDM(size_t drive) const;
 	void RecalculateMove() __attribute__ ((hot));
-	void CalcNewSpeeds() __attribute__ ((hot));
+	void MatchSpeeds() __attribute__ ((hot));
 	void ReduceHomingSpeed();										// called to reduce homing speed when a near-endstop is triggered
 	void StopDrive(size_t drive);									// stop movement of a drive and recalculate the endpoint
 	void InsertDM(DriveMovement *dm) __attribute__ ((hot));
@@ -170,7 +172,7 @@ private:
 	static void MaximizeForwardSpeeds( DDA* firstChangedBlock, DDA* newestBlock );
 	static void DoPlannerLookahead( DDA* newestMove );
 #else
-	static void DoLookahead(DDA *laDDA);							// Try to smooth out moves in the queue
+	static void DoLookahead(DDA *laDDA) __attribute__ ((hot));		// Try to smooth out moves in the queue
 #endif
     static float Normalise(float v[], size_t dim1, size_t dim2);  	// Normalise a vector of dim1 dimensions to unit length in the first dim1 dimensions
     static void Absolute(float v[], size_t dimensions);				// Put a vector in the positive hyperquadrant
