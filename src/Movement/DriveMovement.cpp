@@ -239,6 +239,7 @@ void DriveMovement::PrepareExtruder(const DDA& dda, const PrepParams& params, bo
 		// See whether there is a reverse phase
 		// the "speed" at the beginning of deceleration is actually instantaneously lower than it was at cruise.
 		//const float initialDecelSpeed = dda.topSpeed - dda.acceleration * compensationTime_SEC_or_MMpMMpSEC;
+		const float compensationSpeedChange = dda.acceleration * compensationTime_SEC_or_MMpMMpSEC;
 		const uint32_t stepsBeforeReverse = (compensationSpeedChange > dda.topSpeed)
 											? mp.cart.decelStartStep - 1
 											: twoDistanceToStopTimesCsquaredDivA/mp.cart.twoCsquaredTimesMmPerStepDivA;
