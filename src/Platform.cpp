@@ -26,13 +26,14 @@
 #include "Movement/Move.h"
 #include "Network.h"
 #include "PrintMonitor.h"
-#include "FilamentSensors/FilamentSensor.h"
+#include "FilamentMonitors/FilamentMonitor.h"
 #include "RepRap.h"
 #include "Scanner.h"
 #include "Version.h"
 #include "SoftTimer.h"
 #include "Logger.h"
 #include "Libraries/Math/Isqrt.h"
+#include "Wire.h"
 
 #include "sam/drivers/tc/tc.h"
 #include "sam/drivers/hsmci/hsmci.h"
@@ -58,7 +59,7 @@ extern "C" char *sbrk(int i);
 
 #if !defined(HAS_LWIP_NETWORKING) || !defined(HAS_WIFI_NETWORKING) || !defined(HAS_CPU_TEMP_SENSOR) || !defined(HAS_HIGH_SPEED_SD) \
  || !defined(HAS_SMART_DRIVERS) || !defined(HAS_STALL_DETECT) || !defined(HAS_VOLTAGE_MONITOR) || !defined(HAS_VREF_MONITOR) || !defined(ACTIVE_LOW_HEAT_ON) \
- || !defined(NONLINEAR_EXTRUSION)
+ || !defined(SUPPORT_NONLINEAR_EXTRUSION)
 # error Missing feature definition
 #endif
 
@@ -290,13 +291,15 @@ void ZProbeParameters::Init(float h)
 {
 	adcValue = Z_PROBE_AD_VALUE;
 	xOffset = yOffset = 0.0;
-	height = h;
+	triggerHeight = h;
 	calibTemperature = 20.0;
 	temperatureCoefficient = 0.0;	// no default temperature correction
 	diveHeight = DEFAULT_Z_DIVE;
 	probeSpeed = DEFAULT_PROBE_SPEED;
 	travelSpeed = DEFAULT_TRAVEL_SPEED;
-	recoveryTime = extraParam = 0.0;
+	recoveryTime = 0.0;
+	tolerance = 0.01;
+	maxTaps = 1;
 	invertReading = false;
 #ifdef POLYPRINTER
 	modulationFrequency_HZ = DEFAULT_ZPROBE_MODULATION_FREQUENCY_HZ;
@@ -305,12 +308,12 @@ void ZProbeParameters::Init(float h)
 
 float ZProbeParameters::GetStopHeight(float temperature) const
 {
-	return ((temperature - calibTemperature) * temperatureCoefficient) + height;
+	return ((temperature - calibTemperature) * temperatureCoefficient) + triggerHeight;
 }
 
 bool ZProbeParameters::WriteParameters(FileStore *f, unsigned int probeType) const
 {
-	scratchString.printf("G31 T%u P%" PRIu32 " X%.1f Y%.1f Z%.3f\n", probeType, adcValue, (double)xOffset, (double)yOffset, (double)height);
+	scratchString.printf("G31 T%u P%" PRIu32 " X%.1f Y%.1f Z%.2f\n", probeType, adcValue, (double)xOffset, (double)yOffset, (double)triggerHeight);
 	return f->Write(scratchString.Pointer());
 }
 
@@ -342,7 +345,7 @@ Platform::Platform() :
 		nextDriveToPoll(0),
 		onBoardDriversFanRunning(false), offBoardDriversFanRunning(false), onBoardDriversFanStartMillis(0), offBoardDriversFanStartMillis(0),
 #endif
-		lastFanCheckTime(0), auxGCodeReply(nullptr), tickState(0), debugCode(0), lastWarningMillis(0), deliberateError(false)
+		lastFanCheckTime(0), auxGCodeReply(nullptr), tickState(0), debugCode(0), lastWarningMillis(0), deliberateError(false), i2cInitialised(false)
 {
 	// Output
 	auxOutput = new OutputStack();
@@ -434,7 +437,7 @@ void Platform::Init()
 
 #if defined(DUET_06_085)
 	// Motor current setting on Duet 0.6 and 0.8.5
-	mcpDuet.begin();							// only call begin once in the entire execution, this begins the I2C comms on that channel for all objects
+	InitI2c();
 	mcpExpansion.setMCP4461Address(0x2E);		// not required for mcpDuet, as this uses the default address
 	ARRAY_INIT(potWipes, POT_WIPES);
 	senseResistor = SENSE_RESISTOR;
@@ -544,6 +547,8 @@ void Platform::Init()
 		// They have RC filtering on the main endstop inputs, so best not to enable the pullup resistors on these.
 		// 2017-12-19: some users are having trouble with the endstops not being recognised in recent firmware versions.
 		// Probably the LED+resistor isn't pulling them up fast enough. So enable the pullup resistors again.
+		// Note: if we don't have a DueX board connected, the pullups on endstop inputs 5-9 must always be enabled.
+		// Also the pullups on endstop inputs 10-11 must always be enabled.
 		setPullup(endStopPins[drive], true);					// enable pullup on endstop input
 #elif defined(__RADDS__) || defined(__ALLIGATOR__)
 		// I don't know whether RADDS and Alligator have hardware pullup resistors or not. I'll assume they might not.
@@ -558,7 +563,7 @@ void Platform::Init()
 	{
 		extruderDrivers[extr] = (uint8_t)(extr + MinAxes);		// set up default extruder drive mapping
 		SetPressureAdvance(extr, 0.0);							// no pressure advance
-#if NONLINEAR_EXTRUSION
+#if SUPPORT_NONLINEAR_EXTRUSION
 		nonlinearExtrusionA[extr] = nonlinearExtrusionB[extr] = 0.0;
 		nonlinearExtrusionLimit[extr] = DefaultNonlinearExtrusionLimit;
 #endif
@@ -583,22 +588,17 @@ void Platform::Init()
 		numSmartDrivers = 5;									// assume that any additional drivers are dumb enable/step/dir ones
 		break;
 	}
-	DuetExpansion::AdditionalOutputInit();
 
-	// Set up the VSSA sense pin. Older Duet WiFis don't have it connected, so we enable the pulldown resistor to keep it inactive.
+	if (expansionBoard != ExpansionBoardType::none)
 	{
-		pinMode(VssaSensePin, INPUT_PULLUP);
-		delayMicroseconds(10);
-		const bool vssaHighVal = digitalRead(VssaSensePin);
-		pinMode(VssaSensePin, INPUT_PULLDOWN);
-		delayMicroseconds(10);
-		const bool vssaLowVal = digitalRead(VssaSensePin);
-		vssaSenseWorking = vssaLowVal || !vssaHighVal;
-		if (vssaSenseWorking)
+		for (size_t i =  0; i < ARRAY_SIZE(DUEX_END_STOP_PINS); ++i)
 		{
-			pinMode(VssaSensePin, INPUT);
+			endStopPins[5 + i] = DUEX_END_STOP_PINS[i];			// reassign endstop pins 5-9
 		}
 	}
+
+	DuetExpansion::AdditionalOutputInit();
+
 #elif defined(DUET_M)
 	numSmartDrivers = 5;										// TODO for now we assume that additional drivers are dumb
 #endif
@@ -1022,7 +1022,7 @@ bool Platform::ProgramZProbe(GCodeBuffer& gb, StringRef& reply)
 	{
 		uint32_t zProbeProgram[MaxZProbeProgramBytes];
 		size_t len = MaxZProbeProgramBytes;
-		gb.GetUnsignedArray(zProbeProgram, len);
+		gb.GetUnsignedArray(zProbeProgram, len, false);
 		if (len != 0)
 		{
 			for (size_t i = 0; i < len; ++i)
@@ -1653,8 +1653,8 @@ void Platform::Spin()
 		{
 			bool reported = false;
 #if HAS_SMART_DRIVERS
-			ReportDrivers(shortToGroundDrivers, "Error: Short-to-ground", reported);
-			ReportDrivers(temperatureShutdownDrivers, "Error: Over temperature shutdown", reported);
+			ReportDrivers(ErrorMessage, shortToGroundDrivers, "short-to-ground", reported);
+			ReportDrivers(ErrorMessage, temperatureShutdownDrivers, "over temperature shutdown", reported);
 			// Don't report open load because we get too many spurious open load reports
 			//ReportDrivers(openLoadDrivers, "Error: Open load", reported);
 
@@ -1668,7 +1668,7 @@ void Platform::Spin()
 					|| (offBoardOtw && (!offBoardDriversFanRunning || now - offBoardDriversFanStartMillis >= DriverCoolingTimeout))
 				   )
 				{
-					ReportDrivers(temperatureWarningDrivers, "Warning: high temperature", reported);
+					ReportDrivers(WarningMessage, temperatureWarningDrivers, "high temperature", reported);
 				}
 			}
 #endif
@@ -1711,7 +1711,13 @@ void Platform::Spin()
 				reported = true;
 			}
 #elif defined(DUET_NG)
-			if (vssaSenseWorking && digitalRead(VssaSensePin))
+			if (
+# if defined(DUET_WIFI)
+				board == BoardType::DuetWiFi_102
+# elif defined(DUET_ETHERNET)
+				board == BoardType::DuetEthernet_102
+# endif
+				&& digitalRead(VssaSensePin))
 			{
 				Message(ErrorMessage, "VSSA fault, check thermistor wiring\n");
 				reported = true;
@@ -1776,7 +1782,7 @@ void Platform::Spin()
 
 // Report driver status conditions that require attention.
 // Sets 'reported' if we reported anything, else leaves 'reported' alone.
-void Platform::ReportDrivers(DriversBitmap whichDrivers, const char* text, bool& reported)
+void Platform::ReportDrivers(MessageType mt, DriversBitmap whichDrivers, const char* text, bool& reported)
 {
 	if (whichDrivers != 0)
 	{
@@ -1789,7 +1795,7 @@ void Platform::ReportDrivers(DriversBitmap whichDrivers, const char* text, bool&
 			}
 			whichDrivers >>= 1;
 		}
-		MessageF(WarningMessage, "%s\n", scratchString.Pointer());
+		MessageF(mt, "%s\n", scratchString.Pointer());
 		reported = true;
 	}
 }
@@ -1798,8 +1804,8 @@ void Platform::ReportDrivers(DriversBitmap whichDrivers, const char* text, bool&
 
 #if HAS_STALL_DETECT
 
-// Return true if any motor driving this axis or extruder is stalled
-bool Platform::AnyMotorStalled(size_t drive) const
+// Return true if any motor driving this axis is stalled
+bool Platform::AnyAxisMotorStalled(size_t drive) const
 {
 	const size_t numAxes = reprap.GetGCodes().GetTotalAxes();
 	if (drive < numAxes)
@@ -1815,6 +1821,12 @@ bool Platform::AnyMotorStalled(size_t drive) const
 	}
 
 	return (SmartDrivers::GetLiveStatus(extruderDrivers[drive - numAxes]) & TMC_RR_SG) != 0;
+}
+
+// Return true if the motor driving this extruder is stalled
+bool Platform::ExtruderMotorStalled(size_t extruder) const pre(drive < DRIVES)
+{
+	return (SmartDrivers::GetLiveStatus(extruderDrivers[extruder]) & TMC_RR_SG) != 0;
 }
 
 #endif
@@ -1999,7 +2011,7 @@ static void FanInterrupt(CallbackParameter)
 	++fanInterruptCount;
 	if (fanInterruptCount == fanMaxInterruptCount)
 	{
-		uint32_t now = micros();
+		const uint32_t now = micros();
 		fanInterval = now - fanLastResetTime;
 		fanLastResetTime = now;
 		fanInterruptCount = 0;
@@ -2755,7 +2767,8 @@ void Platform::UpdateConfiguredHeaters()
 
 EndStopHit Platform::Stopped(size_t drive) const
 {
-	if (drive < reprap.GetGCodes().GetTotalAxes())
+	const size_t numAxes = reprap.GetGCodes().GetTotalAxes();
+	if (drive < numAxes)
 	{
 		switch (endStopInputType[drive])
 		{
@@ -2776,28 +2789,28 @@ EndStopHit Platform::Stopped(size_t drive) const
 				case KinematicsType::coreXY:
 					// Both X and Y motors are involved in homing X or Y
 					motorIsStalled = (drive == X_AXIS || drive == Y_AXIS)
-										? AnyMotorStalled(X_AXIS) || AnyMotorStalled(Y_AXIS)
-											: AnyMotorStalled(drive);
+										? AnyAxisMotorStalled(X_AXIS) || AnyAxisMotorStalled(Y_AXIS)
+											: AnyAxisMotorStalled(drive);
 					break;
 
 				case KinematicsType::coreXYU:
 					// Both X and Y motors are involved in homing X or Y, and both U and V motors are involved in homing U
 					motorIsStalled = (drive == X_AXIS || drive == Y_AXIS)
-										? AnyMotorStalled(X_AXIS) || AnyMotorStalled(Y_AXIS)
+										? AnyAxisMotorStalled(X_AXIS) || AnyAxisMotorStalled(Y_AXIS)
 											: (drive == U_AXIS)
-												? AnyMotorStalled(U_AXIS) || AnyMotorStalled(V_AXIS)
-													: AnyMotorStalled(drive);
+												? AnyAxisMotorStalled(U_AXIS) || AnyAxisMotorStalled(V_AXIS)
+													: AnyAxisMotorStalled(drive);
 					break;
 
 				case KinematicsType::coreXZ:
 					// Both X and Z motors are involved in homing X or Z
 					motorIsStalled = (drive == X_AXIS || drive == Z_AXIS)
-										? AnyMotorStalled(X_AXIS) || AnyMotorStalled(Z_AXIS)
-											: AnyMotorStalled(drive);
+										? AnyAxisMotorStalled(X_AXIS) || AnyAxisMotorStalled(Z_AXIS)
+											: AnyAxisMotorStalled(drive);
 					break;
 
 				default:
-					motorIsStalled = AnyMotorStalled(drive);
+					motorIsStalled = AnyAxisMotorStalled(drive);
 					break;
 				}
 				return (!motorIsStalled) ? EndStopHit::noStop
@@ -2808,14 +2821,17 @@ EndStopHit Platform::Stopped(size_t drive) const
 #endif
 
 		case EndStopInputType::activeLow:
+			if (endStopPins[drive] != NoPin)
+			{
+				const bool b = IoPort::ReadPin(endStopPins[drive]);
+				return (b) ? EndStopHit::noStop : (endStopPos[drive] == EndStopPosition::highEndStop) ? EndStopHit::highHit : EndStopHit::lowHit;
+			}
+			break;
+
 		case EndStopInputType::activeHigh:
 			if (endStopPins[drive] != NoPin)
 			{
-				bool b = IoPort::ReadPin(endStopPins[drive]);
-				if (endStopInputType[drive] == EndStopInputType::activeHigh)
-				{
-					b = !b;
-				}
+				const bool b = !IoPort::ReadPin(endStopPins[drive]);
 				return (b) ? EndStopHit::noStop : (endStopPos[drive] == EndStopPosition::highEndStop) ? EndStopHit::highHit : EndStopHit::lowHit;
 			}
 			break;
@@ -2824,13 +2840,20 @@ EndStopHit Platform::Stopped(size_t drive) const
 			break;
 		}
 	}
+#if HAS_STALL_DETECT
 	else if (drive < DRIVES)
 	{
-		// Endstop not used for an axis, so no configuration data available.
-		// To allow us to see its status in DWC, pretend it is configured as a high-end active high endstop.
-		return (endStopPins[drive] != NoPin && IoPort::ReadPin(endStopPins[drive])) ? EndStopHit::highHit : EndStopHit::noStop;
+		// Endstop is for an extruder drive, so use stall detection
+		return (ExtruderMotorStalled(drive - numAxes)) ? EndStopHit::highHit : EndStopHit::noStop;
 	}
+#endif
 	return EndStopHit::noStop;
+}
+
+// Return the state of the endstop input, regardless of whether we are actually using it as an endstop
+bool Platform::EndStopInputState(size_t drive) const
+{
+	return endStopPins[drive] != NoPin && IoPort::ReadPin(endStopPins[drive]);
 }
 
 // Get the statues of all the endstop inputs, regardless of what they are used for. Used for triggers.
@@ -3925,7 +3948,7 @@ void Platform::SetPressureAdvance(size_t extruder, float factor)
 	}
 }
 
-#if NONLINEAR_EXTRUSION
+#if SUPPORT_NONLINEAR_EXTRUSION
 
 bool Platform::GetExtrusionCoefficients(size_t extruder, float& a, float& b, float& limit) const
 {
@@ -3950,24 +3973,6 @@ void Platform::SetNonlinearExtrusion(size_t extruder, float a, float b, float li
 }
 
 #endif
-
-float Platform::ActualInstantDv(size_t drive) const
-{
-	const float idv = instantDvs[drive];
-	const size_t numAxes = reprap.GetGCodes().GetTotalAxes();
-	if (drive >= numAxes)
-	{
-		const float eComp = pressureAdvance[drive - numAxes];
-		// If we are using pressure advance then we need to limit the extruder instantDv to avoid velocity mismatches.
-		// Assume that we want the extruder motor position to be accurate to within 0.01mm of extrusion.
-		// TODO remove this limit and add/remove steps to the previous and/or next move instead
-		return (eComp <= 0.0) ? idv : min<float>(idv, 0.01/eComp);
-	}
-	else
-	{
-		return idv;
-	}
-}
 
 void Platform::SetBaudRate(size_t chan, uint32_t br)
 {
@@ -4029,10 +4034,25 @@ void Platform::SetBoardType(BoardType bt)
 	{
 #if defined(__SAME70Q21__)
 		board = BoardType::SAME70_TEST;
-#elif defined(DUET_NG) && defined(DUET_WIFI)
-		board = BoardType::DuetWiFi_10;
-#elif defined(DUET_NG) && defined(DUET_ETHERNET)
-		board = BoardType::DuetEthernet_10;
+#elif defined(DUET_NG)
+		// Set up the VSSA sense pin. Older Duet WiFis don't have it connected, so we enable the pulldown resistor to keep it inactive.
+		pinMode(VssaSensePin, INPUT_PULLUP);
+		delayMicroseconds(10);
+		const bool vssaHighVal = digitalRead(VssaSensePin);
+		pinMode(VssaSensePin, INPUT_PULLDOWN);
+		delayMicroseconds(10);
+		const bool vssaLowVal = digitalRead(VssaSensePin);
+		const bool vssaSenseWorking = vssaLowVal || !vssaHighVal;
+		if (vssaSenseWorking)
+		{
+			pinMode(VssaSensePin, INPUT);
+		}
+
+# if defined(DUET_WIFI)
+		board = (vssaSenseWorking) ? BoardType::DuetWiFi_102 : BoardType::DuetWiFi_10;
+# elif defined(DUET_ETHERNET)
+		board = (vssaSenseWorking) ? BoardType::DuetEthernet_102 : BoardType::DuetEthernet_10;
+# endif
 #elif defined(DUET_M)
 		board = BoardType::DuetM_10;
 #elif defined(DUET_06_085)
@@ -4071,11 +4091,13 @@ const char* Platform::GetElectronicsString() const
 #if defined(__SAME70Q21__)
 	case BoardType::SAME70_TEST:			return "SAM E70 prototype 1";
 #elif defined(DUET_NG) && defined(DUET_WIFI)
-	case BoardType::DuetWiFi_10:			return "Duet WiFi 1.0";
+	case BoardType::DuetWiFi_10:			return "Duet WiFi 1.0 or 1.01";
+	case BoardType::DuetWiFi_102:			return "Duet WiFi 1.02 or later";
 #elif defined(DUET_NG) && defined(DUET_ETHERNET)
-	case BoardType::DuetEthernet_10:		return "Duet Ethernet 1.0";
+	case BoardType::DuetEthernet_10:		return "Duet Ethernet 1.0 or 1.01";
+	case BoardType::DuetEthernet_102:		return "Duet Ethernet 1.02 or later";
 #elif defined(DUET_M)
-	case BoardType::DuetM_10:				return "unnamed board 1.0";
+	case BoardType::DuetM_10:				return "Duet Maestro 1.0";
 #elif defined(DUET_06_085)
 	case BoardType::Duet_06:				return "Duet 0.6";
 	case BoardType::Duet_07:				return "Duet 0.7";
@@ -4100,10 +4122,12 @@ const char* Platform::GetBoardString() const
 	case BoardType::SAME70_TEST:			return "same70prototype1";
 #elif defined(DUET_NG) && defined(DUET_WIFI)
 	case BoardType::DuetWiFi_10:			return "duetwifi10";
+	case BoardType::DuetWiFi_102:			return "duetwifi102";
 #elif defined(DUET_NG) && defined(DUET_ETHERNET)
 	case BoardType::DuetEthernet_10:		return "duetethernet10";
+	case BoardType::DuetEthernet_102:		return "duetethernet102";
 #elif defined(DUET_M)
-	case BoardType::DuetM_10:				return "unnamedboard10";
+	case BoardType::DuetM_10:				return "duetmaestro100";
 #elif defined(DUET_06_085)
 	case BoardType::Duet_06:				return "duet06";
 	case BoardType::Duet_07:				return "duet07";
@@ -4395,7 +4419,7 @@ bool Platform::ConfigureStallDetection(GCodeBuffer& gb, StringRef& reply)
 	{
 		uint32_t drives[DRIVES];
 		size_t dCount = DRIVES;
-		gb.GetUnsignedArray(drives, dCount);
+		gb.GetUnsignedArray(drives, dCount, false);
 		for (size_t i = 0; i < dCount; i++)
 		{
 			if (drives[i] >= numSmartDrivers)
@@ -4563,6 +4587,18 @@ bool Platform::SetDateTime(time_t time)
 	return ok;
 }
 
+// Misc
+void Platform::InitI2c()
+{
+#if defined(I2C_IFACE)
+	if (!i2cInitialised)
+	{
+		I2C_IFACE.begin();
+		i2cInitialised = true;
+	}
+#endif
+}
+
 // Step pulse timer interrupt
 void STEP_TC_HANDLER() __attribute__ ((hot));
 
@@ -4595,7 +4631,7 @@ void STEP_TC_HANDLER()
 {
 	const irqflags_t flags = cpu_irq_save();
 	const int32_t diff = (int32_t)(tim - GetInterruptClocks());		// see how long we have to go
-	if (diff < (int32_t)DDA::minInterruptInterval)					// if less than about 6us or already passed
+	if (diff < (int32_t)DDA::MinInterruptInterval)					// if less than about 6us or already passed
 	{
 		cpu_irq_restore(flags);
 		return true;												// tell the caller to simulate an interrupt instead
@@ -4628,7 +4664,7 @@ void STEP_TC_HANDLER()
 {
 	const irqflags_t flags = cpu_irq_save();
 	const int32_t diff = (int32_t)(tim - GetInterruptClocks());		// see how long we have to go
-	if (diff < (int32_t)DDA::minInterruptInterval)					// if less than about 6us or already passed
+	if (diff < (int32_t)DDA::MinInterruptInterval)					// if less than about 6us or already passed
 	{
 		cpu_irq_restore(flags);
 		return true;												// tell the caller to simulate an interrupt instead

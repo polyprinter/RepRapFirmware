@@ -18,6 +18,8 @@
 #include "FirmwareUpdater.h"
 #endif
 
+#include "Wire.h"
+
 // Set or print the Z probe. Called by G31.
 // Note that G31 P or G31 P0 prints the parameters of the currently-selected Z probe.
 GCodeResult GCodes::SetPrintZProbe(GCodeBuffer& gb, StringRef& reply)
@@ -33,7 +35,7 @@ GCodeResult GCodes::SetPrintZProbe(GCodeBuffer& gb, StringRef& reply)
 	bool seen = false;
 	gb.TryGetFValue(axisLetters[X_AXIS], params.xOffset, seen);
 	gb.TryGetFValue(axisLetters[Y_AXIS], params.yOffset, seen);
-	gb.TryGetFValue(axisLetters[Z_AXIS], params.height, seen);
+	gb.TryGetFValue(axisLetters[Z_AXIS], params.triggerHeight, seen);
 	gb.TryGetIValue('P', params.adcValue, seen);
 
 	if (gb.Seen('C'))
@@ -62,7 +64,7 @@ GCodeResult GCodes::SetPrintZProbe(GCodeBuffer& gb, StringRef& reply)
 	else if (seenT)
 	{
 		// Don't bother printing temperature coefficient and calibration temperature because we will probably remove them soon
-		reply.printf("Threshold %" PRIi32 ", trigger height %.2f, offsets X%.1f Y%.1f", params.adcValue, (double)params.height, (double)params.xOffset, (double)params.yOffset);
+		reply.printf("Threshold %" PRIi32 ", trigger height %.2f, offsets X%.1f Y%.1f", params.adcValue, (double)params.triggerHeight, (double)params.xOffset, (double)params.yOffset);
 	}
 	else
 	{
@@ -154,20 +156,62 @@ GCodeResult GCodes::SetPositions(GCodeBuffer& gb)
 	return GCodeResult::ok;
 }
 
-// Offset the axes by the X, Y, and Z amounts in the M code in gb. The actual movement occurs on the next move command.
-// It's not clear from the description in the reprap.org wiki whether offsets are cumulative or not. We assume they are.
+// Offset the axes by the X, Y, and Z amounts in the M226 code in gb. The actual movement occurs on the next move command.
+// It's not clear from the description in the reprap.org wiki whether offsets are cumulative or not. We now assume they are not.
+// Note that M206 offsets are actually negative offsets.
 GCodeResult GCodes::OffsetAxes(GCodeBuffer& gb)
 {
-	for (size_t drive = 0; drive < numVisibleAxes; drive++)
+	for (size_t axis = 0; axis < numVisibleAxes; axis++)
 	{
-		if (gb.Seen(axisLetters[drive]))
+		if (gb.Seen(axisLetters[axis]))
 		{
-			axisOffsets[drive] += gb.GetFValue() * distanceScale;
+#if SUPPORT_WORKPLACE_COORDINATES
+			workplaceCoordinates[0][axis]
+#else
+			axisOffsets[axis]
+#endif
+						 = -(gb.GetFValue() * distanceScale);
 		}
 	}
 
 	return GCodeResult::ok;
 }
+
+#if SUPPORT_WORKPLACE_COORDINATES
+
+// Set workspace coordinates
+GCodeResult GCodes::GetSetWorkplaceCoordinates(GCodeBuffer& gb, StringRef& reply)
+{
+	if (gb.Seen('P'))
+	{
+		const uint32_t cs = gb.GetIValue();
+		if (cs < ARRAY_SIZE(workplaceCoordinates))
+		{
+			bool seen = false;
+			for (size_t axis = 0; axis < numVisibleAxes; axis++)
+			{
+				if (gb.Seen(axisLetters[axis]))
+				{
+					workplaceCoordinates[cs][axis] = gb.GetFValue() * distanceScale;
+					seen = true;
+				}
+			}
+			if (!seen)
+			{
+				reply.printf("Coordinates of workplace %" PRIu32 ":", cs);
+				for (size_t axis = 0; axis < numVisibleAxes; axis++)
+				{
+					reply.catf(" %c%.2f", axisLetters[axis], (double)workplaceCoordinates[cs][axis]);
+				}
+			}
+			return GCodeResult::ok;
+		}
+	}
+
+	return GCodeResult::badOrMissingParameter;
+}
+
+#endif
 
 // Define the probing grid, called when we see an M557 command
 GCodeResult GCodes::DefineGrid(GCodeBuffer& gb, StringRef &reply)
@@ -297,10 +341,16 @@ GCodeResult GCodes::SetOrReportZProbe(GCodeBuffer& gb, StringRef &reply)
 	}
 
 	gb.TryGetFValue('R', params.recoveryTime, seenParam);	// Z probe recovery time
-	gb.TryGetFValue('S', params.extraParam, seenParam);		// extra parameter for experimentation
+	gb.TryGetFValue('S', params.tolerance, seenParam);		// tolerance when multi-tapping
 #ifdef POLYPRINTER
 			gb.TryGetFValue('J', params.modulationFrequency_HZ, seenParam);		// set Hz of
 #endif
+
+	if (gb.Seen('A'))
+	{
+		params.maxTaps = gb.GetUIValue();
+		seenParam = true;
+	}
 
 	if (seenParam)
 	{
@@ -309,9 +359,10 @@ GCodeResult GCodes::SetOrReportZProbe(GCodeBuffer& gb, StringRef &reply)
 
 	if (!(seenType || seenParam))
 	{
-		reply.printf("Z Probe type %d, invert %s, dive height %.1fmm, probe speed %dmm/min, travel speed %dmm/min, recovery time %.2f sec",
+		reply.printf("Z Probe type %d, invert %s, dive height %.1fmm, probe speed %dmm/min, travel speed %dmm/min, recovery time %.2f sec, max taps %u, max diff %.2f",
 						platform.GetZProbeType(), (params.invertReading) ? "yes" : "no", (double)params.diveHeight,
-						(int)(params.probeSpeed * MinutesToSeconds), (int)(params.travelSpeed * MinutesToSeconds), (double)params.recoveryTime);
+						(int)(params.probeSpeed * MinutesToSeconds), (int)(params.travelSpeed * MinutesToSeconds),
+						(double)params.recoveryTime, params.maxTaps, (double)params.tolerance);
 	}
 	return GCodeResult::ok;
 }
@@ -360,7 +411,7 @@ GCodeResult GCodes::CheckOrConfigureTrigger(GCodeBuffer& gb, StringRef& reply, i
 					{
 						uint32_t eStops[MaxExtruders];
 						size_t numEntries = MaxExtruders;
-						gb.GetUnsignedArray(eStops, numEntries);
+						gb.GetUnsignedArray(eStops, numEntries, false);
 						for (size_t i = 0; i < numEntries; ++i)
 						{
 							if (eStops[i] < MaxExtruders)
@@ -440,7 +491,7 @@ GCodeResult GCodes::DoDriveMapping(GCodeBuffer& gb, StringRef& reply)
 			seen = true;
 			size_t numValues = MaxDriversPerAxis;
 			uint32_t drivers[MaxDriversPerAxis];
-			gb.GetUnsignedArray(drivers, numValues);
+			gb.GetUnsignedArray(drivers, numValues, false);
 
 			// Check all the driver numbers are in range
 			AxisDriversConfig config;
@@ -494,7 +545,7 @@ GCodeResult GCodes::DoDriveMapping(GCodeBuffer& gb, StringRef& reply)
 		seen = true;
 		size_t numValues = DRIVES - numTotalAxes;
 		uint32_t drivers[MaxExtruders];
-		gb.GetUnsignedArray(drivers, numValues);
+		gb.GetUnsignedArray(drivers, numValues, false);
 		numExtruders = numValues;
 		for (size_t i = 0; i < numValues; ++i)
 		{
@@ -720,7 +771,7 @@ GCodeResult GCodes::UpdateFirmware(GCodeBuffer& gb, StringRef &reply)
 		{
 			uint32_t modulesToUpdate[3];
 			size_t numUpdateModules = ARRAY_SIZE(modulesToUpdate);
-			gb.GetUnsignedArray(modulesToUpdate, numUpdateModules);
+			gb.GetUnsignedArray(modulesToUpdate, numUpdateModules, false);
 			for (size_t i = 0; i < numUpdateModules; ++i)
 			{
 				uint32_t t = modulesToUpdate[i];
@@ -768,6 +819,77 @@ GCodeResult GCodes::UpdateFirmware(GCodeBuffer& gb, StringRef &reply)
 
 	gb.SetState(GCodeState::flashing1);
 	return GCodeResult::ok;
+}
+
+// Handle M260
+GCodeResult GCodes::SendI2c(GCodeBuffer& gb, StringRef &reply)
+{
+#if defined(I2C_IFACE)
+	if (gb.Seen('A'))
+	{
+		uint32_t address = gb.GetUIValue();
+		if (gb.Seen('B'))
+		{
+			int32_t values[MaxI2cBytes];
+			size_t numValues = MaxI2cBytes;
+			gb.GetIntArray(values, numValues, false);
+			if (numValues != 0)
+			{
+				reprap.GetPlatform().InitI2c();
+				I2C_IFACE.beginTransmission((int)address);
+				for (size_t i = 0; i < numValues; ++i)
+				{
+					I2C_IFACE.write((uint8_t)values[i]);
+				}
+				I2C_IFACE.endTransmission();
+				return GCodeResult::ok;
+			}
+		}
+	}
+
+	return GCodeResult::badOrMissingParameter;
+#else
+	reply.copy("I2C not available");
+	return GCodeResult::error;
+#endif
+}
+
+// Handle M261
+GCodeResult GCodes::ReceiveI2c(GCodeBuffer& gb, StringRef &reply)
+{
+#if defined(I2C_IFACE)
+	if (gb.Seen('A'))
+	{
+		uint32_t address = gb.GetUIValue();
+		if (gb.Seen('B'))
+		{
+			uint32_t numBytes = gb.GetUIValue();
+			if (numBytes > 0 && numBytes <= MaxI2cBytes)
+			{
+				reprap.GetPlatform().InitI2c();
+				I2C_IFACE.requestFrom(address, numBytes);
+				reply.copy("Received");
+				const uint32_t now = millis();
+				do
+				{
+					if (I2C_IFACE.available() != 0)
+					{
+						const unsigned int b = I2C_IFACE.read() & 0x00FF;
+						reply.catf(" %02x", b);
+						--numBytes;
+					}
+				} while (numBytes != 0 && now - millis() < 3);
+
+				return GCodeResult::ok;
+			}
+		}
+	}
+
+	return GCodeResult::badOrMissingParameter;
+#else
+	reply.copy("I2C not available");
+	return GCodeResult::error;
+#endif
 }
 
 // End

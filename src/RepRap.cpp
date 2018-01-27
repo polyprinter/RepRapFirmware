@@ -19,6 +19,10 @@
 # include "PortControl.h"
 #endif
 
+#if SUPPORT_12864_LCD
+# include "Display/Display.h"
+#endif
+
 #if HAS_HIGH_SPEED_SD
 # include "sam/drivers/hsmci/hsmci.h"
 #endif
@@ -47,8 +51,15 @@ extern "C" void hsmciIdle()
 
 	if (reprap.GetSpinningModule() != moduleFilamentSensors)
 	{
-		FilamentSensor::Spin(false);
+		FilamentMonitor::Spin(false);
 	}
+
+#if SUPPORT_12864_LCD
+	if (reprap.GetSpinningModule() != moduleDisplay)
+	{
+		reprap.GetDisplay().Spin(false);
+	}
+#endif
 }
 
 // RepRap member functions.
@@ -76,6 +87,9 @@ RepRap::RepRap() : toolList(nullptr), currentTool(nullptr), lastWarningMillis(0)
 #if SUPPORT_IOBITS
 	portControl = new PortControl();
 #endif
+#if SUPPORT_12864_LCD
+ 	display = new Display();
+#endif
 
 	printMonitor = new PrintMonitor(*platform, *gCodes);
 
@@ -102,6 +116,9 @@ void RepRap::Init()
 	portControl->Init();
 #endif
 	printMonitor->Init();
+#if SUPPORT_12864_LCD
+ 	display->Init();
+#endif
 	active = true;					// must do this before we start the network, else the watchdog may time out
 
 	platform->MessageF(UsbMessage, "%s Version %s dated %s\n", FIRMWARE_NAME, VERSION, DATE);
@@ -160,6 +177,9 @@ void RepRap::Exit()
 #endif
 #if SUPPORT_IOBITS
 	portControl->Exit();
+#endif
+#if SUPPORT_12864_LCD
+ 	display->Exit();
 #endif
 	network->Exit();
 	platform->Exit();
@@ -223,7 +243,13 @@ void RepRap::Spin()
 
 	ticksInSpinState = 0;
 	spinningModule = moduleFilamentSensors;
-	FilamentSensor::Spin(true);
+	FilamentMonitor::Spin(true);
+
+#if SUPPORT_12864_LCD
+	ticksInSpinState = 0;
+	spinningModule = moduleDisplay;
+	display->Spin(true);
+#endif
 
 	ticksInSpinState = 0;
 	spinningModule = noModule;
@@ -272,7 +298,7 @@ void RepRap::Diagnostics(MessageType mtype)
 	heat->Diagnostics(mtype);
 	gCodes->Diagnostics(mtype);
 	network->Diagnostics(mtype);
-	FilamentSensor::Diagnostics(mtype);
+	FilamentMonitor::Diagnostics(mtype);
 }
 
 // Turn off the heaters, disable the motors, and deactivate the Heat and Move classes. Leave everything else working.
@@ -952,8 +978,7 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 		uint32_t endstops = 0;
 		for(size_t drive = 0; drive < DRIVES; drive++)
 		{
-			EndStopHit driveStopped = platform->Stopped(drive);
-			if (driveStopped == EndStopHit::highHit || driveStopped == EndStopHit::lowHit)
+			if (platform->EndStopInputState(drive))
 			{
 				endstops |= (1u << drive);
 			}
@@ -986,7 +1011,7 @@ OutputBuffer *RepRap::GetStatusResponse(uint8_t type, ResponseSource source)
 			response->catf(",\"probe\":{\"threshold\":%" PRIi32, probeParams.adcValue);
 
 			// Trigger height
-			response->catf(",\"height\":%.2f", (double)probeParams.height);
+			response->catf(",\"height\":%.2f", (double)probeParams.triggerHeight);
 
 			// Type
 			response->catf(",\"type\":%d}", platform->GetZProbeType());
@@ -1247,7 +1272,7 @@ OutputBuffer *RepRap::GetConfigResponse()
 	ch = '[';
 	for (size_t drive = 0; drive < DRIVES; drive++)
 	{
-		response->catf("%c%.2f", ch, (double)(platform->ConfiguredInstantDv(drive)));
+		response->catf("%c%.2f", ch, (double)(platform->GetInstantDv(drive)));
 		ch = ',';
 	}
 

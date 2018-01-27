@@ -55,8 +55,9 @@ enum Module : uint8_t
 	moduleDuetExpansion = 12,
 	moduleFilamentSensors = 13,
 	moduleWiFi = 14,
-	numModules = 15,				// make this one greater than the last module number
-	noModule = 15
+	moduleDisplay = 15,
+	numModules = 16,				// make this one greater than the last module number
+	noModule = 16
 };
 
 extern const char * const moduleName[];
@@ -81,12 +82,16 @@ class OutputBuffer;
 class OutputStack;
 class GCodeBuffer;
 class GCodeQueue;
-class FilamentSensor;
+class FilamentMonitor;
 class RandomProbePointSet;
 class Logger;
 
 #if SUPPORT_IOBITS
 class PortControl;
+#endif
+
+#if SUPPORT_12864_LCD
+class Display;
 #endif
 
 // Define floating point type to use for calculations where we would like high precision in matrix calculations
@@ -106,7 +111,8 @@ extern RepRap reprap;
 
 // Debugging support
 extern "C" void debugPrintf(const char* fmt, ...) __attribute__ ((format (printf, 1, 2)));
-#define DEBUG_HERE do { debugPrintf("At " __FILE__ " line %d\n", __LINE__); delay(50); } while (false)
+#define DEBUG_HERE do { } while (false)
+//#define DEBUG_HERE do { debugPrintf("At " __FILE__ " line %d\n", __LINE__); delay(50); } while (false)
 
 // Functions and globals not part of any class
 bool StringEndsWith(const char* string, const char* ending);

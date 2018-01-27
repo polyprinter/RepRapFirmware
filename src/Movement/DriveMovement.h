@@ -129,7 +129,7 @@ public:
 #endif
 	void PrepareCartesianAxis(const DDA& dda, const PrepParams& params) __attribute__ ((hot));
 	void PrepareDeltaAxis(const DDA& dda, const PrepParams& params) __attribute__ ((hot));
-	void PrepareExtruder(const DDA& dda, const PrepParams& params, bool doCompensation) __attribute__ ((hot));
+	void PrepareExtruder(const DDA& dda, const PrepParams& params, float speedChange, bool doCompensation) __attribute__ ((hot));
 
 #ifdef POLYPRINTER_PrepareExtruderWithLinearAdvance
 	void PrepareExtruderWithLinearAdvance(const DDA& dda, const PrepParams& params, bool doCompensation) __attribute__ ((hot));

@@ -572,7 +572,7 @@ bool DDA::Init(GCodes::RawMove &nextMove, bool doMotorMapping)
 							warnedAccelDrop = true;
 						}
 #endif
-						accelerations[drive] = min<float>(accelerations[drive], EffectiveAxisJerkLimit(drive)/compensationTime);
+						accelerations[drive] = min<float>(accelerations[drive], reprap.GetPlatform().GetInstantDv(drive)/compensationTime);
 					}
 				}
 			}
@@ -1913,7 +1913,7 @@ float DDA::AdvanceBabyStepping(float amount)
 			if (ok)
 			{
 				// Limit the babystepping Z speed to the lower of 0.1 times the original XYZ speed and 0.5 times the Z jerk
-				const float maxBabySteppingAmount = cdda->totalDistance * min<float>(0.1, 0.5 * reprap.GetPlatform().ConfiguredInstantDv(Z_AXIS)/cdda->topSpeed);
+				const float maxBabySteppingAmount = cdda->totalDistance * min<float>(0.1, 0.5 * reprap.GetPlatform().GetInstantDv(Z_AXIS)/cdda->topSpeed);
 				babySteppingToDo = constrain<float>(amount, -maxBabySteppingAmount, maxBabySteppingAmount);
 				cdda->directionVector[Z_AXIS] += babySteppingToDo/cdda->totalDistance;
 				cdda->totalDistance *= cdda->NormaliseXYZ();
@@ -2067,7 +2067,7 @@ void DDA::RecalculateMove()
 		const Platform& p = reprap.GetPlatform();
 		for (size_t drive = 0; drive < DRIVES; ++drive)
 		{
-			if (pddm[drive] != nullptr && pddm[drive]->state == DMState::moving && endSpeed * fabsf(directionVector[drive]) > p.ActualInstantDv(drive))
+			if (pddm[drive] != nullptr && pddm[drive]->state == DMState::moving && endSpeed * fabsf(directionVector[drive]) > p.GetInstantDv(drive))
 			{
 				canPauseAfter = false;
 				break;
@@ -2109,7 +2109,7 @@ void DDA::MatchSpeeds()
 		{
 			const float totalFraction = fabsf(directionVector[drive] - next->directionVector[drive]);
 			const float jerk = totalFraction * targetNextSpeed;
-			const float allowedJerk = reprap.GetPlatform().ActualInstantDv(drive);
+			const float allowedJerk = reprap.GetPlatform().GetInstantDv(drive);
 			if (jerk > allowedJerk)
 			{
 				targetNextSpeed = allowedJerk/totalFraction;
@@ -2245,21 +2245,33 @@ void DDA::Prepare(uint8_t simMode)
 					if (drive >= numAxes)
 					{
 #ifdef POLYPRINTER
-					if ( doZHomingVibration )
-					{
-						debugPrintf("Preparing extruder for Vibration\n");
-						pdm->PrepareExtruderWithVibration(*this, params, zHomingParams );
-					}
-					else
-					{
+						if ( doZHomingVibration )
+						{
+							debugPrintf("Preparing extruder for Vibration\n");
+							pdm->PrepareExtruderWithVibration(*this, params, zHomingParams );
+						}
+						else
+						{
 #ifdef POLYPRINTER_PrepareExtruderWithLinearAdvance
-						pdm->PrepareExtruderWithLinearAdvance(*this, params, usePressureAdvance);
+							pdm->PrepareExtruderWithLinearAdvance(*this, params, usePressureAdvance);
 #else
-						pdm->PrepareExtruder(*this, params, usePressureAdvance);
+							pdm->PrepareExtruder(*this, params, usePressureAdvance);
 #endif
-					}
+						}
 #else
-					dm.PrepareExtruder(*this, params, usePressureAdvance);
+						// If there is any extruder jerk in this move, in theory that means we need to instantly extrude or retract some amount of filament.
+						// Pass the speed change to PrepareExtruder
+						float speedChange;
+						if (usePressureAdvance)
+						{
+							const float prevEndSpeed = (prev->usePressureAdvance) ? prev->endSpeed * prev->directionVector[drive] : 0.0;
+							speedChange = (startSpeed * directionVector[drive]) - prevEndSpeed;
+						}
+						else
+						{
+							speedChange = 0.0;
+						}
+						pdm->PrepareExtruder(*this, params, speedChange, usePressureAdvance);
 #endif
 
 						// Check for sensible values, print them if they look dubious
@@ -2540,7 +2552,13 @@ void DDA::CheckEndstops(Platform& platform)
 #endif
 #endif
 	const size_t numAxes = reprap.GetGCodes().GetTotalAxes();
-	for (size_t drive = 0; drive < numAxes; ++drive)
+	for (size_t drive = 0; drive <
+#if HAS_STALL_DETECT
+									DRIVES
+#else
+									numAxes
+#endif
+											; ++drive)
 	{
 		if (IsBitSet(endStopsToCheck, drive))
 		{
@@ -2549,7 +2567,7 @@ void DDA::CheckEndstops(Platform& platform)
 			{
 			case EndStopHit::lowHit:
 			case EndStopHit::highHit:
-				if ((endStopsToCheck & UseSpecialEndstop) != 0)		// use only one (probably non-default) endstop while probing a tool offset
+				if ((endStopsToCheck & UseSpecialEndstop) != 0)			// use only one (probably non-default) endstop while probing a tool offset
 				{
 					MoveAborted();
 				}
@@ -2557,7 +2575,12 @@ void DDA::CheckEndstops(Platform& platform)
 				{
 					ClearBit(endStopsToCheck, drive);					// clear this check so that we can check for more
 					const Kinematics& kin = reprap.GetMove().GetKinematics();
-					if (endStopsToCheck == 0 || kin.QueryTerminateHomingMove(drive))
+					if (   endStopsToCheck == 0							// if no endstops left to check
+#if HAS_STALL_DETECT
+						|| drive >= numAxes								// or we are stopping on an extruder motor stall
+#endif
+						|| kin.QueryTerminateHomingMove(drive)			// or this kinematics requires us to stop the move now
+					   )
 					{
 						MoveAborted();									// no more endstops to check, or this axis uses shared motors, so stop the entire move
 					}
@@ -2565,7 +2588,7 @@ void DDA::CheckEndstops(Platform& platform)
 					{
 						StopDrive(drive);								// we must stop the drive before we mess with its coordinates
 					}
-					if (drive < reprap.GetGCodes().GetTotalAxes() && IsHomingAxes())
+					if (drive < numAxes && IsHomingAxes())
 					{
 						kin.OnHomingSwitchTriggered(drive, esh == EndStopHit::highHit, reprap.GetPlatform().GetDriveStepsPerUnit(), *this);
 						reprap.GetGCodes().SetAxisIsHomed(drive);
@@ -2706,7 +2729,7 @@ bool DDA::Step()
 
 		// 2. Determine which drivers are due for stepping, overdue, or will be due very shortly
 		DriveMovement* dm = firstDM;
-		const uint32_t elapsedTime = (Platform::GetInterruptClocks() - moveStartTime) + minInterruptInterval;
+		const uint32_t elapsedTime = (Platform::GetInterruptClocks() - moveStartTime) + MinInterruptInterval;
 		uint32_t driversStepping = 0;
 		while (dm != nullptr && elapsedTime >= dm->nextStepTime)		// if the next step is due
 		{
@@ -2929,6 +2952,11 @@ int32_t DDA::GetStepsTaken(size_t drive) const
 {
 	const DriveMovement * const dmp = FindDM(drive);
 	return (dmp != nullptr) ? dmp->GetNetStepsTaken() : 0;
+}
+
+bool DDA::IsNonPrintingExtruderMove(size_t drive) const
+{
+	return !isPrintingMove && FindDM(drive) != nullptr;
 }
 
 void DDA::LimitSpeedAndAcceleration(float maxSpeed, float maxAcceleration)

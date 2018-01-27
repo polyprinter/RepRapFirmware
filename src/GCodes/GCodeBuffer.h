@@ -40,8 +40,8 @@ public:
 	bool GetQuotedString(const StringRef& str);			// Get and copy a quoted string
 	bool GetPossiblyQuotedString(const StringRef& str);	// Get and copy a string which may or may not be quoted
 	const void GetFloatArray(float arr[], size_t& length, bool doPad) __attribute__((hot)); // Get a :-separated list of floats after a key letter
-	const void GetIntArray(int32_t arr[], size_t& length);			// Get a :-separated list of ints after a key letter
-	const void GetUnsignedArray(uint32_t arr[], size_t& length);	// Get a :-separated list of unsigned ints after a key letter
+	const void GetIntArray(int32_t arr[], size_t& length, bool doPad);			// Get a :-separated list of ints after a key letter
+	const void GetUnsignedArray(uint32_t arr[], size_t& length, bool doPad);	// Get a :-separated list of unsigned ints after a key letter
 
 	void TryGetFValue(char c, float& val, bool& seen);
 	void TryGetIValue(char c, int32_t& val, bool& seen);
@@ -83,6 +83,8 @@ public:
 	void SetBinaryWriting(bool state);	// set true if writing binary
 	uint32_t GetCRC32() const;
 	void SetCRC32(uint32_t newCRC32);
+
+	void PrintCommand(StringRef& s) const;
 
 	uint32_t whenTimerStarted;							// when we started waiting
 	bool timerRunning;									// true if we are waiting

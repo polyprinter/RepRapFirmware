@@ -169,56 +169,66 @@ void DriveMovement::PrepareDeltaAxis(const DDA& dda, const PrepParams& params)
 }
 
 // Prepare this DM for an extruder move
-void DriveMovement::PrepareExtruder(const DDA& dda, const PrepParams& params, bool doCompensation)
+void DriveMovement::PrepareExtruder(const DDA& dda, const PrepParams& params, float speedChange, bool doCompensation)
 {
 	const float dv = dda.directionVector[drive];
 	float stepsPerMm = reprap.GetPlatform().DriveStepsPerUnit(drive) * fabsf(dv);
 	const size_t extruder = drive - reprap.GetGCodes().GetTotalAxes();
 
-#if NONLINEAR_EXTRUSION
+#if SUPPORT_NONLINEAR_EXTRUSION
 	if (dda.isPrintingMove)
 	{
 		float a, b, limit;
 		if (reprap.GetPlatform().GetExtrusionCoefficients(extruder, a, b, limit))
 		{
 			const float averageExtrusionSpeed = (dda.totalDistance * dv * DDA::stepClockRate)/dda.clocksNeeded;
-			stepsPerMm *= 1.0 + min<float>((averageExtrusionSpeed * a) + (averageExtrusionSpeed * averageExtrusionSpeed * b), limit);
+			const float factor = 1.0 + min<float>((averageExtrusionSpeed * a) + (averageExtrusionSpeed * averageExtrusionSpeed * b), limit);
+			stepsPerMm *= factor;
 		}
 	}
 #endif
 
+	float compensationTime;
+	float accelCompensationDistance;
+	int32_t netSteps;
+
+	if (doCompensation && dv > 0.0)
+	{
+		// Calculate the pressure advance parameters
+		compensationTime = reprap.GetPlatform().GetPressureAdvance(extruder);
+		mp.cart.compensationClocks = roundU32(compensationTime * (float)DDA::stepClockRate);
+		mp.cart.accelCompensationClocks = roundU32(compensationTime * (float)DDA::stepClockRate * params.compFactor);
+
+#ifdef COMPENSATE_SPEED_CHANGES
+		// If there is a speed change at the start of the move, theoretically we should instantly advance or retard the filament by the associated compensation amount.
+		// We can't do that, so increase or decrease the extrusion factor instead, so that at least the extrusion will be correct by the end of the move.
+		const float factor = 1.0 + (speedChange * compensationTime)/dda.totalDistance;
+		stepsPerMm *= factor;
+#endif
+		// Recalculate the net total step count to allow for compensation. It may be negative.
+		const float compensationDistance = (dda.endSpeed - dda.startSpeed) * compensationTime;
+		netSteps = (int32_t)((dda.totalDistance + compensationDistance) * stepsPerMm);
+
+		// Calculate the acceleration phase parameters
+		accelCompensationDistance = compensationTime * (dda.topSpeed - dda.startSpeed);
+		mp.cart.accelStopStep = (uint32_t)((dda.accelDistance + accelCompensationDistance) * stepsPerMm) + 1;
+	}
+	else
+	{
+		accelCompensationDistance = compensationTime = 0.0;
+		mp.cart.compensationClocks = mp.cart.accelCompensationClocks = 0;
+		netSteps = (int32_t)(dda.totalDistance * stepsPerMm);		// it may have changed from totalSteps if we are using nonlinear extrusion
+
+		// Calculate the acceleration phase parameters
+		mp.cart.accelStopStep = (uint32_t)(dda.accelDistance * stepsPerMm) + 1;
+	}
+
 	mp.cart.twoCsquaredTimesMmPerStepDivA = roundU64((double)(DDA::stepClockRateSquared * 2)/((double)stepsPerMm * (double)dda.acceleration));
-
-	// Calculate the pressure advance parameter
-	const float compensationTime_SEC_or_MMpMMpSEC = (doCompensation && dv > 0.0) ? reprap.GetPlatform().GetPressureAdvance( extruder ) : 0.0;
-	//const uint32_t compensationClocks = lrintf(compensationTime_SEC_or_MMpMMpSEC * DDA::stepClockRate);
-	mp.cart.accelCompensationClocks = roundU32(compensationTime_SEC_or_MMpMMpSEC * (float)DDA::stepClockRate * params.compFactor);
-
-	// Calculate the net total step count to allow for compensation. It may be negative.
-	// for the vectorial speed change across the whole move, determine the net additional distance from Advance (could be negative)
-	const float compensationDistanceForEntireMoveSpeedChange_vect_mm = (dda.endSpeed - dda.startSpeed) * compensationTime_SEC_or_MMpMMpSEC;
-	// and convert it into steps for this axis and correct the number of steps in the whole move
-	int32_t netSteps = (int32_t)(compensationDistanceForEntireMoveSpeedChange_vect_mm * stepsPerMm) + (int32_t)totalSteps;
-
-	// Calculate the acceleration phase parameters
-	// for the vectorial speed change in acceleration, determine the net additional distance from Advance
-	const float accelCompensationDistance_vect_MM = compensationTime_SEC_or_MMpMMpSEC * (dda.topSpeed - dda.startSpeed); // distance = speed * time
-
-	// Acceleration phase parameters
-	mp.cart.accelStopStep = (uint32_t)((dda.accelDistance + accelCompensationDistance_vect_MM) * stepsPerMm) + 1;
 
 	// Constant speed phase parameters
 	mp.cart.mmPerStepTimesCKdivtopSpeed = (uint32_t)((float)((uint64_t)DDA::stepClockRate * K1)/(stepsPerMm * dda.topSpeed));
 
-
-	// modify the clock count for cruise speed zero intercept by the time taken at cruise to travel the compensation distance added
-	// - we are adding accelCompensationDistance_MM which takes accelCompensationDistance_MM/dda.topSpeed seconds
-	//const float compensationDistanceTimeAtTopSpeed_SEC = accelCompensationDistance_vect_MM / dda.topSpeed;  // vectorially
-	//int32_t compensationClocksDeltaToCruiseInterceptClocks = compensationDistanceTimeAtTopSpeed_SEC * DDA::stepClockRate;
-	// since more advance means more steps, the intercept number becomes smaller when there is advance
-	//accelClocksMinusAccelDistanceTimesCdivTopSpeed = (int32_t)params.accelClocksMinusAccelDistanceTimesCdivTopSpeed - compensationClocksDeltaToCruiseInterceptClocks;
-
-	// Calculate the deceleration and reverse phase parameters
+	// Calculate the deceleration and reverse phase parameters and update totalSteps
 	// First check whether there is any deceleration at all, otherwise we may get strange results because of rounding errors
 	if (dda.decelDistance * stepsPerMm < 0.5)		// if less than 1 deceleration step
 	{
@@ -229,17 +239,14 @@ void DriveMovement::PrepareExtruder(const DDA& dda, const PrepParams& params, bo
 	}
 	else
 	{
-		// during cruise, we have kept a constant amount of advance
-		mp.cart.decelStartStep = (uint32_t)((params.decelStartDistance + accelCompensationDistance_vect_MM) * stepsPerMm) + 1;
+		mp.cart.decelStartStep = (uint32_t)((params.decelStartDistance + accelCompensationDistance) * stepsPerMm) + 1;
 		const int32_t initialDecelSpeedTimesCdivA = (int32_t)params.topSpeedTimesCdivA - (int32_t)mp.cart.compensationClocks;	// signed because it may be negative and we square it
 		const uint64_t initialDecelSpeedTimesCdivASquared = isquare64(initialDecelSpeedTimesCdivA);
 		twoDistanceToStopTimesCsquaredDivA =
-			initialDecelSpeedTimesCdivASquared + llrintf(((params.decelStartDistance + accelCompensationDistance_vect_MM) * (DDA::stepClockRateSquared * 2))/dda.acceleration);
+			initialDecelSpeedTimesCdivASquared + roundU64(((params.decelStartDistance + accelCompensationDistance) * (float)(DDA::stepClockRateSquared * 2))/dda.acceleration);
 
 		// See whether there is a reverse phase
-		// the "speed" at the beginning of deceleration is actually instantaneously lower than it was at cruise.
-		//const float initialDecelSpeed = dda.topSpeed - dda.acceleration * compensationTime_SEC_or_MMpMMpSEC;
-		const float compensationSpeedChange = dda.acceleration * compensationTime_SEC_or_MMpMMpSEC;
+		const float compensationSpeedChange = dda.acceleration * compensationTime;
 		const uint32_t stepsBeforeReverse = (compensationSpeedChange > dda.topSpeed)
 											? mp.cart.decelStartStep - 1
 											: twoDistanceToStopTimesCsquaredDivA/mp.cart.twoCsquaredTimesMmPerStepDivA;
@@ -447,10 +454,10 @@ pre(nextStep < totalSteps; stepsTillRecalc == 0)
 	uint32_t shiftFactor = 0;		// assume single stepping
 	if (stepInterval < DDA::MinCalcIntervalCartesian)
 	{
-		uint32_t stepsToLimit = ((nextStep <= reverseStartStep && reverseStartStep <= totalSteps)
-									? reverseStartStep
-									: totalSteps
-								) - nextStep;
+		const uint32_t stepsToLimit = ((nextStep <= reverseStartStep && reverseStartStep <= totalSteps)
+										? reverseStartStep
+										: totalSteps
+									  ) - nextStep;
 		if (stepInterval < DDA::MinCalcIntervalCartesian/4 && stepsToLimit > 8)
 		{
 			shiftFactor = 3;		// octal stepping

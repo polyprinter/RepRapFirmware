@@ -18,7 +18,7 @@
 #include "PrintMonitor.h"
 #include "RepRap.h"
 #include "Tools/Tool.h"
-#include "FilamentSensors/FilamentSensor.h"
+#include "FilamentMonitors/FilamentMonitor.h"
 #include "Libraries/General/IP4String.h"
 #include "Version.h"
 
@@ -131,23 +131,39 @@ bool GCodes::HandleGcode(GCodeBuffer& gb, StringRef& reply)
 
 	case 10: // Set/report offsets and temperatures, or retract
 		{
-			bool modifyingTool = gb.Seen('P') || gb.Seen('R') || gb.Seen('S');
-			for (size_t axis = 0; axis < numVisibleAxes; ++axis)
+#if SUPPORT_WORKPLACE_COORDINATES
+			if (gb.Seen('L'))
 			{
-				modifyingTool |= gb.Seen(axisLetters[axis]);
-			}
-
-			if (modifyingTool)
-			{
-				if (simulationMode != 0)
+				if (gb.GetUIValue() == 2)
 				{
-					break;
+					result = GetSetWorkplaceCoordinates(gb, reply);
 				}
-				result = SetOrReportOffsets(gb, reply);
+				else
+				{
+					result = GCodeResult::badOrMissingParameter;
+				}
 			}
 			else
+#endif
 			{
-				result = RetractFilament(gb, true);
+				bool modifyingTool = gb.Seen('P') || gb.Seen('R') || gb.Seen('S');
+				for (size_t axis = 0; axis < numVisibleAxes; ++axis)
+				{
+					modifyingTool |= gb.Seen(axisLetters[axis]);
+				}
+
+				if (modifyingTool)
+				{
+					if (simulationMode != 0)
+					{
+						break;
+					}
+					result = SetOrReportOffsets(gb, reply);
+				}
+				else
+				{
+					result = RetractFilament(gb, true);
+				}
 			}
 		}
 		break;
@@ -243,6 +259,36 @@ bool GCodes::HandleGcode(GCodeBuffer& gb, StringRef& reply)
 		break;
 #endif
 
+#if SUPPORT_WORKPLACE_COORDINATES
+	case 53:	// Switch to coordinate system 0
+	case 54:	// Switch to coordinate system 1
+	case 55:	// Switch to coordinate system 2
+	case 56:	// Switch to coordinate system 3
+	case 57:	// Switch to coordinate system 4
+	case 58:	// Switch to coordinate system 5
+	case 59:	// Switch to coordinate system 6,7,8,9
+		{
+			unsigned int cs = code - 53;
+			if (code == 59)
+			{
+				const int8_t fraction = gb.GetCommandFraction();
+				if (fraction >= 0)
+				{
+					cs += (unsigned int) fraction;
+				}
+			}
+			if (cs < ARRAY_SIZE(workplaceCoordinates))
+			{
+				currentCoordinateSystem = cs;
+			}
+			else
+			{
+				result = GCodeResult::notSupported;
+			}
+		}
+		break;
+#endif
+
 	case 90: // Absolute coordinates
 		gb.MachineState().axesRelative = false;
 		break;
@@ -256,31 +302,10 @@ bool GCodes::HandleGcode(GCodeBuffer& gb, StringRef& reply)
 		break;
 
 	default:
-		reply.copy("Unsupported command");
-		result = GCodeResult::error;
+		result = GCodeResult::notSupported;
 	}
 
-	if (result == GCodeResult::notFinished)
-	{
-		return false;
-	}
-
-	if (result == GCodeResult::notSupportedInCurrentMode)
-	{
-		reply.printf("G%d command is not supported in machine mode %s", code, GetMachineModeString());
-	}
-
-	if (gb.GetState() == GCodeState::normal)
-	{
-		UnlockAll(gb);
-		if (result == GCodeResult::error)
-		{
-			scratchString.printf("G%d: ", code);
-			reply.Prepend(scratchString.Pointer());
-		}
-		HandleReply(gb, result != GCodeResult::ok, reply.Pointer());
-	}
-	return true;
+	return HandleResult(gb, result, reply);
 }
 
 bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
@@ -435,7 +460,7 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 			{
 				uint32_t eDrive[MaxExtruders];
 				size_t eCount = numExtruders;
-				gb.GetUnsignedArray(eDrive, eCount);
+				gb.GetUnsignedArray(eDrive, eCount, false);
 				for (size_t i = 0; i < eCount; i++)
 				{
 					seen = true;
@@ -1369,9 +1394,9 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 			if (!cancelWait && gb.Seen('H'))
 			{
 				// Wait for specified heaters to be ready
-				int32_t heaters[Heaters];
+				uint32_t heaters[Heaters];
 				size_t heaterCount = Heaters;
-				gb.GetIntArray(heaters, heaterCount);
+				gb.GetUnsignedArray(heaters, heaterCount, false);
 
 				for (size_t i = 0; i < heaterCount; i++)
 				{
@@ -1388,9 +1413,9 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 			if (!cancelWait && gb.Seen('C'))
 			{
 				// Wait for specified chamber(s) to be ready
-				int32_t chamberIndices[NumChamberHeaters];
+				uint32_t chamberIndices[NumChamberHeaters];
 				size_t chamberCount = NumChamberHeaters;
-				gb.GetIntArray(chamberIndices, chamberCount);
+				gb.GetUnsignedArray(chamberIndices, chamberCount, false);
 
 				if (chamberCount == 0)
 				{
@@ -1411,7 +1436,7 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 					// Otherwise wait only for the specified chamber heaters
 					for (size_t i = 0; i < chamberCount; i++)
 					{
-						if (chamberIndices[i] >= 0 && chamberIndices[i] < (int)NumChamberHeaters)
+						if (chamberIndices[i] >= 0 && chamberIndices[i] < NumChamberHeaters)
 						{
 							const int8_t heater = reprap.GetHeat().GetChamberHeater(chamberIndices[i]);
 							if (heater >= 0 && !reprap.GetHeat().HeaterAtSetTemperature(heater, true))
@@ -1803,7 +1828,7 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 		}
 		break;
 
-	case 206: // Offset axes - Deprecated
+	case 206: // Offset axes
 		result = OffsetAxes(gb);
 		break;
 
@@ -1947,6 +1972,14 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 
 		// For case 226, see case 25
 
+	case 260:	// I2C send
+		result = SendI2c(gb, reply);
+		break;
+
+	case 261:	// I2C send
+		result = ReceiveI2c(gb, reply);
+		break;
+
 	case 280:	// Servos
 		if (gb.Seen('P'))
 		{
@@ -1997,20 +2030,31 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 		break;
 
 	case 290:	// Baby stepping
-		if (gb.Seen('S'))
+		if (gb.Seen('S') || gb.Seen('Z'))
 		{
 			if (!LockMovement(gb))
 			{
 				return false;
 			}
-			const float babyStepAmount = constrain<float>(gb.GetFValue(), -1.0, 1.0);
-			currentBabyStepZOffset += babyStepAmount;
-			const float amountPushed = reprap.GetMove().PushBabyStepping(babyStepAmount);
+			const float fval = constrain<float>(gb.GetFValue(), -1.0, 1.0);
+			const bool absolute = (gb.Seen('R') && gb.GetIValue() == 0);
+			float difference;
+			if (absolute)
+			{
+				difference = fval - currentBabyStepZOffset;
+				currentBabyStepZOffset = fval;
+			}
+			else
+			{
+				difference = fval;
+				currentBabyStepZOffset += fval;
+			}
+			const float amountPushed = reprap.GetMove().PushBabyStepping(difference);
 			moveBuffer.initialCoords[Z_AXIS] += amountPushed;
 
 			// The following causes all the remaining baby stepping that we didn't manage to push to be added to the [remainder of the] currently-executing move, if there is one.
 			// This could result in an abrupt Z movement, however the move will be processed as normal so the jerk limit will be honoured.
-			moveBuffer.coords[Z_AXIS] += babyStepAmount;
+			moveBuffer.coords[Z_AXIS] += difference;
 		}
 		else
 		{
@@ -2144,21 +2188,7 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 		break;
 
 	case 304: // Set/report heated bed PID values
-		{
-			int index = gb.Seen('P') ? gb.GetIValue() : 0;
-			if (index < 0 || index >= (int)NumBedHeaters)
-			{
-				reply.printf("Invalid bed heater index '%d'", index);
-				result = GCodeResult::error;
-				break;
-			}
-
-			const int8_t bedHeater = reprap.GetHeat().GetBedHeater(index);
-			if (bedHeater >= 0)
-			{
-				SetPidParameters(gb, bedHeater, reply);
-			}
-		}
+		SetPidParameters(gb, 0, reply);
 		break;
 
 	case 305: // Set/report specific heater parameters
@@ -2279,7 +2309,7 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 				seen = true;
 				uint32_t eVals[MaxExtruders];
 				size_t eCount = numExtruders;
-				gb.GetUnsignedArray(eVals, eCount);
+				gb.GetUnsignedArray(eVals, eCount, true);
 				for (size_t e = 0; e < eCount; e++)
 				{
 					if (!ChangeMicrostepping(numTotalAxes + e, (int)eVals[e], mode))
@@ -2417,12 +2447,12 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 		machineType = MachineType::laser;
 		if (gb.Seen('P'))
 		{
-			int lp = gb.GetIValue();
-			if (lp < 0 || lp > 65535)
+			uint32_t lp = gb.GetUIValue();
+			if (lp > 65535)
 			{
 				lp = NoLogicalPin;
 			}
-			if (reprap.GetPlatform().SetLaserPin(lp))
+			if (reprap.GetPlatform().SetLaserPin((LogicalPin)lp))
 			{
 				reply.copy("Laser mode selected");
 			}
@@ -2448,7 +2478,7 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 		{
 			uint32_t pins[2] = { NoLogicalPin, NoLogicalPin };
 			size_t numPins = 2;
-			gb.GetUnsignedArray(pins, numPins);
+			gb.GetUnsignedArray(pins, numPins, false);
 			if (pins[0] > 65535)
 			{
 				pins[0] = NoLogicalPin;
@@ -2976,13 +3006,13 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 				reply.copy("Maximum jerk rates: ");
 				for (size_t axis = 0; axis < numTotalAxes; ++axis)
 				{
-					reply.catf("%c: %.1f, ", axisLetters[axis], (double)(platform.ConfiguredInstantDv(axis) / (distanceScale * SecondsToMinutes)));
+					reply.catf("%c: %.1f, ", axisLetters[axis], (double)(platform.GetInstantDv(axis) / (distanceScale * SecondsToMinutes)));
 				}
 				reply.cat("E:");
 				char sep = ' ';
 				for (size_t extruder = 0; extruder < numExtruders; extruder++)
 				{
-					reply.catf("%c%.1f", sep, (double)(platform.ConfiguredInstantDv(extruder + numTotalAxes) / (distanceScale * SecondsToMinutes)));
+					reply.catf("%c%.1f", sep, (double)(platform.GetInstantDv(extruder + numTotalAxes) / (distanceScale * SecondsToMinutes)));
 					sep = ':';
 				}
 			}
@@ -3161,7 +3191,7 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 			{
 				uint32_t eDrive[MaxExtruders];
 				size_t eCount = MaxExtruders;
-				gb.GetUnsignedArray(eDrive, eCount);
+				gb.GetUnsignedArray(eDrive, eCount, false);
 				for (size_t i = 0; i < eCount; i++)
 				{
 					if (eDrive[i] >= numExtruders)
@@ -3233,7 +3263,7 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 					{
 						reply.catf(" %s,",
 									(inputType == EndStopInputType::activeHigh) ? "active high switch"
-										: (inputType == EndStopInputType::activeHigh) ? "active low switch"
+										: (inputType == EndStopInputType::activeLow) ? "active low switch"
 											: (inputType == EndStopInputType::zProbe) ? "Z probe"
 												: (inputType == EndStopInputType::motorStall) ? "motor stall"
 													: "unknown type"
@@ -3282,33 +3312,18 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 		}
 		break;
 
-	case 577: // Wait until endstop is triggered
+	case 577: // Wait until endstop input is triggered
 		if (gb.Seen('S'))
 		{
 			// Determine trigger type
-			EndStopHit triggerCondition;
-			switch (gb.GetIValue())
-			{
-				case 1:
-					triggerCondition = EndStopHit::lowHit;
-					break;
-				case 2:
-					triggerCondition = EndStopHit::highHit;
-					break;
-				case 3:
-					triggerCondition = EndStopHit::nearStop;
-					break;
-				default:
-					triggerCondition = EndStopHit::noStop;
-					break;
-			}
+			bool triggerCondition = (gb.GetIValue() > 0);
 
 			// Axis endstops
 			for (size_t axis=0; axis < numTotalAxes; axis++)
 			{
 				if (gb.Seen(axisLetters[axis]))
 				{
-					if (platform.Stopped(axis) != triggerCondition)
+					if (platform.EndStopInputState(axis) != triggerCondition)
 					{
 						result = GCodeResult::notFinished;
 						break;
@@ -3321,7 +3336,7 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 			{
 				size_t eDriveCount = MaxExtruders;
 				uint32_t eDrives[MaxExtruders];
-				gb.GetUnsignedArray(eDrives, eDriveCount);
+				gb.GetUnsignedArray(eDrives, eDriveCount, false);
 				for (size_t extruder = 0; extruder < eDriveCount; extruder++)
 				{
 					const size_t eDrive = eDrives[extruder];
@@ -3332,7 +3347,7 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 						break;
 					}
 
-					if (platform.Stopped(eDrive + E0_AXIS) != triggerCondition)
+					if (platform.EndStopInputState(eDrive + E0_AXIS) != triggerCondition)
 					{
 						result = GCodeResult::notFinished;
 						break;
@@ -3500,10 +3515,10 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 				gb.TryGetIValue('P', sensorType, seen);
 				if (seen)
 				{
-					FilamentSensor::SetFilamentSensorType(extruder, sensorType);
+					FilamentMonitor::SetFilamentSensorType(extruder, sensorType);
 				}
 
-				FilamentSensor *sensor = FilamentSensor::GetFilamentSensor(extruder);
+				FilamentMonitor *sensor = FilamentMonitor::GetFilamentSensor(extruder);
 				if (sensor != nullptr)
 				{
 					// Configure the sensor
@@ -3511,7 +3526,7 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 					result = GetGCodeResultFromError(error);
 					if (error)
 					{
-						FilamentSensor::SetFilamentSensorType(extruder, 0);		// delete the sensor
+						FilamentMonitor::SetFilamentSensorType(extruder, 0);		// delete the sensor
 					}
 				}
 				else if (!seen)
@@ -3522,7 +3537,7 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 		}
 		break;
 
-#if NONLINEAR_EXTRUSION
+#if SUPPORT_NONLINEAR_EXTRUSION
 	case 592: // Configure nonlinear extrusion
 		if (gb.Seen('D'))
 		{
@@ -4132,33 +4147,11 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, StringRef& reply)
 		break;
 
 	default:
-		reply.copy("Unsupported command");
-		result = GCodeResult::error;
+		result = GCodeResult::notSupported;
 		break;
 	}
 
-	if (result == GCodeResult::notFinished)
-	{
-		return false;
-	}
-
-	if (result == GCodeResult::notSupportedInCurrentMode)
-	{
-		reply.printf("M%d command is not supported in machine mode %s", code, GetMachineModeString());
-	}
-
-	if (gb.GetState() == GCodeState::normal)
-	{
-		gb.timerRunning = false;
-		UnlockAll(gb);
-		if (result == GCodeResult::error)
-		{
-			scratchString.printf("M%d: ", code);
-			reply.Prepend(scratchString.Pointer());
-		}
-		HandleReply(gb, result != GCodeResult::ok, reply.Pointer());
-	}
-	return true;
+	return HandleResult(gb, result, reply);
 }
 
 bool GCodes::HandleTcode(GCodeBuffer& gb, StringRef& reply)
@@ -4224,6 +4217,48 @@ bool GCodes::HandleTcode(GCodeBuffer& gb, StringRef& reply)
 	// If we get here, we have finished
 	UnlockAll(gb);
 	HandleReply(gb, false, reply.Pointer());
+	return true;
+}
+
+// This is called to deal with the result of processing a G- or M-code
+bool GCodes::HandleResult(GCodeBuffer& gb, GCodeResult rslt, StringRef& reply)
+{
+	switch (rslt)
+	{
+	case GCodeResult::notFinished:
+		return false;
+
+	case GCodeResult::notSupported:
+		gb.PrintCommand(reply);
+		reply.cat(" command is not supported");
+		break;
+
+	case GCodeResult::notSupportedInCurrentMode:
+		gb.PrintCommand(reply);
+		reply.catf(" command is not supported in machine mode %s", GetMachineModeString());
+		break;
+
+	case GCodeResult::badOrMissingParameter:
+		gb.PrintCommand(reply);
+		reply.cat(": bad or missing parameter");
+		break;
+
+	case GCodeResult::error:
+		gb.PrintCommand(scratchString);
+		scratchString.cat(": ");
+		reply.Prepend(scratchString.Pointer());
+		break;
+
+	default:
+		break;
+	}
+
+	if (gb.GetState() == GCodeState::normal)
+	{
+		gb.timerRunning = false;
+		UnlockAll(gb);
+		HandleReply(gb, rslt != GCodeResult::ok, reply.Pointer());
+	}
 	return true;
 }
 
