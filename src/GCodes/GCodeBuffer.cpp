@@ -95,6 +95,13 @@ bool GCodeBuffer::Put(char c)
 		return LineFinished();
 	}
 
+	if (c == 0x7F && bufferState != GCodeBufferState::discarding)
+	{
+		// The UART receiver stores 0x7F in the buffer if an overrun or framing errors occurs. So discard the command and resync on the next newline.
+		gcodeLineEnd = 0;
+		bufferState = GCodeBufferState::discarding;
+	}
+
 	// Process the incoming character in a state machine
 	bool again;
 	do
@@ -967,11 +974,11 @@ void GCodeBuffer::MessageAcknowledged(bool cancelled)
 // Return true if we can queue gcodes from this source
 bool GCodeBuffer::CanQueueCodes() const
 {
-	return queueCodes || machineState->doingFileMacro;	// return true if we queue commands form this source or we are executing a macro
+	return queueCodes || machineState->doingFileMacro;		// return true if we queue commands from this source or we are executing a macro
 }
 
 // Write the command to a string
-void GCodeBuffer::PrintCommand(StringRef& s) const
+void GCodeBuffer::PrintCommand(const StringRef& s) const
 {
 	s.printf("%c%d", commandLetter, commandNumber);
 	if (commandFraction >= 0)

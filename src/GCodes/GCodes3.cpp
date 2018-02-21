@@ -15,23 +15,36 @@
 #include "Tools/Tool.h"
 
 #if HAS_WIFI_NETWORKING
-#include "FirmwareUpdater.h"
+# include "FirmwareUpdater.h"
 #endif
 
 #include "Wire.h"
 
 // Set or print the Z probe. Called by G31.
 // Note that G31 P or G31 P0 prints the parameters of the currently-selected Z probe.
-GCodeResult GCodes::SetPrintZProbe(GCodeBuffer& gb, StringRef& reply)
+GCodeResult GCodes::SetPrintZProbe(GCodeBuffer& gb, const StringRef& reply)
 {
-	int32_t zProbeType = 0;
+	ZProbeType probeType;
 	bool seenT = false;
-	gb.TryGetIValue('T',zProbeType, seenT);
-	if (zProbeType == 0)
+	if (gb.Seen('T'))
 	{
-		zProbeType = platform.GetZProbeType();
+		unsigned int tp = gb.GetUIValue();
+		if (tp == 0 || tp >= (unsigned int)ZProbeType::numTypes)
+		{
+			reply.copy("Invalid Z probe type");
+			return GCodeResult::error;
+		}
+
+		probeType = (ZProbeType)tp;
+		seenT = true;
 	}
-	ZProbeParameters params = platform.GetZProbeParameters(zProbeType);
+	else
+	{
+		probeType = platform.GetZProbeType();
+		seenT = false;
+	}
+
+	ZProbe params = platform.GetZProbeParameters(probeType);
 	bool seen = false;
 	gb.TryGetFValue(axisLetters[X_AXIS], params.xOffset, seen);
 	gb.TryGetFValue(axisLetters[Y_AXIS], params.yOffset, seen);
@@ -59,7 +72,7 @@ GCodeResult GCodes::SetPrintZProbe(GCodeBuffer& gb, StringRef& reply)
 		{
 			return GCodeResult::notFinished;
 		}
-		platform.SetZProbeParameters(zProbeType, params);
+		platform.SetZProbeParameters(probeType, params);
 	}
 	else if (seenT)
 	{
@@ -180,7 +193,7 @@ GCodeResult GCodes::OffsetAxes(GCodeBuffer& gb)
 #if SUPPORT_WORKPLACE_COORDINATES
 
 // Set workspace coordinates
-GCodeResult GCodes::GetSetWorkplaceCoordinates(GCodeBuffer& gb, StringRef& reply)
+GCodeResult GCodes::GetSetWorkplaceCoordinates(GCodeBuffer& gb, const StringRef& reply)
 {
 	if (gb.Seen('P'))
 	{
@@ -214,7 +227,7 @@ GCodeResult GCodes::GetSetWorkplaceCoordinates(GCodeBuffer& gb, StringRef& reply
 #endif
 
 // Define the probing grid, called when we see an M557 command
-GCodeResult GCodes::DefineGrid(GCodeBuffer& gb, StringRef &reply)
+GCodeResult GCodes::DefineGrid(GCodeBuffer& gb, const StringRef &reply)
 {
 	if (gb.Seen('P'))
 	{
@@ -308,7 +321,7 @@ GCodeResult GCodes::DefineGrid(GCodeBuffer& gb, StringRef &reply)
 }
 
 // Handle M558
-GCodeResult GCodes::SetOrReportZProbe(GCodeBuffer& gb, StringRef &reply)
+GCodeResult GCodes::SetOrReportZProbe(GCodeBuffer& gb, const StringRef &reply)
 {
 	bool seenType = false, seenParam = false;
 
@@ -319,7 +332,7 @@ GCodeResult GCodes::SetOrReportZProbe(GCodeBuffer& gb, StringRef &reply)
 		seenType = true;
 	}
 
-	ZProbeParameters params = platform.GetCurrentZProbeParameters();
+	ZProbe params = platform.GetCurrentZProbeParameters();
 	gb.TryGetFValue('H', params.diveHeight, seenParam);		// dive height
 
 	if (gb.Seen('F'))		// feed rate i.e. probing speed
@@ -337,6 +350,12 @@ GCodeResult GCodes::SetOrReportZProbe(GCodeBuffer& gb, StringRef &reply)
 	if (gb.Seen('I'))
 	{
 		params.invertReading = (gb.GetIValue() != 0);
+		seenParam = true;
+	}
+
+	if (gb.Seen('B'))
+	{
+		params.turnHeatersOff = (gb.GetIValue() == 1);
 		seenParam = true;
 	}
 
@@ -359,16 +378,18 @@ GCodeResult GCodes::SetOrReportZProbe(GCodeBuffer& gb, StringRef &reply)
 
 	if (!(seenType || seenParam))
 	{
-		reply.printf("Z Probe type %d, invert %s, dive height %.1fmm, probe speed %dmm/min, travel speed %dmm/min, recovery time %.2f sec, max taps %u, max diff %.2f",
-						platform.GetZProbeType(), (params.invertReading) ? "yes" : "no", (double)params.diveHeight,
+		reply.printf("Z Probe type %u, invert %s, dive height %.1fmm, probe speed %dmm/min, travel speed %dmm/min, recovery time %.2f sec, heaters %s, max taps %u, max diff %.2f",
+						(unsigned int)platform.GetZProbeType(), (params.invertReading) ? "yes" : "no", (double)params.diveHeight,
 						(int)(params.probeSpeed * MinutesToSeconds), (int)(params.travelSpeed * MinutesToSeconds),
-						(double)params.recoveryTime, params.maxTaps, (double)params.tolerance);
+						(double)params.recoveryTime,
+						(params.turnHeatersOff) ? "suspended" : "normal",
+						params.maxTaps, (double)params.tolerance);
 	}
 	return GCodeResult::ok;
 }
 
 // Handle M581 and M582
-GCodeResult GCodes::CheckOrConfigureTrigger(GCodeBuffer& gb, StringRef& reply, int code)
+GCodeResult GCodes::CheckOrConfigureTrigger(GCodeBuffer& gb, const StringRef& reply, int code)
 {
 	if (gb.Seen('T'))
 	{
@@ -473,7 +494,7 @@ GCodeResult GCodes::CheckOrConfigureTrigger(GCodeBuffer& gb, StringRef& reply, i
 }
 
 // Deal with a M584
-GCodeResult GCodes::DoDriveMapping(GCodeBuffer& gb, StringRef& reply)
+GCodeResult GCodes::DoDriveMapping(GCodeBuffer& gb, const StringRef& reply)
 {
 	if (!LockMovementAndWaitForStandstill(gb))				// we also rely on this to retrieve the current motor positions to moveBuffer
 	{
@@ -611,7 +632,7 @@ GCodeResult GCodes::DoDriveMapping(GCodeBuffer& gb, StringRef& reply)
 }
 
 // Deal with a M585
-GCodeResult GCodes::ProbeTool(GCodeBuffer& gb, StringRef& reply)
+GCodeResult GCodes::ProbeTool(GCodeBuffer& gb, const StringRef& reply)
 {
 	if (reprap.GetCurrentTool() == nullptr)
 	{
@@ -696,7 +717,7 @@ GCodeResult GCodes::ProbeTool(GCodeBuffer& gb, StringRef& reply)
 }
 
 // Deal with a M905
-GCodeResult GCodes::SetDateTime(GCodeBuffer& gb, StringRef& reply)
+GCodeResult GCodes::SetDateTime(GCodeBuffer& gb, const StringRef& reply)
 {
 	const time_t now = platform.GetDateTime();
 	struct tm timeInfo;
@@ -754,7 +775,7 @@ GCodeResult GCodes::SetDateTime(GCodeBuffer& gb, StringRef& reply)
 }
 
 // Handle M997
-GCodeResult GCodes::UpdateFirmware(GCodeBuffer& gb, StringRef &reply)
+GCodeResult GCodes::UpdateFirmware(GCodeBuffer& gb, const StringRef &reply)
 {
 	if (!LockMovementAndWaitForStandstill(gb))
 	{
@@ -822,7 +843,7 @@ GCodeResult GCodes::UpdateFirmware(GCodeBuffer& gb, StringRef &reply)
 }
 
 // Handle M260
-GCodeResult GCodes::SendI2c(GCodeBuffer& gb, StringRef &reply)
+GCodeResult GCodes::SendI2c(GCodeBuffer& gb, const StringRef &reply)
 {
 #if defined(I2C_IFACE)
 	if (gb.Seen('A'))
@@ -835,14 +856,18 @@ GCodeResult GCodes::SendI2c(GCodeBuffer& gb, StringRef &reply)
 			gb.GetIntArray(values, numValues, false);
 			if (numValues != 0)
 			{
-				reprap.GetPlatform().InitI2c();
+				platform.InitI2c();
 				I2C_IFACE.beginTransmission((int)address);
 				for (size_t i = 0; i < numValues; ++i)
 				{
 					I2C_IFACE.write((uint8_t)values[i]);
 				}
-				I2C_IFACE.endTransmission();
-				return GCodeResult::ok;
+				if (I2C_IFACE.endTransmission() == 0)
+				{
+					return GCodeResult::ok;
+				}
+				reply.copy("I2C transmission error");
+				return GCodeResult::error;
 			}
 		}
 	}
@@ -855,7 +880,7 @@ GCodeResult GCodes::SendI2c(GCodeBuffer& gb, StringRef &reply)
 }
 
 // Handle M261
-GCodeResult GCodes::ReceiveI2c(GCodeBuffer& gb, StringRef &reply)
+GCodeResult GCodes::ReceiveI2c(GCodeBuffer& gb, const StringRef &reply)
 {
 #if defined(I2C_IFACE)
 	if (gb.Seen('A'))
@@ -866,7 +891,7 @@ GCodeResult GCodes::ReceiveI2c(GCodeBuffer& gb, StringRef &reply)
 			uint32_t numBytes = gb.GetUIValue();
 			if (numBytes > 0 && numBytes <= MaxI2cBytes)
 			{
-				reprap.GetPlatform().InitI2c();
+				platform.InitI2c();
 				I2C_IFACE.requestFrom(address, numBytes);
 				reply.copy("Received");
 				const uint32_t now = millis();

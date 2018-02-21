@@ -79,9 +79,7 @@ void PID::Reset()
 	averagePWM = lastPwm = 0.0;
 	heatingFaultCount = 0;
 	temperature = BAD_ERROR_TEMPERATURE;
-#if HAS_VOLTAGE_MONITOR
 	suspended = false;
-#endif
 }
 
 // Set the process model
@@ -208,13 +206,12 @@ void PID::Spin()
 		// Read the temperature even if the heater is suspended
 		const TemperatureError err = ReadTemperature();
 
-#if HAS_VOLTAGE_MONITOR
 		if (suspended)
 		{
 			SetHeater(0.0);
 			return;
 		}
-#endif
+
 		// Handle any temperature reading error and calculate the temperature rate of change, if possible
 		if (err != TemperatureError::success)
 		{
@@ -566,7 +563,7 @@ float PID::GetExpectedHeatingRate() const
 }
 
 // Auto tune this PID
-void PID::StartAutoTune(float targetTemp, float maxPwm, StringRef& reply)
+void PID::StartAutoTune(float targetTemp, float maxPwm, const StringRef& reply)
 {
 	// Starting an auto tune
 	if (!model.IsEnabled())
@@ -602,7 +599,7 @@ void PID::StartAutoTune(float targetTemp, float maxPwm, StringRef& reply)
 	}
 }
 
-void PID::GetAutoTuneStatus(StringRef& reply)	// Get the auto tune status or last result
+void PID::GetAutoTuneStatus(const StringRef& reply)	// Get the auto tune status or last result
 {
 	if (mode >= HeaterMode::tuning0)
 	{
@@ -968,9 +965,7 @@ void PID::DisplayBuffer(const char *intro)
 	}
 }
 
-#if HAS_VOLTAGE_MONITOR
-
-// Suspend the heater to conserve power, or resume it
+// Suspend the heater, or resume it
 void PID::Suspend(bool sus)
 {
 	suspended = sus;
@@ -979,7 +974,5 @@ void PID::Suspend(bool sus)
 		SetHeater(0.0);
 	}
 }
-
-#endif
 
 // End

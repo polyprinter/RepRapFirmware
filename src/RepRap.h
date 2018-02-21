@@ -74,7 +74,7 @@ public:
 	unsigned int GetNumberOfContiguousTools() const;
 
 	unsigned int GetProhibitedExtruderMovements(unsigned int extrusions, unsigned int retractions);
-	void PrintTool(int toolNumber, StringRef& reply) const;
+	void PrintTool(int toolNumber, const StringRef& reply) const;
 	void FlagTemperatureFault(int8_t dudHeater);
 	void ClearTemperatureFault(int8_t wasDudHeater);
 
@@ -107,7 +107,7 @@ public:
 	OutputBuffer *GetFilesResponse(const char* dir, bool flagsDirs);
 	OutputBuffer *GetFilelistResponse(const char* dir);
 
-	void Beep(int freq, int ms);
+	void Beep(unsigned int freq, unsigned int ms);
 	void SetMessage(const char *msg);
 	void SetAlert(const char *msg, const char *title, int mode, float timeout, AxesBitmap controls);
 	void ClearAlert();
@@ -163,15 +163,15 @@ private:
 	bool resetting;
 	bool processingConfig;
 
-	char password[PASSWORD_LENGTH + 1];
-	char myName[MACHINE_NAME_LENGTH + 1];
+	String<PASSWORD_LENGTH> password;
+	String<MACHINE_NAME_LENGTH> myName;
 
-	int beepFrequency, beepDuration;
-	char message[MESSAGE_LENGTH + 1];
+	unsigned int beepFrequency, beepDuration;
+	char message[MaxMessageLength + 1];
 
 	// Message box data
 	bool displayMessageBox;
-	char boxMessage[MESSAGE_LENGTH + 1], boxTitle[MESSAGE_LENGTH + 1];
+	String<MaxMessageLength> boxMessage, boxTitle;
 	int boxMode;
 	uint32_t boxSeq;
 	uint32_t boxTimer, boxTimeout;

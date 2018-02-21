@@ -66,7 +66,7 @@ public:
 	// If errors were discovered while processing parameters, put an appropriate error message in 'reply' and set 'error' to true.
 	// If no relevant parameters are found, print the existing ones to 'reply' and return false.
 	// If 'mCode' does not apply to this kinematics, call the base class version of this function, which will print a suitable error message.
-	virtual bool Configure(unsigned int mCode, GCodeBuffer& gb, StringRef& reply, bool& error);
+	virtual bool Configure(unsigned int mCode, GCodeBuffer& gb, const StringRef& reply, bool& error);
 
 	// Convert Cartesian coordinates to motor positions measured in steps from reference position
 	// 'machinePos' is a set of axis and extruder positions to convert
@@ -89,7 +89,7 @@ public:
 
 	// Perform auto calibration. Override this implementation in kinematics that support it. Caller already owns the movement lock.
 	// Return true if an error occurred.
-	virtual bool DoAutoCalibration(size_t numFactors, const RandomProbePointSet& probePoints, StringRef& reply)
+	virtual bool DoAutoCalibration(size_t numFactors, const RandomProbePointSet& probePoints, const StringRef& reply)
 	pre(SupportsAutoCalibration()) { return false; }
 
 	// Set the default parameters that are changed by auto calibration back to their defaults.
@@ -155,6 +155,9 @@ public:
 	// Limit the speed and acceleration of a move to values that the mechanics can handle.
 	// The speeds along individual Cartesian axes have already been limited before this is called.
 	virtual void LimitSpeedAndAcceleration(DDA& dda, const float *normalisedDirectionVector) const = 0;
+
+	// Return true if the specified axis is a continuous rotation axis
+	virtual bool IsContinuousRotationAxis(size_t axis) const { return false; }
 
 	// Override this virtual destructor if your constructor allocates any dynamic memory
 	virtual ~Kinematics() { }

@@ -38,7 +38,7 @@ const char *PolarKinematics::GetName(bool forStatusReport) const
 // If errors were discovered while processing parameters, put an appropriate error message in 'reply' and set 'error' to true.
 // If no relevant parameters are found, print the existing ones to 'reply' and return false.
 // If 'mCode' does not apply to this kinematics, call the base class version of this function, which will print a suitable error message.
-bool PolarKinematics::Configure(unsigned int mCode, GCodeBuffer& gb, StringRef& reply, bool& error)
+bool PolarKinematics::Configure(unsigned int mCode, GCodeBuffer& gb, const StringRef& reply, bool& error)
 {
 	if (mCode == 669)
 	{
@@ -248,6 +248,12 @@ void PolarKinematics::LimitSpeedAndAcceleration(DDA& dda, const float *normalise
 		const float stepRatio = dda.GetTotalDistance() * reprap.GetPlatform().DriveStepsPerUnit(1)/turntableMovement;
 		dda.LimitSpeedAndAcceleration(stepRatio * maxTurntableSpeed, stepRatio * maxTurntableAcceleration);
 	}
+}
+
+// Return true if the specified axis is a continuous rotation axis
+bool PolarKinematics::IsContinuousRotationAxis(size_t axis) const
+{
+	return axis == 1;
 }
 
 // Update the derived parameters after the master parameters have been changed

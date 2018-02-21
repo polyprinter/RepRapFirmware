@@ -1,33 +1,18 @@
 #ifndef PINS_DUETNG_H__
 #define PINS_DUETNG_H__
 
-#if defined(DUET_WIFI)
-
-# define FIRMWARE_NAME "RepRapFirmware for Duet WiFi"
+# define FIRMWARE_NAME	"RepRapFirmware for Duet WiFi and Duet Ethernet"
 # define DEFAULT_BOARD_TYPE BoardType::DuetWiFi_10
-constexpr size_t NumFirmwareUpdateModules = 4;		// 3 modules, plus one for manual upload to WiFi module
+constexpr size_t NumFirmwareUpdateModules = 4;		// 3 modules, plus one for manual upload to WiFi module (module 2 is now unused)
 # define IAP_FIRMWARE_FILE	"DuetWiFiFirmware.bin"
 # define WIFI_FIRMWARE_FILE	"DuetWiFiServer.bin"
-# define WIFI_WEB_FILE		"DuetWebControl.bin"
-
-#elif defined(DUET_ETHERNET)
-
-# define FIRMWARE_NAME "RepRapFirmware for Duet Ethernet"
-# define DEFAULT_BOARD_TYPE BoardType::DuetEthernet_10
-# define IAP_FIRMWARE_FILE	"DuetEthernetFirmware.bin"
-constexpr size_t NumFirmwareUpdateModules = 1;		// 1 module
-
-#else
-# error Firmware name not defined
-#endif
 
 // Features definition
 #define HAS_LWIP_NETWORKING		0
-#if defined(DUET_ETHERNET)
-#define HAS_WIFI_NETWORKING		0
-#else
-#define HAS_WIFI_NETWORKING		1
-#endif
+
+# define HAS_WIFI_NETWORKING	1
+# define HAS_W5500_NETWORKING	1
+
 #define HAS_CPU_TEMP_SENSOR		1
 #define HAS_HIGH_SPEED_SD		1
 #define HAS_SMART_DRIVERS		1
@@ -71,6 +56,7 @@ constexpr size_t NUM_SERIAL_CHANNELS = 2;			// The number of serial IO channels 
 #define SERIAL_AUX_DEVICE Serial
 
 #define I2C_IFACE	Wire							// Which TWI interface we use
+#define I2C_IRQn	WIRE_ISR_ID						// The interrupt number it uses
 
 constexpr Pin DueXnExpansionStart = 200;			// Pin numbers 200-215 are on the I/O expander
 constexpr Pin AdditionalIoExpansionStart = 220;		// Pin numbers 220-235 are on the additional I/O expander
@@ -101,7 +87,7 @@ constexpr Pin DueX_INT = 17;						// DueX interrupt pin = PA17 (was E6_STOP)
 // Endstops
 // RepRapFirmware only has a single endstop per axis.
 // Gcode defines if it is a max ("high end") or min ("low end") endstop and sets if it is active HIGH or LOW.
-constexpr Pin END_STOP_PINS[DRIVES] = { 46, 02, 93, 74, 48, 4, 6, 7, 10, 25, 39, 8 };
+constexpr Pin END_STOP_PINS[DRIVES] = { 46, 02, 93, 74, 48, 96, 97, 98, 99, 17, 39, 8 };
 constexpr Pin DUEX_END_STOP_PINS[5] = { 200, 203, 202, 201, 213 };			// these replace endstops 5-9 if a DueX is present
 
 
@@ -201,22 +187,18 @@ constexpr int HighestLogicalPin = 135;										// highest logical pin number on
 constexpr uint32_t IAP_FLASH_START = 0x00470000;
 constexpr uint32_t IAP_FLASH_END = 0x0047FFFF;		// we allow a full 64K on the SAM4
 
-#if defined(DUET_WIFI)
-
-// Duet pin numbers to control the WiFi interface
+// Duet pin numbers to control the WiFi interface on the Duet WiFi
 constexpr Pin EspResetPin = 100;			// Low on this in holds the WiFi module in reset (ESP_RESET)
 constexpr Pin EspEnablePin = 101;			// High to enable the WiFi module, low to power it down (ESP_CH_PD)
-constexpr Pin EspTransferRequestPin = 95;	// Input from the WiFi module indicating that it wants to transfer data (ESP GPIO0)
+constexpr Pin EspDataReadyPin = 95;			// Input from the WiFi module indicating that it wants to transfer data (ESP GPIO0)
 constexpr Pin SamTfrReadyPin = 94;			// Output from the SAM to the WiFi module indicating we can accept a data transfer (ESP GPIO4 via 7474)
 constexpr Pin SamCsPin = 11;				// SPI NPCS pin, input from WiFi module
 
-#elif defined(DUET_ETHERNET)
-
-// Duet pin numbers to control the W5500 interface
+// Duet pin numbers to control the W5500 interface on the Duet Ethernet
 constexpr Pin W5500ResetPin = 100;			// Low on this in holds the W5500 module in reset (ESP_RESET)
+constexpr Pin W5500InterruptPin = 95;		// W5500 interrupt output, active low
+constexpr Pin W5500ModuleSensePin = 5;		// URXD1, tied to ground on the Ethernet module
 constexpr Pin W5500SsPin = 11;				// SPI NPCS pin, input from W5500 module
-
-#endif
 
 // Timer allocation (no network timer on DuetNG)
 // TC0 channel 0 is used for FAN2
@@ -226,5 +208,6 @@ constexpr Pin W5500SsPin = 11;				// SPI NPCS pin, input from W5500 module
 #define STEP_TC_CHAN		(2)
 #define STEP_TC_IRQN		TC2_IRQn
 #define STEP_TC_HANDLER		TC2_Handler
+#define STEP_TC_ID			ID_TC2
 
 #endif

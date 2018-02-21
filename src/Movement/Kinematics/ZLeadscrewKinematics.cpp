@@ -23,12 +23,13 @@ ZLeadscrewKinematics::ZLeadscrewKinematics(KinematicsType k, float segsPerSecond
 }
 
 // Configure this kinematics. We only deal with the leadscrew coordinates here
-bool ZLeadscrewKinematics::Configure(unsigned int mCode, GCodeBuffer& gb, StringRef& reply, bool& error)
+bool ZLeadscrewKinematics::Configure(unsigned int mCode, GCodeBuffer& gb, const StringRef& reply, bool& error)
 {
 	if (mCode == 671 && GetKinematicsType() != KinematicsType::coreXZ)
 	{
 		// Configuring leadscrew positions.
 		// We no longer require the number of leadscrews to equal the number of motors. If there is a mismatch then auto calibration just prints the corrections.
+		// We now allow just 1 pair of coordinates to be specified, which in effect clears the M671 settings.
 		bool seenX = false, seenY = false;
 		size_t xSize = MaxLeadscrews, ySize = MaxLeadscrews;
 		if (gb.Seen('X'))
@@ -48,7 +49,7 @@ bool ZLeadscrewKinematics::Configure(unsigned int mCode, GCodeBuffer& gb, String
 		bool seenP = false;
 		gb.TryGetFValue('P', screwPitch, seenP);
 
-		if (seenX && seenY && xSize == ySize && xSize > 1)
+		if (seenX && seenY && xSize == ySize)
 		{
 			numLeadscrews = xSize;
 			return false;							// successful configuration
@@ -56,7 +57,7 @@ bool ZLeadscrewKinematics::Configure(unsigned int mCode, GCodeBuffer& gb, String
 
 		if (seenX || seenY)
 		{
-			reply.copy("Specify 2, 3 or 4 X and Y coordinates in M671");
+			reply.copy("Specify 1, 2, 3 or 4 X and Y coordinates in M671");
 			return true;
 		}
 
@@ -90,7 +91,7 @@ bool ZLeadscrewKinematics::SupportsAutoCalibration() const
 }
 
 // Perform auto calibration. Override this implementation in kinematics that support it. Caller already owns the GCode movement lock.
-bool ZLeadscrewKinematics::DoAutoCalibration(size_t numFactors, const RandomProbePointSet& probePoints, StringRef& reply)
+bool ZLeadscrewKinematics::DoAutoCalibration(size_t numFactors, const RandomProbePointSet& probePoints, const StringRef& reply)
 {
 	if (!SupportsAutoCalibration())			// should be checked by caller, but check it here too
 	{
@@ -310,7 +311,7 @@ bool ZLeadscrewKinematics::DoAutoCalibration(size_t numFactors, const RandomProb
 }
 
 // Append the list of leadscrew corrections to 'reply'
-void ZLeadscrewKinematics::AppendCorrections(const floatc_t corrections[], StringRef& reply) const
+void ZLeadscrewKinematics::AppendCorrections(const floatc_t corrections[], const StringRef& reply) const
 {
 	for (size_t i = 0; i < numLeadscrews; ++i)
 	{

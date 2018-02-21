@@ -79,12 +79,12 @@ public:
 	bool CanQueueCodes() const;
 	void MessageAcknowledged(bool cancelled);
 	FilePosition GetFilePosition(size_t bytesCached) const;	// Get the file position at the start of the current command
-	bool IsWritingBinary() const;		// returns true if writing binary
-	void SetBinaryWriting(bool state);	// set true if writing binary
+	bool IsWritingBinary() const;						// returns true if writing binary
+	void SetBinaryWriting(bool state);					// set true if writing binary
 	uint32_t GetCRC32() const;
 	void SetCRC32(uint32_t newCRC32);
 
-	void PrintCommand(StringRef& s) const;
+	void PrintCommand(const StringRef& s) const;
 
 	uint32_t whenTimerStarted;							// when we started waiting
 	bool timerRunning;									// true if we are waiting

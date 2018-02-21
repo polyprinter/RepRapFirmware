@@ -29,7 +29,7 @@ Licence: GPL
 // Platform-specific includes
 
 #include "RepRapFirmware.h"
-#include "IoPort.h"
+#include "IoPorts.h"
 #include "DueFlashStorage.h"
 #include "Fan.h"
 #include "Heating/TemperatureError.h"
@@ -38,6 +38,7 @@ Licence: GPL
 #include "Storage/FileData.h"
 #include "Storage/MassStorage.h"	// must be after Pins.h because it needs NumSdCards defined
 #include "MessageType.h"
+#include "Zprobe.h"
 #include "ZProbeProgrammer.h"
 
 #if defined(DUET_NG)
@@ -58,14 +59,14 @@ constexpr bool BACKWARDS = !FORWARDS;
 constexpr size_t VrefFilterIndex = Heaters;
 constexpr size_t VssaFilterIndex = Heaters + 1;
 # if HAS_CPU_TEMP_SENSOR
-constexpr size_t NumAdcFilters = Heaters + 3;
 constexpr size_t CpuTempFilterIndex = Heaters + 2;
+constexpr size_t NumAdcFilters = Heaters + 3;
 # else
 constexpr size_t NumAdcFilters = Heaters + 2;
 # endif
 #elif HAS_CPU_TEMP_SENSOR
-constexpr size_t NumAdcFilters = Heaters + 1;
 constexpr size_t CpuTempFilterIndex = Heaters;
+constexpr size_t NumAdcFilters = Heaters + 1;
 #else
 constexpr size_t NumAdcFilters = Heaters;
 #endif
@@ -96,7 +97,6 @@ const float AXIS_MAXIMA[MaxAxes] = AXES_(230.0, 230.0, 230.0, 0.0, 0.0, 0.0, 0.0
 
 constexpr float Z_PROBE_STOP_HEIGHT = 0.7;						// Millimetres
 constexpr unsigned int Z_PROBE_AVERAGE_READINGS = 8;			// We average this number of readings with IR on, and the same number with IR off
-constexpr int Z_PROBE_AD_VALUE = 500;							// Default for the Z probe - should be overwritten by experiment
 
 #ifdef POLYPRINTER
 const int ZProbeTypePoly = 99;									// Z probe type for experimental probe
@@ -115,14 +115,13 @@ constexpr uint32_t maxPidSpinDelay = 5000;			// Maximum elapsed time in millisec
 enum class BoardType : uint8_t
 {
 	Auto = 0,
-#if defined(__SAME70Q21__)
-	SAME70_TEST = 1
-#elif defined(DUET_NG) && defined(DUET_WIFI)
+#if defined(SAME70_TEST_BOARD)
+	SamE70TestBoard = 1
+#elif defined(DUET_NG)
 	DuetWiFi_10 = 1,
-	DuetWiFi_102 = 2
-#elif defined(DUET_NG) && defined(DUET_ETHERNET)
-	DuetEthernet_10 = 1,
-	DuetEthernet_102 = 2
+	DuetWiFi_102 = 2,
+	DuetEthernet_10 = 3,
+	DuetEthernet_102 = 4
 #elif defined(DUET_M)
 	DuetM_10 = 1,
 #elif defined(DUET_06_085)
@@ -202,8 +201,7 @@ enum class DiagnosticTestType : int
 };
 
 /***************************************************************************************************************/
-
-
+//	TODO: move these wherever the ZProbeParameters went, or something like it
 #ifdef POLYPRINTER
 // the Trigger functionality gets close to what we want.
 // We can use some of it and add our own behaviors.
@@ -247,30 +245,10 @@ struct PolyPrinterProbeResult
 
 #endif
 
-// Struct for holding Z probe parameters
-
-struct ZProbeParameters
-{
-	int32_t adcValue;				// the target ADC value, after inversion if enabled
-	float xOffset, yOffset;			// the offset of the probe relative to the print head
-	float triggerHeight;			// the nozzle height at which the target ADC value is returned
-	float calibTemperature;			// the temperature at which we did the calibration
-	float temperatureCoefficient;	// the variation of height with bed temperature
-	float diveHeight;				// the dive height we use when probing
-	float probeSpeed;				// the initial speed of probing
-	float travelSpeed;				// the speed at which we travel to the probe point
-	float recoveryTime;				// Z probe recovery time
-	float tolerance;				// maximum difference between probe heights when doing >1 taps
-	uint8_t maxTaps;				// maximum probes at each point
-	bool invertReading;				// true if we need to invert the reading
+// TODO: move this to the z params new spot
 #ifdef POLYPRINTER
 	float modulationFrequency_HZ;	// may vary
 #endif
-
-	void Init(float h);
-	float GetStopHeight(float temperature) const;
-	bool WriteParameters(FileStore *f, unsigned int probeType) const;
-};
 
 
 // Class to perform averaging of values read from the ADC
@@ -370,7 +348,7 @@ public:
 	Compatibility Emulating() const;
 	void SetEmulating(Compatibility c);
 	void Diagnostics(MessageType mtype);
-	bool DiagnosticTest(GCodeBuffer& gb, StringRef& reply, int d);
+	bool DiagnosticTest(GCodeBuffer& gb, const StringRef& reply, int d);
 	void ClassReport(uint32_t &lastTime);  			// Called on Spin() return to check everything's live.
 	void LogError(ErrorCode e) { errorCodeBits |= (uint32_t)e; }
 
@@ -382,9 +360,16 @@ public:
 	const char* GetElectronicsString() const;
 	const char* GetBoardString() const;
 
+#ifdef DUET_NG
+	bool IsDuetWiFi() const;
+#endif
+
+	const uint8_t *GetDefaultMacAddress() const { return defaultMacAddress; }
+
 	// Timing
-	static uint32_t GetInterruptClocks() __attribute__ ((hot));					// Get the interrupt clock count
-	static bool ScheduleStepInterrupt(uint32_t tim) __attribute__ ((hot));		// Schedule an interrupt at the specified clock count, or return true if it has passed already
+	static uint32_t GetInterruptClocks() __attribute__ ((hot));						// Get the interrupt clock count
+	static uint32_t GetInterruptClocksInterruptsDisabled() __attribute__ ((hot));	// Get the interrupt clock count, when we know already that interrupts are disabled
+	static bool ScheduleStepInterrupt(uint32_t tim) __attribute__ ((hot));			// Schedule an interrupt at the specified clock count, or return true if it has passed already
 	static void DisableStepInterrupt();						// Make sure we get no step interrupts
 	static bool ScheduleSoftTimerInterrupt(uint32_t tim);	// Schedule an interrupt at the specified clock count, or return true if it has passed already
 	static void DisableSoftTimerInterrupt();				// Make sure we get no software timer interrupts
@@ -409,8 +394,6 @@ public:
 	const uint8_t* NetMask() const;
 	void SetGateWay(uint8_t gw[]);
 	const uint8_t* GateWay() const;
-	void SetMACAddress(uint8_t mac[]);
-	const uint8_t* MACAddress() const;
 	void SetBaudRate(size_t chan, uint32_t br);
 	uint32_t GetBaudRate(size_t chan) const;
 	void SetCommsProperties(size_t chan, uint32_t cp);
@@ -531,15 +514,15 @@ public:
 	int GetZProbeReading() const;
 	EndStopHit GetZProbeResult() const;
 	int GetZProbeSecondaryValues(int& v1, int& v2);
-	void SetZProbeType(int iZ);
-	int GetZProbeType() const { return zProbeType; }
-	const ZProbeParameters& GetZProbeParameters(int32_t probeType) const;
-	const ZProbeParameters& GetCurrentZProbeParameters() const { return GetZProbeParameters(zProbeType); }
-	void SetZProbeParameters(int32_t probeType, const struct ZProbeParameters& params);
+	void SetZProbeType(unsigned int iZ);
+	ZProbeType GetZProbeType() const { return zProbeType; }
+	const ZProbe& GetZProbeParameters(ZProbeType probeType) const;
+	const ZProbe& GetCurrentZProbeParameters() const { return GetZProbeParameters(zProbeType); }
+	void SetZProbeParameters(ZProbeType probeType, const struct ZProbe& params);
 	bool HomingZWithProbe() const;
 	bool WritePlatformParameters(FileStore *f, bool includingG31) const;
 	void SetProbing(bool isProbing);
-	bool ProgramZProbe(GCodeBuffer& gb, StringRef& reply);
+	bool ProgramZProbe(GCodeBuffer& gb, const StringRef& reply);
 	void SetZProbeModState(bool b) const;
 
 
@@ -576,7 +559,7 @@ public:
 	void UpdateConfiguredHeaters();
 
 	// Fans
-	bool ConfigureFan(unsigned int mcode, int fanNumber, GCodeBuffer& gb, StringRef& reply, bool& error);
+	bool ConfigureFan(unsigned int mcode, int fanNumber, GCodeBuffer& gb, const StringRef& reply, bool& error);
 
 	float GetFanValue(size_t fan) const;					// Result is returned in percent
 	void SetFanValue(size_t fan, float speed);				// Accepts values between 0..1 and 1..255
@@ -589,7 +572,7 @@ public:
 
 	// Flash operations
 	void UpdateFirmware();
-	bool CheckFirmwareUpdatePrerequisites(StringRef& reply);
+	bool CheckFirmwareUpdatePrerequisites(const StringRef& reply);
 
 	// AUX device
 	void Beep(int freq, int ms);
@@ -629,7 +612,7 @@ public:
 #endif
 
 #if HAS_STALL_DETECT
-	bool ConfigureStallDetection(GCodeBuffer& gb, StringRef& reply);
+	bool ConfigureStallDetection(GCodeBuffer& gb, const StringRef& reply);
 #endif
 
 	// User I/O and servo support
@@ -639,7 +622,7 @@ public:
 	Pin GetEndstopPin(int endstop) const;			// Get the firmware pin number for an endstop
 
 	// Logging support
-	bool ConfigureLogging(GCodeBuffer& gb, StringRef& reply);
+	bool ConfigureLogging(GCodeBuffer& gb, const StringRef& reply);
 
 	// Ancilliary PWM
 	void SetExtrusionAncilliaryPwmValue(float v);
@@ -668,9 +651,15 @@ public:
 	// Misc
 	void InitI2c();
 
-	static uint8_t softwareResetDebugInfo;			// extra info for debugging
+	static uint8_t softwareResetDebugInfo;				// extra info for debugging
 
-//-------------------------------------------------------------------------------------------------------
+#if SAM4S || SAME70
+	// Static data used by step ISR
+	static volatile uint32_t stepTimerPendingStatus;	// for holding status bits that we have read (and therefore cleared) but haven't serviced yet
+	static volatile uint32_t stepTimerHighWord;			// upper 16 bits of step timer
+#endif
+
+	//-------------------------------------------------------------------------------------------------------
   
 private:
 	Platform(const Platform&);						// private copy constructor to make sure we don't try to copy a Platform
@@ -752,15 +741,15 @@ private:
 	Logger *logger;
 
 	// Z probes
-	ZProbeParameters switchZProbeParameters;		// Z probe values for the switch Z-probe
-	ZProbeParameters irZProbeParameters;			// Z probe values for the IR sensor
-	ZProbeParameters alternateZProbeParameters;		// Z probe values for the alternate sensor
-	int zProbeType;									// the type of Z probe we are currently using
+	ZProbe switchZProbeParameters;			// Z probe values for the switch Z-probe
+	ZProbe irZProbeParameters;				// Z probe values for the IR sensor
+	ZProbe alternateZProbeParameters;		// Z probe values for the alternate sensor
+	ZProbeType zProbeType;					// the type of Z probe we are currently using
 
 	byte ipAddress[4];
 	byte netMask[4];
 	byte gateWay[4];
-	uint8_t macAddress[6];
+	uint8_t defaultMacAddress[6];
 	Compatibility compatibility;
 
 	BoardType board;
@@ -982,21 +971,18 @@ private:
 };
 
 // Where the htm etc files are
-
 inline const char* Platform::GetWebDir() const
 {
 	return WEB_DIR;
 }
 
 // Where the gcodes are
-
 inline const char* Platform::GetGCodeDir() const
 {
 	return GCODE_DIR;
 }
 
 // Where the system files are
-
 inline const char* Platform::GetSysDir() const
 {
 	return SYS_DIR;
@@ -1191,15 +1177,25 @@ inline const uint8_t* Platform::GateWay() const
 	return gateWay;
 }
 
-inline const uint8_t* Platform::MACAddress() const
-{
-	return macAddress;
-}
-
 inline float Platform::GetPressureAdvance(size_t extruder) const
 {
 	return (extruder < MaxExtruders) ? pressureAdvance[extruder] : 0.0;
 }
+
+#if SAM4S || SAME70		// if the TCs are 16-bit
+
+// Get the interrupt clock count
+/*static*/ inline uint32_t Platform::GetInterruptClocks()
+{
+	const irqflags_t flags = cpu_irq_save();						// ensure interrupts are disabled
+	const uint32_t rslt = GetInterruptClocksInterruptsDisabled();
+	cpu_irq_restore(flags);											// restore interrupt enable state
+	return rslt;
+}
+
+// Function GetInterruptClocks() is quite long for these processors, so it is moved to Platform.cpp and no longer inlined
+
+#else					// TCs are 32-bit
 
 // Get the interrupt clock count
 /*static*/ inline uint32_t Platform::GetInterruptClocks()
@@ -1207,32 +1203,42 @@ inline float Platform::GetPressureAdvance(size_t extruder) const
 	return STEP_TC->TC_CHANNEL[STEP_TC_CHAN].TC_CV;
 }
 
+// Get the interrupt clock count, when we know that interrupts are already disabled
+/*static*/ inline uint32_t Platform::GetInterruptClocksInterruptsDisabled()
+{
+	return STEP_TC->TC_CHANNEL[STEP_TC_CHAN].TC_CV;
+}
+
+#endif
+
 // This is called by the tick ISR to get the raw Z probe reading to feed to the filter
 inline uint16_t Platform::GetRawZProbeReading() const
 {
 	switch (zProbeType)
 	{
-	case 1:
-	case 2:
-	case 3:
+	case ZProbeType::analog:
+	case ZProbeType::dumbModulated:
+	case ZProbeType::alternateAnalog:
 		return min<uint16_t>(AnalogInReadChannel(zProbeAdcChannel), 4000);
 
-	case 4:
+	case ZProbeType::e0Switch:
 		{
 			const bool b = IoPort::ReadPin(endStopPins[E0_AXIS]);
 			return (b) ? 4000 : 0;
 		}
 
-	case 5:
-	case 8:
+	case ZProbeType::digital:
+	case ZProbeType::unfilteredDigital:
+	case ZProbeType::blTouch:
 		return (IoPort::ReadPin(zProbePin)) ? 4000 : 0;
 
-	case 6:
+	case ZProbeType::e1Switch:
 		{
 			const bool b = IoPort::ReadPin(endStopPins[E0_AXIS + 1]);
 			return (b) ? 4000 : 0;
 		}
-	case 7:
+
+	case ZProbeType::zSwitch:
 		{
 			const bool b = IoPort::ReadPin(endStopPins[Z_AXIS]);
 			return (b) ? 4000 : 0;
@@ -1303,7 +1309,7 @@ inline OutputBuffer *Platform::GetAuxGCodeReply()
 // Calculate the step bit for a driver. This doesn't need to be fast.
 /*static*/ inline uint32_t Platform::CalcDriverBitmap(size_t driver)
 {
-#if defined(__SAME70Q21__)
+#if defined(SAME70_TEST_BOARD)
 	return 0;
 #else
 	const PinDescription& pinDesc = g_APinDescription[STEP_PINS[driver]];
@@ -1328,7 +1334,7 @@ inline OutputBuffer *Platform::GetAuxGCodeReply()
 // We rely on only those port bits that are step pins being set in the PIO_OWSR register of each port
 /*static*/ inline void Platform::StepDriversHigh(uint32_t driverMap)
 {
-#if defined(__SAME70Q21__)
+#if defined(SAME70_TEST_BOARD)
 	// TBD
 #elif defined(DUET_NG)
 	PIOD->PIO_ODSR = driverMap;				// on Duet WiFi all step pins are on port D
@@ -1357,7 +1363,7 @@ inline OutputBuffer *Platform::GetAuxGCodeReply()
 // We rely on only those port bits that are step pins being set in the PIO_OWSR register of each port
 /*static*/ inline void Platform::StepDriversLow()
 {
-#if defined(__SAME70Q21__)
+#if defined(SAME70_TEST_BOARD)
 	// TODO
 #elif defined(DUET_NG)
 	PIOD->PIO_ODSR = 0;						// on Duet WiFi all step pins are on port D

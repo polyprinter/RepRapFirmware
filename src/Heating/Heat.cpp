@@ -416,7 +416,7 @@ bool Heat::IsBedOrChamberHeater(int8_t heater) const
 }
 
 // Auto tune a PID
-void Heat::StartAutoTune(size_t heater, float temperature, float maxPwm, StringRef& reply)
+void Heat::StartAutoTune(size_t heater, float temperature, float maxPwm, const StringRef& reply)
 {
 	if (heaterBeingTuned == -1)
 	{
@@ -435,7 +435,7 @@ bool Heat::IsTuning(size_t heater) const
 	return pids[heater]->IsTuning();
 }
 
-void Heat::GetAutoTuneStatus(StringRef& reply) const
+void Heat::GetAutoTuneStatus(const StringRef& reply) const
 {
 	int8_t whichPid = (heaterBeingTuned == -1) ? lastHeaterTuned : heaterBeingTuned;
 	if (whichPid != -1)
@@ -515,7 +515,7 @@ bool Heat::SetHeaterChannel(size_t heater, int channel)
 }
 
 // Configure the temperature sensor for a channel
-bool Heat::ConfigureHeaterSensor(unsigned int mcode, size_t heater, GCodeBuffer& gb, StringRef& reply, bool& error)
+bool Heat::ConfigureHeaterSensor(unsigned int mcode, size_t heater, GCodeBuffer& gb, const StringRef& reply, bool& error)
 {
 	TemperatureSensor ** const spp = GetSensor(heater);
 	if (spp == nullptr || *spp == nullptr)
@@ -643,9 +643,7 @@ float Heat::GetTemperature(size_t heater, TemperatureError& err)
 	return t;
 }
 
-#if HAS_VOLTAGE_MONITOR
-
-// Suspend the heaters to conserve power
+// Suspend the heaters to conserve power or while doing Z probing
 void Heat::SuspendHeaters(bool sus)
 {
 	for (PID *p : pids)
@@ -654,14 +652,12 @@ void Heat::SuspendHeaters(bool sus)
 	}
 }
 
-#endif
-
 // Save some resume information returning true if successful.
 // We assume that the bed and chamber heaters are either on and active, or off (not on standby).
 bool Heat::WriteBedAndChamberTempSettings(FileStore *f) const
 {
-	char bufSpace[100];
-	StringRef buf(bufSpace, ARRAY_SIZE(bufSpace));
+	String<100> bufSpace;
+	const StringRef buf = bufSpace.GetRef();
 	for (size_t index : ARRAY_INDICES(bedHeaters))
 	{
 		const int8_t bedHeater = bedHeaters[index];

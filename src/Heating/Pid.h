@@ -63,9 +63,9 @@ public:
 	float GetAveragePWM() const;					// Return the running average PWM to the heater. Answer is a fraction in [0, 1].
 	uint32_t GetLastSampleTime() const;				// Return when the temp sensor was last sampled
 	float GetAccumulator() const;					// Return the integral accumulator
-	void StartAutoTune(float targetTemp, float maxPwm, StringRef& reply);	// Start an auto tune cycle for this PID
+	void StartAutoTune(float targetTemp, float maxPwm, const StringRef& reply);	// Start an auto tune cycle for this PID
 	bool IsTuning() const;
-	void GetAutoTuneStatus(StringRef& reply);		// Get the auto tune status or last result
+	void GetAutoTuneStatus(const StringRef& reply);	// Get the auto tune status or last result
 
 	const FopDt& GetModel() const					// Get the process model
 		{ return model; }
@@ -89,9 +89,7 @@ public:
 	void SetM301PidParameters(const M301PidParameters& params)
 		{ model.SetM301PidParameters(params); }
 
-#if HAS_VOLTAGE_MONITOR
-	void Suspend(bool sus);							// Suspend the heater to conserve power
-#endif
+	void Suspend(bool sus);							// Suspend the heater to conserve power or while doing Z probing
 
 private:
 
@@ -131,9 +129,7 @@ private:
 	bool invertPwmSignal;							// Invert the final PWM output signal (same behaviour as with HEAT_ON in earlier firmware versions)
 	bool active;									// Are we active or standby?
 	bool tuned;										// True if tuning was successful
-#if HAS_VOLTAGE_MONITOR
 	bool suspended;									// True if suspended to save power
-#endif
 	uint8_t badTemperatureCount;					// Count of sequential dud readings
 
 	static_assert(sizeof(previousTemperaturesGood) * 8 >= NumPreviousTemperatures, "too few bits in previousTemperaturesGood");
