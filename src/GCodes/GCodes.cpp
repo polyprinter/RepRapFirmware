@@ -858,7 +858,7 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, StringRef& reply)
 				g30zHeightError = moveBuffer.coords[Z_AXIS] - platform.ZProbeStopHeight();
 #ifdef POLYPRINTER
 					debugPrintf("gridProbing3: using height offset %f\n", (double)platform.GetPolyPrinterProbeResult().detectionOffset_MM );
-					heightError += platform.GetPolyPrinterProbeResult().detectionOffset_MM;
+					g30zHeightError += platform.GetPolyPrinterProbeResult().detectionOffset_MM;
 #endif
 			}
 

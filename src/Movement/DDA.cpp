@@ -155,7 +155,7 @@ inline float constrain0to1( float value ) { return max( min( value, 1.0f ), 0.0f
 #ifdef CHECK_REPLAN
 float DDA::EffectiveAxisJerkLimit( size_t axis )
 {
-	float officialJerkLimit = reprap.GetPlatform().ConfiguredInstantDv( axis );
+	float officialJerkLimit = reprap.GetPlatform().GetInstantDv( axis );
 #ifdef AUTOMATIC_JERK_VARIATION
 	return axis <= Y_AXIS ? max( officialJerkLimit, DEFAULT_FULL_JERK ) : officialJerkLimit; // the planner is going to use at least the DEFAULT_MIN_JERK for X,Y instead of the setting but it's not an error unless it's over the MAX jerk the auto code might set
 #else
@@ -1126,7 +1126,7 @@ inline void DDA::SetBlockMaxAllowableJerkEntrySpeed( const DDA* prevblock, DDA* 
 #endif
 #ifdef AUTOMATIC_JERK_VARIATION
 //#define TRACE_AUTOMATIC_JERK
-			float thisAxisJerk = reprap.GetPlatform().ConfiguredInstantDv(axis);		// look at how much Jerk is allowed for this axis
+			float thisAxisJerk = reprap.GetPlatform().GetInstantDv(axis);		// look at how much Jerk is allowed for this axis
 
 			if ( axis <= Y_AXIS ) {
 				// affects only the XY Jerk
@@ -2255,7 +2255,7 @@ void DDA::Prepare(uint8_t simMode)
 #ifdef POLYPRINTER_PrepareExtruderWithLinearAdvance
 							pdm->PrepareExtruderWithLinearAdvance(*this, params, usePressureAdvance);
 #else
-							pdm->PrepareExtruder(*this, params, usePressureAdvance);
+							pdm->PrepareExtruder(*this, params, 0, usePressureAdvance); // we never allow a speed change!
 #endif
 						}
 #else
