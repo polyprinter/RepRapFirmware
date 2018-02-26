@@ -19,8 +19,11 @@
 #define AUTHORS "reprappro, dc42, chrishamm, t3p3, dnewman"
 
 #ifdef POLYPRINTER
+// would like to simply extdn it...
+//#define PPCAT( A, B ) A ## B
+#define VERSION_TEMP( s ) VERSION
 #undef VERSION
-# define VERSION "1.19beta1Poly0004"
+# define VERSION "1.21RC2" "Poly0004"
 #endif
 
 #endif /* SRC_VERSION_H_ */
